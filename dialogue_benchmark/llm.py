@@ -889,12 +889,14 @@ def parse_text_response(content):
 
 FACT_FORMAT = """Return blocks in this exact format:
 FACT f1
-SOURCES: e1,e2
+SOURCES: 资料1,资料2
 SOURCE_KIND: conversation|document|tool|code|test
 TEXT: Chinese fact on one line, with conditions and attribution preserved
 END_FACT
-Copy source IDs exactly from the supplied records. If there are no facts, return
-NO_FACTS. Do not return JSON, Markdown tables, or invent alternate field names."""
+Copy only the supplied 资料 references in SOURCES; never copy record IDs,
+call IDs, stage IDs, hashes, or wrapper metadata into TEXT. If there are no
+facts, return NO_FACTS. Do not return JSON, Markdown tables, or invent alternate
+field names."""
 
 FACT_PROMPT = """Prioritize constraints, changes, failures, feedback, tests and decisions.
 Do not extract acknowledgements such as 'continue' as standalone useful facts.
@@ -1636,6 +1638,19 @@ def _ask_stage(client, prompt, data, stage):
                     receipt.setdefault("stage", stage)
 
 
+def _restore_fact_sources(document, ref_to_source):
+    """Map fact-local material references back to private source IDs."""
+    restored = deepcopy(document)
+    canonical_sources = set(ref_to_source.values())
+    for fact in restored.get("facts", []) if isinstance(restored, dict) else []:
+        if not isinstance(fact, dict) or not isinstance(fact.get("sources"), list):
+            continue
+        fact["sources"] = [ref_to_source.get(source, source if source in canonical_sources
+                                              else _UNKNOWN_LOCAL_REFERENCE)
+                            for source in fact["sources"]]
+    return restored
+
+
 def _prompt_for_mode(qa_mode, allowed_types, max_questions):
     if qa_mode == "general":
         types = ",".join(sorted(allowed_types or {"single-hop", "multi-hop", "temporal",
@@ -1663,7 +1678,10 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None):
         return result
     try:
         fact_prompt, _, _ = _prompt_for_mode(qa_mode, None, 1)
-        facts_document = _ask_stage(client, fact_prompt, scope, "facts")
+        source_ids = _scope_material_source_ids(scope)
+        fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)
+        facts_document = _restore_fact_sources(
+            _ask_stage(client, fact_prompt, fact_payload, "facts"), ref_to_source)
         facts, fact_rejected = validate_facts(facts_document, scope,
                                                return_rejected=True, qa_mode=qa_mode)
         result["facts"] = facts

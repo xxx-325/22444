@@ -455,10 +455,12 @@ END_QA
         generate(self.scope, CapturingClient(), generation_mode="legacy",
                  review_mode="single")
         self.assertEqual(len(payloads), 3)
+        self.assertIn("materials", payloads[0])
+        self.assertNotIn("dialogue", payloads[0])
         self.assertLessEqual(len(payloads[1]["scope"]["dialogue"]),
-                             len(payloads[0]["dialogue"]))
+                             len(payloads[0]["materials"]))
         self.assertLessEqual(len(payloads[2]["scope"]["dialogue"]),
-                             len(payloads[0]["dialogue"]))
+                             len(payloads[0]["materials"]))
         # Answer points may cite a directly related source beyond the fact's
         # original citation; review must keep both plus bounded neighbors.
         self.assertTrue({"e2", "e3"}.issubset(
