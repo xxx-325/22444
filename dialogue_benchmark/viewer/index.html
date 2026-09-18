@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Dialogue Benchmark · 构造过程</title>
+<style>/* VIEWER_CSS */</style>
+</head>
+<body>
+<header><div><span class="brand-mark" aria-hidden="true">{ }</span><strong>Dialogue Benchmark</strong><span class="header-sub">构造过程</span></div><span class="private-label">本地实验 · 私有数据</span></header>
+<main>
+<section class="intro"><div><p class="eyebrow">RUN EXPLORER</p><h1>从对话到候选题</h1><p id="run-name" class="muted"></p></div><div id="run-status" class="status"></div></section>
+<nav id="steps" aria-label="构建阶段"></nav>
+<div class="stage-heading"><div><span id="stage-kicker" class="eyebrow"></span><h2 id="stage-title"></h2></div><div class="step-controls"><button id="previous-step" aria-label="上一步" title="上一步">←</button><button id="next-step" aria-label="下一步" title="下一步">→</button></div></div>
+<section id="timeline" aria-label="事件回放">
+ <div class="timeline-top"><div><strong id="event-position"></strong><span id="event-summary" class="muted"></span></div><div class="event-controls"><button id="prev-event" aria-label="上一个事件" title="上一个事件">←</button><button id="play" title="自动回放">播放</button><button id="next-event" aria-label="下一个事件" title="下一个事件">→</button></div></div>
+ <label class="sr-only" for="event-range">当前事件</label><input type="range" id="event-range" min="1" value="1">
+ <div id="patch-stops" class="patch-stops"></div><div id="event-delta" class="event-delta" aria-live="polite"></div>
+</section>
+<div id="metrics" class="metrics"></div>
+<section id="workspace" class="workspace"><div id="primary"></div><aside id="inspector" aria-label="选中内容详情"></aside></section>
+<footer><span id="footer-state"></span><span>原始产物 · 非黄金数据集</span></footer>
+</main>
+<dialog id="evidence-dialog"><div class="dialog-head"><h2 id="dialog-title">证据</h2><button id="close-dialog" aria-label="关闭" title="关闭">×</button></div><div id="dialog-body"></div></dialog>
+<script id="run-data" type="application/json">/* VIEWER_DATA */</script>
+<script>/* VIEWER_JS */</script>
+</body>
+</html>

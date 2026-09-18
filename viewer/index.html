@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; script-src 'self' file:; style-src 'self' file:; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Dialogue → QA · 证据工作台</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="data.js"></script>
+  <script defer src="graph.js"></script>
+  <script defer src="overview.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark">↗</span><div><strong>Dialogue → QA</strong><span>证据工作台</span></div></div>
+  <div class="local"><span></span>本地只读 · 无模型调用</div>
+</header>
+<main>
+  <section class="run-heading" aria-label="运行概览">
+    <div><div class="eyebrow">真实案例 / 保存结果回放</div><h1><span id="run-title">真实对话</span> · 从对话到题目</h1><p id="run-description"></p></div>
+    <div id="metrics" class="metrics"></div>
+  </section>
+  <div class="notice"><b>先看主线，再展开证据</b><span>每张卡片合并一段相关记录，工具日志、补丁和事实放进详情。逐步扩展仍是讲解演示，不是实时模型决策。</span><button id="method-link" class="text-button">方法与边界 ↗</button></div>
+  <nav id="steps" class="steps" aria-label="抽取流程"></nav>
+  <section class="workbench" aria-label="交互证据图">
+    <div class="graph-panel">
+      <div class="graph-toolbar"><div><span class="eyebrow">EVIDENCE MAP</span><h2 id="graph-title">整张证据图</h2></div><div class="zoom-tools"><button id="zoom-out" aria-label="缩小">−</button><button id="zoom-fit">全图</button><button id="zoom-in" aria-label="放大">＋</button></div></div>
+      <div class="density-controls" aria-label="图的详细程度"><button id="density-detail" aria-pressed="true">关键关系</button><button id="density-summary" aria-pressed="false">主线概览</button><span>关键关系展开函数、版本、失败与验证；不展开重复工具日志。</span></div>
+      <div class="case-picker"><label for="group-select">选择证据组</label><select id="group-select"></select><span id="group-badge" class="tag"></span></div>
+      <div class="seed-context" aria-live="polite"><strong id="seed-label"></strong><span id="inspection-label"></span></div>
+      <div class="map-shell"><svg id="graph" viewBox="0 0 1200 730" aria-label="文件、关键变化和 QA 的折叠概览图"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/></marker></defs><g id="scene"></g></svg><div class="map-hint">点击卡片看证据 · 工具日志不单独画点 · 滚轮可放大</div></div>
+      <div class="legend"><span class="legend-version">文件与函数</span><span class="legend-patch">关键变化</span><span class="legend-general">普通 QA</span><span class="legend-code">代码 QA</span><span>横向箭头只表示先后，不表示因果</span></div>
+      <div class="state-legend"><span class="seed-key">金色边：固定起点</span><span class="adopted-key">绿色边：保存证据组采用</span><span class="background-key">灰色虚线：探索过但未纳入</span><span>新进入的证据会在卡片中标明实际种类</span></div>
+      <div class="playback"><button id="play" class="primary">▶ 播放讲解</button><button id="back">上一步</button><button id="next">下一步 →</button><span id="step-count"></span></div>
+    </div>
+    <aside class="inspector">
+      <div class="inspector-header"><span id="step-label" class="eyebrow"></span><h2 id="step-title"></h2><p id="step-description"></p></div>
+      <div id="selection-stats" class="selection-stats"></div>
+      <div id="step-details" class="step-details"></div>
+    </aside>
+  </section>
+  <section class="evidence-section">
+    <div class="section-heading"><div><span class="eyebrow">SOURCE INSPECTOR</span><h2>原文与代码，不只看关系</h2></div><span id="source-meta" class="tag">点击图中任意节点</span></div>
+    <div id="source-detail" class="source-detail"><p>选中节点即可查看原文、完整版本或事实陈述。</p></div>
+  </section>
+  <section class="qa-section" id="qa-section">
+    <div class="section-heading"><div><span class="eyebrow">SAVED OUTPUT</span><h2>QA 审阅 <span id="qa-total"></span></h2></div><button id="all-qa" class="text-button">取消证据组筛选</button></div>
+    <p class="muted">以下为该次运行保存的公开题目，未重写。类型、难度和“通过”均为运行标注，不代表人工金标准；展开审核理由可查看模型的异议。</p>
+    <div class="qa-tabs" role="tablist" aria-label="QA 轨道"><button role="tab" data-mode="general" id="tab-general" aria-controls="qa-list">普通 QA</button><button role="tab" data-mode="code" id="tab-code" aria-controls="qa-list">代码 QA</button></div>
+    <div class="qa-controls"><button id="view-final" aria-pressed="true">最终题集</button><button id="view-audit" aria-pressed="false">全部候选审阅</button><label for="audit-status">候选状态</label><select id="audit-status" disabled><option value="all">全部状态</option><option value="approved">审核通过</option><option value="needs_review">待复核</option><option value="rejected">拒绝</option><option value="duplicate">重复</option><option value="over_quota">超出配额</option><option value="safety_blocked">敏感信息拦截</option></select></div>
+    <p id="target-progress" class="qa-context"></p>
+    <div id="qa-context" class="qa-context"></div><div id="qa-list" role="tabpanel" aria-labelledby="tab-general"></div>
+  </section>
+  <details class="method" id="method"><summary>实际流程、演示边界与运行记录</summary>
+    <div class="method-grid"><div><h3>这页展示的是什么</h3><p>默认关键关系图展开主要文件的函数、版本、关键失败和验证；主线概览可折叠回九张卡片。不把每条 event 或 fact 都画成节点。这个 Lambda 案例的五个变化标题经原文核对后整理，仅作展示分组，不是模型识别的语义阶段。完整工具记录、补丁、版本和事实仍保留在详情中。</p><p>横向箭头只表示先后；版本链表示前后版本，不保证部署状态；下方连线表示已保存 QA 引用过来源。合并卡片被高亮，不代表卡片里的全部记录都送进了模型；实际输入仍以证据组为准。</p></div>
+    <div><h3>“不断延伸”如何演示</h3><p>从固定种子沿直接连接显示第一圈、第二圈，再对照运行实际保存的证据组。探索过但未纳入的内容保留灰色虚线，不改变实际输入。只关联旧版本时，卡片显示代码版本，不能据此说整段用户需求被采用。</p><p>点击卡片只是查看，只有“设为起点”按钮或重选证据组才改变起点。圈数不是 QA 难度或模型推理跳数。实际程序先静态扩展，再抽 facts、组合证据组、生成候选并逐题审核；没有逐圈充分性判断或排除理由的日志，本页不补造。</p></div>
+    <div><h3>隐私和质量边界</h3><p>只读取指定运行目录，不读取当前仓库来补充对话证据。保留项目结构与代码，个人目录前缀替换；疑似凭据字段隐藏。代码只展示、不执行。本地材料仍不应公开上传。</p><p>不重新生成 QA、不修改审核状态。原子性、历史必要性和类型仍可能有误；审核理由与状态存在冲突时，需人工复核。</p></div></div>
+    <h3>保存的扩展层统计（不是当前演示路径）</h3><div id="layer-log"></div><p id="run-file" class="muted"></p>
+  </details>
+</main>
+<footer>本地研究工具 · 真实产物 + 明确标注的过程演示 · 不连接 QA 服务</footer>
+<noscript>请启用 JavaScript 来查看本地交互图；页面不会访问网络。</noscript>
+</body>
+</html>

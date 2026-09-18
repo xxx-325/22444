@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dialogue-qa-benchmark"
+version = "0.1.0"
+description = "Build evidence-grounded QA from dialogue and code history"
+requires-python = ">=3.9"
+dependencies = ["python-dotenv>=1.0,<2"]
+
+[project.scripts]
+dialogue-benchmark = "dialogue_benchmark.cli:main"
+dialogue-qa = "dialogue_benchmark.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dialogue_benchmark*"]
+
+[tool.setuptools.package-data]
+dialogue_benchmark = ["viewer/*.html", "viewer/*.css", "viewer/*.js"]

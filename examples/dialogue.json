@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "records": [
+    {"kind": "message", "role": "user", "text": "When configuration is missing, show a friendly error."},
+    {"kind": "patch", "success": true, "changes": {
+      "config.py": {"type": "add", "content": "def load_config(exists):\n    if not exists:\n        return None\n    return {}\n"},
+      "main.py": {"type": "add", "content": "from .config import load_config\n\ndef main(exists):\n    value = load_config(exists)\n    return 'missing' if value is None else 'ready'\n"}
+    }},
+    {"kind": "patch", "success": true, "changes": {
+      "config.py": {"type": "update", "unified_diff": "@@ -1,4 +1,4 @@\n def load_config(exists):\n     if not exists:\n-        return None\n+        raise ValueError('missing')\n     return {}\n"}
+    }},
+    {"kind": "call", "call_id": "test-1", "name": "shell_command", "text": "run missing-configuration test"},
+    {"kind": "result", "call_id": "test-1", "text": "Synthetic fixture: missing-configuration test failed with uncaught ValueError: missing"},
+    {"kind": "patch", "success": true, "changes": {
+      "main.py": {"type": "update", "unified_diff": "@@ -3,3 +3,6 @@\n def main(exists):\n-    value = load_config(exists)\n-    return 'missing' if value is None else 'ready'\n+    try:\n+        load_config(exists)\n+    except ValueError:\n+        return 'missing'\n+    return 'ready'\n"}
+    }}
+  ]
+}
