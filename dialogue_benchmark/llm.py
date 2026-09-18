@@ -31,6 +31,7 @@ from .quality import (
     validate_sources,
 )
 from .protocol import (
+    BEHAVIOR_INFERENCE_CONTRACT,
     CODE_DISTINCTIVENESS_RULE,
     MISSING_KINDS,
     SIMPLE_ATOMICITY_RULE,
@@ -950,8 +951,7 @@ SIMPLE_CODE_QA_RULES = """
 Code QA has an additional memory-value gate. """ + CODE_DISTINCTIVENESS_RULE + """
 Ask about an actual old-to-new change, a recorded feedback/failure/decision, or a
 result that necessarily combines multiple code locations. Behavior inference must
-connect conditions or propagation across different code locations, or connect a
-recorded historical constraint to its implementation behavior. Failure diagnosis
+satisfy this contract: """ + BEHAVIOR_INFERENCE_CONTRACT + """ Failure diagnosis
 must connect an observed failure to its repair basis, not select a nearby guard or
 error branch. Return NO_QA for an
 untimed directory inventory, a single-line default or signature, or a current value
@@ -969,7 +969,7 @@ unless the focus also asks what happens after that timeout or failure.
 SIMPLE_TYPE_GUIDANCE = {
     "fact_recall": "Ask for a concrete explicitly stated fact needed in later work",
     "history_tracking": "Ask what one actual past state changed from and to; ask for a reason or consequence only under the supplied causality rule",
-    "behavior_inference": "Trace how a concrete condition or value travels between producing and consuming code to determine behavior; do not enumerate adjacent validation checks",
+    "behavior_inference": BEHAVIOR_INFERENCE_CONTRACT + " Do not enumerate adjacent validation checks",
     "failure_diagnosis": "Explain the mechanism of a recorded failure or why a recorded change addresses it; reporting only an error message or a later test result does not answer this task",
     "single-hop": "Ask for one directly recorded, practically reusable decision, constraint, or condition",
     "multi-hop": "Ask one useful relationship that genuinely combines indispensable discussion steps",
@@ -1008,9 +1008,7 @@ is available, return NO_QA alone. Do not copy the alternatives or add prose.
 """
 
 SIMPLE_CODE_FOCUS_RULES = """
-For code behavior, focus on how conditions or propagation across code locations
-produce a business-relevant behavior, or how a recorded historical constraint
-determines implementation behavior. Do not select adjacent checks merely because
+For code behavior, """ + BEHAVIOR_INFERENCE_CONTRACT + """ Do not select adjacent checks merely because
 they are near each other. For failure diagnosis, focus on an observed failure and
 the basis for its repair; patch application alone is not a verified repair, and any
 supplied later validation needed by that target must remain cited. A complete
@@ -1074,7 +1072,10 @@ copy the alternatives literally. Do not output a reason or any other field.
 CODE_DISTINCTIVENESS_PROMPT = """Classify only why the immutable code question and
 its existing A*/F* points require code memory. Do not answer, rewrite, repair, or
 judge truth, completeness, atomicity, or difficulty. Classify the existing answer
-target, not the intended authoring task. The caller checks task alignment separately.
+target, not the intended authoring task. If a FOCUS is supplied, also check whether
+the question answers that exact focus: aligned means the main answer target matches;
+mixed means it adds a different independent target; drifted means it answers another
+task; uncertain means the focus or target cannot be matched safely.
 """ + CODE_DISTINCTIVENESS_RULE + """
 Choose the basis that describes the question's main answer target: A mainly compares
 earlier and later states; B mainly asks how a recorded failure, feedback, decision, or
@@ -1086,8 +1087,9 @@ Return exactly:
 REVIEW q1
 review_contract: code_distinctiveness_v1
 answer_basis: A|B|C|D
+target_alignment: aligned|mixed|drifted|uncertain
 END_REVIEW
-Choose one letter only. Do not output a reason or any other field.
+If no FOCUS is supplied, omit target_alignment. Do not output a reason or any other field.
 """
 
 SIMPLE_COMPLETENESS_PROMPT = """Check only whether the immutable existing A* answer
@@ -1873,6 +1875,8 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 candidate["type"] = target_type
                 if qa_mode == "code":
                     candidate["category"] = target_type
+                if generation_mode == "simple" and isinstance(focus, dict):
+                    candidate["_generation_focus"] = deepcopy(focus)
         else:
             candidates, rejected = validate_candidates(
                 emitted, result["facts"], qa_scope,
@@ -2363,6 +2367,10 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
             if qa_mode == "code":
                 distinctiveness_payload, _ = simple_evidence_payload(
                     scope, sources, facts=result["facts"], candidate=candidate)
+                if isinstance(candidate.get("_generation_focus"), dict):
+                    distinctiveness_payload["focus"] = {
+                        "text": candidate["_generation_focus"].get("text", "")
+                    }
                 _check_simple_request_budget(
                     CODE_DISTINCTIVENESS_PROMPT, distinctiveness_payload, qa_budget)
                 distinctiveness_document = _ask_stage(

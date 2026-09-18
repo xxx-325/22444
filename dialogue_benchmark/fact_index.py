@@ -92,6 +92,11 @@ _BEHAVIOR_OUTCOME = re.compile(
     r"write[sn]?|read[sd]?|send[sd]?|pass(?:es|ed)?|reject[sed]?|accept[sed]?|"
     r"skip(?:s|ped)?|retain[sed]?|clear[sed]?|cause[sd]?|produce[sd]?|use[sd]?)",
     re.I)
+_VALUE_FLOW_CUE = re.compile(
+    r"传给|传到|传递|流向|作为[^。\n]{0,30}(?:实参|参数)|"
+    r"passes?\s+[^\n]{0,40}\s+to|forwards?|propagates?|"
+    r"receives?\s+[^\n]{0,40}\s+(?:from|as)|uses?\s+[^\n]{0,40}\s+as",
+    re.I)
 _LABELS = {
     "failure": re.compile(r"失败|报错|错误|异常|crash|error|failed|failure|bug", re.I),
     "validation": re.compile(r"测试|实验|验证|通过|passed|pytest|结果|回归", re.I),
@@ -1114,8 +1119,17 @@ def _candidate_types(infos, qa_mode, allowed_types):
                            and "conditional" in infos[0].get("statement_labels", set())
                            and _BEHAVIOR_OUTCOME.search(
                                infos[0]["fact"].get("statement", "")))
-        if ((shared_entities or graph_linked) and labels & {"change", "conditional"}) \
-                or inline_behavior:
+        value_flow = (len(infos) >= 2
+                      and sum(bool(_VALUE_FLOW_CUE.search(
+                          info["fact"].get("statement", "")))
+                              for info in infos) >= 2)
+        flow_relation = any(
+            _strong_business_link(left, right)
+            for index, left in enumerate(infos)
+            for right in infos[index + 1:])
+        if (((shared_entities or graph_linked) and labels & {"change", "conditional"})
+                or (value_flow and flow_relation)
+                or inline_behavior):
             possible.add("behavior_inference")
         # A failure diagnosis must connect an observed failure to a separate
         # change, validation, or decision fact.  A lone statement describing a
@@ -2124,6 +2138,16 @@ def _evaluate_code_evidence(infos, evidence_index, target_type, text, sources,
         if answer_has_shape and (inline or linked):
             return _code_evidence_result(
                 "supported", "explicit_condition_to_behavior", infos, source_ids)
+        flow_infos = [info for info in infos if _VALUE_FLOW_CUE.search(
+            info["fact"].get("statement", ""))]
+        flow_linked = any(
+            _strong_business_link(left, right)
+            for index, left in enumerate(flow_infos)
+            for right in flow_infos[index + 1:])
+        if (len(flow_infos) >= 2 and flow_linked
+                and (not post_generation or bool(_VALUE_FLOW_CUE.search(evidence_text)))):
+            return _code_evidence_result(
+                "supported", "explicit_value_flow", infos, source_ids)
         weak_only = bool({"call_result"} & relation_kinds) or any(
             left.get("paths", set()) & right.get("paths", set())
             for position, left in enumerate(infos)
@@ -2185,6 +2209,15 @@ def static_code_evidence_check(group, evidence_index, target_type, candidate=Non
             return _code_evidence_result(
                 "unknown", "cited_source_has_no_extracted_fact", [], cited_sources)
         selected_ids = {info["fact"].get("id") for info in infos}
+        if target_type == "behavior_inference" and complete:
+            if any(
+                    len(info["fact"].get("sources", [])) > 1
+                    and not set(info["fact"].get("sources", [])).issubset(
+                        set(cited_sources))
+                    for info in infos):
+                return _code_evidence_result(
+                    "insufficient", "answer_cites_partial_multi_source_fact",
+                    infos, cited_sources)
         if target_type == "failure_diagnosis" and complete:
             selected_failures = [info for info in infos if info.get("observed_failure")]
             omitted_diagnostics = [
@@ -2209,6 +2242,8 @@ def static_code_evidence_check(group, evidence_index, target_type, candidate=Non
                     outcome["fact"].get("statement", ""))
                 and condition is not outcome
                 and _strong_business_link(condition, outcome)
+                and (condition["fact"].get("id") in selected_ids
+                     or outcome["fact"].get("id") in selected_ids)
             ]
             if explicit_pairs and not any(
                     condition["fact"].get("id") in selected_ids

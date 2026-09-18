@@ -62,7 +62,7 @@ class CapturingClient:
         if index == 3:
             return {"reviews": [{
                 "id": "q1", "review_contract": "code_distinctiveness_v1",
-                "answer_basis": "A",
+                "answer_basis": "A", "target_alignment": "aligned",
             }]}
         if index == 5:
             return {"reviews": [{

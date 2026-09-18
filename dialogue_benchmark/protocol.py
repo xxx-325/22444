@@ -15,11 +15,21 @@ SIMPLE_TEMPORAL_WORDING_RULE = (
     "Preserve those words only when quoting supplied code or a literal string."
 )
 
+BEHAVIOR_INFERENCE_CONTRACT = (
+    "Behavior inference answers how one concrete condition, value, or dependency "
+    "produces an observed behavior. The link may cross code locations, or may "
+    "depend on an explicitly linked historical/version prerequisite that is "
+    "necessary for the behavior. Merely recalling a constraint is fact recall; "
+    "only comparing old and new states is history tracking; diagnosing an observed "
+    "failure is failure diagnosis."
+)
+
 CODE_DISTINCTIVENESS_RULE = (
     "A code question must make at least one basis indispensable to its answer: "
     "A compares an earlier state with a later state; B uses a recorded failure, "
     "feedback, decision, or constraint; C connects conditions, calls, or data flow "
-    "across different code locations. D is a single-location fact, surface inventory, "
+    "across different code locations, or connects an explicitly linked indispensable "
+    "historical/version prerequisite to its implementation behavior. D is a single-location fact, surface inventory, "
     "or anything whose need for A, B, or C is not proven. Material count, source "
     "count, and historical wording do not prove a basis. A None value, path, or "
     "parameter is allowed only when its change, cause, or cross-location dependency "

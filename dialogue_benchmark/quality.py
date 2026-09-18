@@ -1059,15 +1059,37 @@ def apply_code_distinctiveness_review(candidates, review):
             continue
         unexpected = set(decision) - {
             "id", "returned_id", "id_inferred", "review_contract",
-            "answer_basis",
+            "answer_basis", "target_alignment",
         }
         basis = decision.get("answer_basis")
+        requires_alignment = bool(question.get("_generation_focus"))
+        alignment = decision.get("target_alignment")
         if (decision.get("review_contract") != "code_distinctiveness_v1"
                 or unexpected or basis not in CODE_DISTINCTIVENESS_BASES):
             kept.append(dict(
                 question, status="needs_review",
                 distinctiveness_review=decision,
                 review_error="invalid_code_distinctiveness_review"))
+        elif requires_alignment and alignment not in {
+                "aligned", "mixed", "drifted", "uncertain"}:
+            kept.append(dict(
+                question, status="needs_review",
+                distinctiveness_review=decision,
+                review_error="missing_code_target_alignment"))
+        elif requires_alignment and alignment in {"mixed", "drifted"}:
+            rejected.append({
+                "question": dict(
+                    question, status="rejected",
+                    distinctiveness_review=decision),
+                "reason": "code_answer_basis_target_mismatch",
+                "failed_checks": ["code_answer_target_aligned"],
+                "review": dict(decision, code_answer_target_aligned=False),
+            })
+        elif requires_alignment and alignment == "uncertain":
+            kept.append(dict(
+                question, status="needs_review",
+                distinctiveness_review=decision,
+                review_error="uncertain_code_target_alignment"))
         elif basis == "D":
             rejected.append({
                 "question": dict(
