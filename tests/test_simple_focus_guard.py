@@ -134,8 +134,7 @@ class SimpleFocusPromptTests(unittest.TestCase):
         issue = _simple_focus_issue(
             {"text": "config_paths 如何通过 --config 传递到上游 CLI 的配置消费点"},
             "code", "behavior_inference")
-        self.assertIsNotNone(issue)
-        self.assertIn("具体命令参数或插入位置", issue)
+        self.assertIsNone(issue)
 
     def test_two_config_consumers_are_not_one_behavior_focus(self):
         issue = _simple_focus_issue(
@@ -174,8 +173,7 @@ class SimpleFocusPromptTests(unittest.TestCase):
         issue = _simple_focus_issue(
             {"text": "config_paths 路径序列如何决定 --config 参数的插入位置"},
             "code", "behavior_inference")
-        self.assertIsNotNone(issue)
-        self.assertIn("config_paths 决定固定插入位置", issue)
+        self.assertIsNone(issue)
 
 
 class ReviewGuardFocusTests(unittest.TestCase):

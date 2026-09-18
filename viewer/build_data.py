@@ -13,7 +13,8 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dialogue_benchmark.cli import _PUBLIC_CREDENTIAL, _USER_PATH
+from dialogue_benchmark.cli import _USER_PATH
+from dialogue_benchmark.security import credential_detected
 from dialogue_benchmark.selection import build_audit
 
 
@@ -35,7 +36,7 @@ def build(run):
 
     def clean(value):
         if isinstance(value, str):
-            if _PUBLIC_CREDENTIAL.search(value):
+            if credential_detected(value):
                 changes["credential_fields_hidden"] += 1
                 return "[此字段含疑似凭据，未载入展示页]"
             parts = re.split(r"(https?://[^\s<>]+)", value)

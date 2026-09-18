@@ -4,6 +4,8 @@ import copy
 import json
 import re
 
+from .graph import graph_at
+
 
 _FEEDBACK = re.compile(r"反馈|不对|没[有能]|差点意思|不符合|问题是|要求|希望|应该", re.I)
 _FAILURE = re.compile(r"失败|报错|错误|异常|crash|error|failed|failure|bug", re.I)
@@ -78,12 +80,22 @@ def _score(events, versions, source_ids):
 def _scope(graph, records, events, cutoff, seed, max_chars):
     selected_event_ids = {event["id"] for event in events}
     source_ids = {source for event in events for source in event["source_ids"]}
-    selected_records = [record for record in records
-                        if record["id"] in source_ids and record["order"] <= cutoff]
-    selected_records.sort(key=lambda record: record["order"])
     orders = {event["order"] for event in events}
-    versions = [copy.deepcopy(version) for version in graph.get("versions", [])
-                if version.get("observed_at") in orders]
+    versions_by_id = {version.get("id"): version for version in graph.get("versions", [])
+                      if isinstance(version, dict) and isinstance(version.get("id"), str)}
+    version_ids = {version.get("id") for version in graph.get("versions", [])
+                   if version.get("observed_at") in orders}
+    # A later version without its ancestors cannot support a historical
+    # comparison. Include the complete previous chain before projecting it.
+    pending = list(version_ids)
+    while pending:
+        version_id = pending.pop()
+        previous = versions_by_id.get(version_id, {}).get("previous")
+        if previous and previous not in version_ids:
+            version_ids.add(previous)
+            pending.append(previous)
+    versions = [copy.deepcopy(versions_by_id[version_id]) for version_id in version_ids
+                if version_id in versions_by_id]
     seed_path = seed.split("::")[0] if seed else ""
     event_paths = {path for event in events for path in event["paths"]}
     # A patch may touch many files. Keep the seed path by default; additional
@@ -97,25 +109,61 @@ def _scope(graph, records, events, cutoff, seed, max_chars):
                     and version.get("observed_at", cutoff + 1) <= cutoff
                     and version.get("previous") in {item["id"] for item in versions})
     versions.sort(key=lambda item: item.get("observed_at", 0))
+    source_ids.update(version.get("source") for version in versions
+                      if isinstance(version.get("source"), str))
+    selected_event_ids.update(version.get("source") for version in versions
+                              if isinstance(version.get("source"), str))
+    selected_records = [record for record in records
+                        if record["id"] in source_ids and record["order"] <= cutoff]
+    selected_records.sort(key=lambda record: record["order"])
     event_map = {event["id"]: event for event in graph.get("events", [])}
     graph_events = [copy.deepcopy(event_map[event_id]) for event_id in selected_event_ids
                     if event_id in event_map]
     graph_events.sort(key=lambda event: event["order"])
+    current = graph_at(graph, cutoff)
+    selected_paths = {path for event in events for path in event.get("paths", [])}
+    selected_paths.update(version.get("path") for version in versions
+                          if isinstance(version.get("path"), str))
+
+    # The authoring graph is also a locator: retain one-hop code references
+    # touching the selected files even when the referenced file had no
+    # separate event in this candidate.  Without this, the default adaptive
+    # path silently drops an already recovered cross-file relation.
+    reachable_paths = set(selected_paths)
+    for edge in current.get("edges", []):
+        left, right = edge.get("from", ""), edge.get("to", "")
+        left_path, right_path = left.split("::", 1)[0], right.split("::", 1)[0]
+        if left_path in selected_paths or right_path in selected_paths:
+            reachable_paths.update((left_path, right_path))
+    selected_paths = {path for path in reachable_paths if path}
+
+    def edge_in_scope(edge):
+        left, right = edge.get("from", ""), edge.get("to", "")
+        left_path, right_path = left.split("::", 1)[0], right.split("::", 1)[0]
+        return (edge.get("source") in selected_event_ids
+                or (left_path in selected_paths and right_path in selected_paths))
+
+    edges = [copy.deepcopy(edge) for edge in current.get("edges", [])
+             if edge_in_scope(edge)]
+    historical_edges = []
+    for at in sorted({version.get("observed_at") for version in graph.get("versions", [])
+                      if isinstance(version.get("observed_at"), int)
+                      and version.get("observed_at") <= cutoff}):
+        historical_edges.extend(dict(edge, observed_snapshot=at)
+                                 for edge in graph_at(graph, at).get("edges", []))
+    historical_edges = [edge for edge in historical_edges if edge_in_scope(edge)]
     payload = {
         "seed": seed,
         "cutoff": cutoff,
-        "nodes": [],
-        "edges": [],
-        "historical_edges": [],
+        "nodes": [copy.deepcopy(node) for node in current.get("nodes", [])
+                  if node.get("id", "").split("::", 1)[0] in selected_paths],
+        "edges": edges,
+        "historical_edges": historical_edges,
         "versions": versions,
         "events": graph_events,
         "dialogue": [dict(record) for record in selected_records],
         "subgraph_events": events,
     }
-    # Keep only graph edges whose source event is in this candidate.
-    for key in ("edges", "historical_edges"):
-        payload[key] = [copy.deepcopy(edge) for edge in graph.get(key, [])
-                        if edge.get("source") in selected_event_ids]
     payload["context_chars"] = len(json.dumps(payload, ensure_ascii=False))
     payload["max_context_chars"] = max_chars
     payload["over_budget"] = payload["context_chars"] > max_chars

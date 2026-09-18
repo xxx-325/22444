@@ -128,6 +128,22 @@ class GraphTests(unittest.TestCase):
                              for chunk in chunks))
         self.assertEqual(len({tuple(chunk["chunk_window"]) for chunk in chunks}), len(chunks))
 
+    def test_chunk_preserves_multiple_payload_fields(self):
+        text = "line\n" * 500
+        scope = {"cutoff": 1, "dialogue": [{
+            "id": "e1", "order": 1, "kind": "patch", "text": text,
+            "changes": {"a.py": {"unified_diff": text, "content": text}},
+        }], "events": [], "versions": [], "edges": [], "historical_edges": []}
+        chunks = split_scope(scope, max_chars=1800, overlap_records=0)
+        text_parts = [r.get("text", "") for c in chunks for r in c["dialogue"]]
+        diff_parts = [r.get("changes", {}).get("a.py", {}).get("unified_diff", "")
+                      for c in chunks for r in c["dialogue"]]
+        content_parts = [r.get("changes", {}).get("a.py", {}).get("content", "")
+                         for c in chunks for r in c["dialogue"]]
+        self.assertEqual("".join(text_parts), text)
+        self.assertEqual("".join(diff_parts), text)
+        self.assertEqual("".join(content_parts), text)
+
     def test_chunk_does_not_repeat_object_index(self):
         scope = {
             "cutoff": 2,
@@ -200,6 +216,16 @@ class GraphTests(unittest.TestCase):
         self.assertTrue(scopes)
         self.assertTrue(scopes[0]["over_budget"])
         self.assertTrue(split_scope(scopes[0], max_chars=900))
+
+    def test_adaptive_scope_keeps_cross_file_reference_edge(self):
+        graph = build_graph(self.records)
+        scopes, _ = adaptive_subgraphs(
+            graph, self.records, self.records[-1]["order"], seed="main.py",
+            max_chars=24000, beam_width=2, max_depth=2, max_candidates=2)
+        self.assertTrue(scopes)
+        self.assertTrue(any(edge.get("kind") == "call_reference"
+                            and edge.get("to") == "config.py::load_config"
+                            for scope in scopes for edge in scope.get("edges", [])))
 
     def test_codex_ignores_reasoning_and_deduplicated_messages(self):
         rows = [(1, {"type": "session_meta", "payload": {"cwd": "/private/project"}}),
@@ -382,6 +408,11 @@ END_QA
             outbound_guard('api_key="secret-value-123456789"', "different")
         with self.assertRaises(ValueError):
             outbound_guard("hello configured-secret", "configured-secret")
+        with self.assertRaises(ValueError):
+            outbound_guard("密码是 hunter2", "different")
+        # Empty values, environment references, and documentation placeholders
+        # are code examples rather than credentials.
+        outbound_guard("token=None API_KEY=$API_KEY password=<placeholder>", "different")
 
     def test_fake_llm_pipeline(self):
         decision = {"id": "q1", "reason": "Synthetic test review"}

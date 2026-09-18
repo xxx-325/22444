@@ -1247,6 +1247,12 @@ def _build_direct_evidence_graph(index):
     universe = index["universe"]
     source_index = index["source_index"]
     infos = index["infos"]
+    for edge in universe.get("edges", []) + universe.get("historical_edges", []):
+        if not isinstance(edge, dict):
+            continue
+        left, right = edge.get("from"), edge.get("to")
+        if isinstance(left, str) and isinstance(right, str):
+            link(left, right, 1, edge.get("relation", edge.get("kind", "graph")))
     for info in infos:
         for source in info["fact"].get("sources", []):
             if isinstance(source, str):
@@ -1370,6 +1376,11 @@ def _relation_metadata(infos, evidence_index, seed_node=None, extra_nodes=()):
                      if isinstance(node, str) and node not in necessary)
     if seed is None:
         return {"seed_node": None, "seed_fact_id": seed_fact_id,
+                "necessary_nodes": necessary, "paths": [],
+                "max_distance": None, "path_complete": False,
+                "difficulty": "unknown"}
+    if seed not in evidence_index.get("direct_graph", {}):
+        return {"seed_node": seed, "seed_fact_id": seed_fact_id,
                 "necessary_nodes": necessary, "paths": [],
                 "max_distance": None, "path_complete": False,
                 "difficulty": "unknown"}
@@ -2270,9 +2281,18 @@ def static_candidate_labels(group, candidate, evidence_index, target_type):
         for source in point.get("sources", []):
             if isinstance(source, str) and source not in answer_sources:
                 answer_sources.append(source)
+    # Difficulty describes the evidence actually needed by this question,
+    # not the arbitrary root chosen while exploring the group.  A question
+    # citing only a late snapshot is therefore easy even if its group was
+    # reached through an older seed; a true old/new comparison still spans
+    # the lineage and remains hard.
+    source_index = evidence_index.get("source_index", {})
+    answer_sources.sort(key=lambda source: (
+        source_index.get(source, {}).get("order", 10 ** 18), source))
+    candidate_seed = answer_sources[0] if answer_sources else None
     relation = _relation_metadata(
         [], evidence_index,
-        seed_node=group.get("relation_path", {}).get("seed_node"),
+        seed_node=candidate_seed,
         extra_nodes=answer_sources)
     labels = {
         "type": target_type,

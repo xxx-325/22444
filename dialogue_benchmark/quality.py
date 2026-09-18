@@ -30,7 +30,10 @@ _COMPOUND_POINT = re.compile(
     r"(?:并将|并把|然后将|另外(?:新增|删除|修改)|(?:并且|同时|以及)(?:新增|删除|修改|安装|启用|禁用|写入|保留))", re.I)
 
 _INTERNAL_PUBLIC_ID = re.compile(
-    r"(?<![A-Za-z0-9_])(?:e|f)\d+(?![A-Za-z0-9_])|"
+    # e1/f1 are valid project symbols and filenames.  Treat them as internal
+    # references only when they are used as standalone prose tokens, not when
+    # followed by a call or filename suffix.
+    r"(?<![A-Za-z0-9_])(?:e|f)\d+(?![A-Za-z0-9_.(])|"
     r"(?<![A-Za-z0-9_])(?:code|general)_s\d+_c\d+_f\d+(?![A-Za-z0-9_])|"
     r"(?<![A-Za-z0-9_])(?:stage|chunk|scope)[-_]?\d+(?![A-Za-z0-9_])",
     re.I,
@@ -177,10 +180,15 @@ def validate_facts(document, scope, return_rejected=False, qa_mode=None):
     for collection in ("dialogue", "events", "versions"):
         for record in scope.get(collection, []):
             if isinstance(record, dict) and isinstance(record.get("id"), str):
-                kind = source_kind_for(record)
-                source_kind_by_id[record["id"]] = kind
+                default = "code" if collection == "versions" else None
+                kind = source_kind_for(record, default=default)
+                # Explicit source labels from normalized input are authoritative;
+                # graph projections must not silently replace them.
+                if record.get("source_kind") in SOURCE_KINDS or record["id"] not in source_kind_by_id:
+                    source_kind_by_id[record["id"]] = kind
                 if isinstance(record.get("parent_id"), str):
-                    source_kind_by_id[record["parent_id"]] = kind
+                    if record.get("source_kind") in SOURCE_KINDS or record["parent_id"] not in source_kind_by_id:
+                        source_kind_by_id[record["parent_id"]] = kind
     seen = set()
     accepted, rejected = [], []
     for fact in document["facts"]:

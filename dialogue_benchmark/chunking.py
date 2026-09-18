@@ -44,21 +44,24 @@ def _fragment_record(record, target_chars):
 
     fragments = []
     fragment_fields = []
+    # A record may carry more than one payload. Keep every payload as an
+    # independently traceable fragment instead of choosing the first one.
     if isinstance(record.get("text"), str):
         fragment_fields.append(("text", None, record["text"]))
-    elif isinstance(record.get("content"), str):
+    if isinstance(record.get("content"), str):
         fragment_fields.append(("content", None, record["content"]))
-    elif isinstance(record.get("changes"), dict):
+    if isinstance(record.get("changes"), dict):
         for path, change in record["changes"].items():
             if not isinstance(change, dict):
                 fragment_fields.append(("raw_change", path, json.dumps(
                     change, ensure_ascii=False, separators=(",", ":"))))
                 continue
-            text_field = next((field for field in ("unified_diff", "content")
-                               if isinstance(change.get(field), str)), None)
-            if text_field is not None:
-                fragment_fields.append((text_field, path, change[text_field]))
-            else:
+            found_payload = False
+            for text_field in ("unified_diff", "content"):
+                if isinstance(change.get(text_field), str):
+                    fragment_fields.append((text_field, path, change[text_field]))
+                    found_payload = True
+            if not found_payload:
                 fragment_fields.append(("change_metadata", path, ""))
 
     if not fragment_fields:

@@ -12,6 +12,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .normalize import source_kind_for
+from .security import credential_detected
 from .quality import (
     CODE_QA_TYPES,
     GENERAL_QA_TYPES,
@@ -682,25 +683,15 @@ def _simple_focus_issue(focus, qa_mode, target_type):
                      r"新增(?:的)?.{0,40}(?:参数|形参).{0,20}如何", text):
             return ("行为题把对象写成具体的值传递链，例如‘timeout_seconds 值如何传递’；"
                     "不要把‘新增形参’写成出题任务。")
-        if re.search(r"config_paths.{0,40}决定.{0,30}插入位置", text, re.IGNORECASE):
-            return ("不要声称 config_paths 决定固定插入位置；"
-                    "改问 config_paths 如何展开为参数，以及 layered_configs 被插到哪个明确位置。")
         if (text.count("校验") > 1
                 or ("校验" in text and re.search(
                     r"传入|传给|传到|传递|流向|插入|subprocess", text))):
             return "只选一个值或条件从生产位置到消费位置的路径；省略相邻的默认值和校验清单。"
-        if re.search(r"上游\s*CLI.*(?:消费|解析)|配置消费点", text, re.IGNORECASE):
-            return ("不要假设材料未展示的上游 CLI 消费实现；"
-                    "如果证据只展示命令构造，将终点写成具体命令参数或插入位置。")
-        if (re.search(r"插入(?:位置|内容).*(?:与|以及).*模板加载|"
-                      r"模板加载.*(?:与|以及).*插入(?:位置|内容)", text)
-                or ("--config" in text and "模板加载" in text)):
-            return ("只选一条行为链：命令行 --config 参数构造，或模板加载的路径序列；"
-                    "不要把两个消费方向合成一题。")
-        if (re.search(r"--config.*插入位置", text, re.IGNORECASE)
-                and re.search(r"配置.*(?:加载|合并|生效)", text)):
-            return ("只选一条行为链：命令行 --config 的构造顺序，或配置加载的合并顺序；"
-                    "不要把两个并行消费方向写成因果链。")
+        if (re.search(r"(?:插入|构造|展开).*(?:与|以及).*(?:加载|消费|解析)"
+                      r"|(?:加载|消费|解析).*(?:与|以及).*(?:插入|构造|展开)",
+                      text, re.IGNORECASE)):
+            return ("只选一条行为链：参数构造/插入，或后续加载/消费路径；"
+                    "不要把两个消费方向合成一题，也不要把两个并行消费方向写成因果链。")
     return None
 
 
@@ -1526,11 +1517,7 @@ ANSWER_REVIEW_PROMPT = EVIDENCE_REVIEW_PROMPT
 
 
 def outbound_guard(text, key):
-    patterns = [r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
-                r"\bsk-[A-Za-z0-9_-]{16,}",
-                r"(?i)authorization\s*[:=]\s*[\"']?bearer\s+\S+",
-                r"(?i)(?:api[_-]?key|access[_-]?token|secret)\s*[:=]\s*[\"'][^\"']{12,}[\"']"]
-    if (key and key in text) or any(re.search(p, text) for p in patterns):
+    if (key and key in text) or credential_detected(text):
         raise ModelStageError("credential_guard")
 
 

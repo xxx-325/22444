@@ -22,6 +22,7 @@ from .llm import (ChatClient, extract_facts, generate_from_facts,
 from .normalize import load_dialogue
 from .protocol import MISSING_KINDS
 from .quality import CODE_QA_TYPES, GENERAL_QA_TYPES
+from .security import credential_detected
 from .subgraph import adaptive_subgraphs
 from .selection import (build_audit, select_approved, deduplicate,
                         deduplicate_reviewed, replenish, globally_blocked,
@@ -32,7 +33,7 @@ DEFAULT_GENERAL_TYPES = tuple(sorted(GENERAL_QA_TYPES))
 DEFAULT_CODE_TYPES = tuple(sorted(CODE_QA_TYPES))
 _USER_PATH = re.compile(r"(?<![A-Za-z0-9:/])(?:/(?:Users|home)/[^/\s`'\"<>，。]+|[A-Za-z]:[\\/]Users[\\/][^\\/\s`'\"<>，。]+)(?=[\\/\s`'\"<>，。]|$)")
 _INTERNAL_PUBLIC_ID = re.compile(
-    r"(?<![A-Za-z0-9_])(?:e|f)\d+(?![A-Za-z0-9_])|"
+    r"(?<![A-Za-z0-9_])(?:e|f)\d+(?![A-Za-z0-9_.(])|"
     r"(?<![A-Za-z0-9_])(?:code|general)_s\d+_c\d+_f\d+(?![A-Za-z0-9_])|"
     r"(?<![A-Za-z0-9_])(?:stage|chunk|scope)[-_]?\d+(?![A-Za-z0-9_])",
     re.I,
@@ -1044,18 +1045,11 @@ def _project_public_question(question, workspaces=()):
     return projected, redactions
 
 
-_PUBLIC_CREDENTIAL = re.compile(
-    r"-----BEGIN [^\n]*PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{16,}|"
-    r"\b(?:[A-Za-z0-9_]*api[_-]?key|[A-Za-z0-9_]*token|password|passwd)"
-    r"[\"']?\s*[:=]\s*[\"']?(?!\*\*\*)[^\s\"']+|"
-    r"\bbearer\s+[A-Za-z0-9._~-]{8,}", re.I)
-
-
 def _question_has_credential(question):
     values = [question.get(key, "") for key in ("id", "question", "use_case", "difficulty_reason", "memory_requirement", "external_knowledge")]
     for field in ("answer_points", "forbidden_points"):
         values.extend(point.get("text", "") for point in question.get(field, []) if isinstance(point, dict))
-    return any(isinstance(value, str) and _PUBLIC_CREDENTIAL.search(value) for value in values)
+    return any(credential_detected(value) for value in values if isinstance(value, str))
 
 
 def _safe_public_questions(questions, rejected, workspaces=()):

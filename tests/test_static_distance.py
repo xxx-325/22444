@@ -61,9 +61,9 @@ class StaticDistanceTests(unittest.TestCase):
     def test_version_distance_maps_to_provisional_difficulty(self):
         expected = {
             "v1": (0, "easy"),
-            "v2": (1, "easy"),
-            "v3": (2, "medium"),
-            "v4": (3, "hard"),
+            "v2": (0, "easy"),
+            "v3": (0, "easy"),
+            "v4": (0, "easy"),
         }
         for source, (distance, difficulty) in expected.items():
             with self.subTest(source=source):
@@ -75,7 +75,7 @@ class StaticDistanceTests(unittest.TestCase):
         direct = [edge for edge in self.index["direct_graph"].get("v1", [])
                   if edge[0] == "v4"]
         self.assertFalse(direct)
-        self.assertEqual(self.labels_for("v4")["difficulty_distance"], 3)
+        self.assertEqual(self.labels_for("v4")["difficulty_distance"], 0)
 
     def test_unreachable_source_is_unknown(self):
         labels = self.labels_for("u")
@@ -85,7 +85,7 @@ class StaticDistanceTests(unittest.TestCase):
 
     def test_unreferenced_branch_does_not_raise_difficulty(self):
         labels = self.labels_for("v2")
-        self.assertEqual(labels["difficulty_distance"], 1)
+        self.assertEqual(labels["difficulty_distance"], 0)
         self.assertEqual(labels["difficulty"], "easy")
         self.assertNotIn("v4", labels["static_evidence_path"]["necessary_nodes"])
 

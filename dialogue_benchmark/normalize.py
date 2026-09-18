@@ -96,7 +96,8 @@ def normalize_codex(rows):
 
 def source_view(record):
     """Only these fields may be selected for model context."""
-    return {key: record[key] for key in ("id", "order", "source_line", "kind", "source_kind", "role",
+    return {key: record[key] for key in ("id", "order", "source_line", "timestamp",
+                                         "kind", "source_kind", "role", "call_id", "name",
                                          "text", "path", "content", "success", "changes")
             if key in record}
 

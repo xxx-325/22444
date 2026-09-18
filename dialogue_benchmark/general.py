@@ -11,11 +11,18 @@ import re
 
 _TOPIC_MARKERS = re.compile(
     r"(?:现在|然后|另外|接下来|换个|继续|最后|总结|部署|安装|测试|评估|设计|实现|修复|导出|分析|对比|"
+    r"之前|后来|改成|改为|修改|保留|删除|移除|反馈|失败|报错|要求|确认|"
     r"可以吗|怎么|为什么|如何|需要|帮我|我想|我认为|同意|好的)", re.I)
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_.:/-]*|[\u4e00-\u9fff]{2,}")
 _FILE = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:py|js|mjs|ts|tsx|jsx|json|yaml|yml)(?![A-Za-z0-9_])", re.I)
 _SYMBOL = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}(?=\s*\(|\s*::)|\b(?:Attribute|stdin|stdout|SAFE_NAMES|EXPRESSION|checker)\b")
 _RELATION_CUE = re.compile(r"之前|后来|现在|然后|改成|修改|保留|删除|移除|必须|不要|不能|通过|失败|报错|要求|反馈|确认|计划", re.I)
+_REFERENCE_CUE = re.compile(r"之前|此前|前面|上述|原来|这个(?:决定|约束|方案)|该(?:决定|约束|方案)", re.I)
+_WEAK_OBJECTS = {
+    "之后", "后来", "现在", "然后", "这个", "那个", "一个", "问题",
+    "方案", "要求", "内容", "部分", "结果", "实现", "修改", "确认",
+    "支持", "使用", "需要", "应该", "不能", "可以", "用户", "助手",
+}
 
 
 def _tokens(text):
@@ -126,6 +133,47 @@ def identify_stages(records, gap_threshold=180):
     return stages
 
 
+def _message_objects(record):
+    """Return concrete repeated objects suitable for an explicit relation."""
+    text = record.get("text", "") if isinstance(record.get("text"), str) else ""
+    objects = set(_FILE.findall(text)) | set(_SYMBOL.findall(text))
+    objects.update(token.casefold() for token in _tokens(text)
+                   if token.casefold() not in _WEAK_OBJECTS)
+    return objects
+
+
+def _discussion_edges(dialogue, stages):
+    """Link only explicit cross-stage revisions and feedback references.
+
+    Shared vocabulary is used as an object anchor, never as a relation by
+    itself.  The later message must also contain a change/reference cue.
+    """
+    stage_by_id = {stage["id"]: stage for stage in stages}
+    edges = []
+    for left_index, left in enumerate(dialogue):
+        left_stage = left.get("stage_id")
+        left_objects = _message_objects(left)
+        if not left_stage or not left_objects:
+            continue
+        for right in dialogue[left_index + 1:]:
+            right_stage = right.get("stage_id")
+            if not right_stage or right_stage == left_stage:
+                continue
+            if not (left_objects & _message_objects(right)):
+                continue
+            right_text = right.get("text", "")
+            if not (_RELATION_CUE.search(right_text) or _REFERENCE_CUE.search(right_text)):
+                continue
+            relation = "feedback" if re.search(r"反馈|问题是|不对|不符合", right_text, re.I) else "revision"
+            edges.append({
+                "from": left["id"], "to": right["id"],
+                "kind": "discussion_relation", "relation": relation,
+                "source": right["id"], "source_kind": "conversation",
+                "stage_from": left_stage, "stage_to": right_stage,
+            })
+    return edges
+
+
 def build_general_scope(records, cutoff, max_chars=24000, graph=None):
     """Create a dialogue-only scope; no repository facts are added."""
     dialogue = [dict(record) for record in records
@@ -140,11 +188,12 @@ def build_general_scope(records, cutoff, max_chars=24000, graph=None):
     for record in dialogue:
         record["stage_id"] = stage_by_record.get(record["id"])
     object_index = build_object_index(dialogue, graph)
+    edges = _discussion_edges(dialogue, stages)
     scope = {
         "seed": None,
         "cutoff": cutoff,
         "nodes": [],
-        "edges": [],
+        "edges": edges,
         "historical_edges": [],
         "versions": [],
         "events": [],

@@ -4,7 +4,7 @@ import copy
 import hashlib
 import posixpath
 
-from .normalize import normalize_path, is_truncated, source_view
+from .normalize import normalize_path, is_truncated, source_kind_for, source_view
 from .patches import apply_diff
 from .symbols import inspect_code
 
@@ -16,6 +16,7 @@ def build_graph(records):
     def install(path, content, event, status="known", previous=None):
         version = {"id": "v%d" % (len(versions) + 1), "path": path,
                    "observed_at": event["order"], "source": event["id"],
+                   "source_kind": source_kind_for(event, default="code"),
                    "status": status, "previous": previous,
                    "content": content, "sha256": hashlib.sha256(content.encode()).hexdigest()
                    if content is not None else None,
@@ -26,7 +27,11 @@ def build_graph(records):
 
     for record in records:
         event = {"id": record["id"], "order": record["order"], "kind": record["kind"],
-                 "source_line": record["source_line"], "affected_paths": []}
+                 "source_line": record["source_line"],
+                 "source_kind": source_kind_for(record), "affected_paths": []}
+        for key in ("timestamp", "call_id", "name"):
+            if key in record:
+                event[key] = record[key]
         kind = record["kind"]
         if kind == "call":
             call_id = record.get("call_id")
@@ -174,7 +179,22 @@ def query_scope(graph, records, seed, cutoff, hops=2, max_chars=60000):
     sources = {e["id"] for e in events}
     if not sources:
         raise ValueError("No evidence for query")
-    first = min(e["order"] for e in events)
+    records_by_id = {record.get("id"): record for record in records
+                     if isinstance(record, dict)}
+    selected_call_ids = {
+        records_by_id[source].get("call_id")
+        for source in sources
+        if source in records_by_id and isinstance(records_by_id[source].get("call_id"), str)
+    }
+    selected_call_ids.update(
+        record.get("call_id") for event in events
+        for record in [records_by_id.get(event.get("call_source"))]
+        if isinstance(record, dict) and isinstance(record.get("call_id"), str)
+    )
+    paired_records = [record for record in records
+                      if record.get("call_id") in selected_call_ids]
+    first = min([e["order"] for e in events]
+                + [record["order"] for record in paired_records])
     preceding_user = [r["order"] for r in records if r["order"] < first
                       and r["kind"] == "message" and r.get("role") == "user"]
     if preceding_user:
