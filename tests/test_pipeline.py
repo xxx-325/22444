@@ -217,6 +217,37 @@ class GraphTests(unittest.TestCase):
         self.assertTrue(scopes[0]["over_budget"])
         self.assertTrue(split_scope(scopes[0], max_chars=900))
 
+    def test_adaptive_search_builds_each_historical_snapshot_once(self):
+        from unittest.mock import patch
+        graph = build_graph(self.records)
+        cutoff = self.records[-1]["order"]
+        expected = {cutoff} | {v["observed_at"] for v in graph["versions"]
+                              if v["observed_at"] <= cutoff}
+        with patch("dialogue_benchmark.subgraph.graph_at", wraps=graph_at) as snapshots:
+            scopes, _ = adaptive_subgraphs(graph, self.records, cutoff, max_candidates=3)
+        self.assertTrue(scopes)
+        self.assertEqual(snapshots.call_count, len(expected))
+        self.assertEqual({call.args[1] for call in snapshots.call_args_list}, expected)
+
+    def test_fact_chunks_do_not_repeat_unchanged_edges_for_every_snapshot(self):
+        scope = query_scope(build_graph(self.records), self.records, "config.py", 6)
+        source = scope["events"][0]["id"]
+        edge = {"from": "config.py", "to": "config.py::load_config", "source": source, "kind": "contains"}
+        scope["historical_edges"] = [dict(edge, observed_snapshot=at) for at in range(1, 100)]
+        chunks = split_scope(scope, max_chars=24000, overlap_records=0)
+        edges = [e for chunk in chunks for e in chunk["historical_edges"]]
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["source"], source)
+        self.assertEqual(len(scope["historical_edges"]), 99)
+
+    def test_fact_extraction_can_omit_static_links_without_losing_sources(self):
+        scope = query_scope(build_graph(self.records), self.records, "config.py", 6)
+        chunks = split_scope(scope, max_chars=24000, overlap_records=0, include_code_edges=False)
+        self.assertTrue(all(not c["edges"] and not c["historical_edges"] for c in chunks))
+        self.assertEqual({r["id"] for c in chunks for r in c["dialogue"]},
+                         {r["id"] for r in scope["dialogue"]})
+        self.assertTrue(scope["historical_edges"])
+
     def test_adaptive_scope_keeps_cross_file_reference_edge(self):
         graph = build_graph(self.records)
         scopes, _ = adaptive_subgraphs(

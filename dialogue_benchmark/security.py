@@ -18,6 +18,10 @@ _NATURAL_CREDENTIAL = re.compile(
     r"\b(?:api\s*key|access\s*token|secret|password|passwd|token|凭据|密码)"
     r"\s*(?:is|为|是|叫作|叫做)\s*[\"'`]?([^\s,，。；;\"'`]+)", re.I,
 )
+_CREDENTIAL_LABEL = re.compile(
+    r"[\"']?\b(?:api[_-]?key|access[_-]?token|secret|password|passwd|token)"
+    r"[\"']?\s*[:=]", re.I,
+)
 _SAFE_VALUE = re.compile(
     r"^(?:none|null|nil|empty|placeholder|example|dummy|your[_-]?token|"
     r"<[^>]+>|\*{3,}|os\.environ(?:\[[^]]+\])?|\$\{?[A-Z0-9_]+\}?$)",
@@ -40,3 +44,11 @@ def credential_detected(text):
                               or value.lower().startswith("os.environ[")):
                 return True
     return False
+
+
+def redact_credential_assignments(text):
+    """Mark omitted assignments; the outbound guard still checks other secrets."""
+    for pattern in (_ASSIGNMENT, _NATURAL_CREDENTIAL):
+        text = pattern.sub("<credential assignment omitted>", text)
+    # Empty prompt labels can acquire an apparent value from JSON quote escaping.
+    return _CREDENTIAL_LABEL.sub("<credential label omitted>", text)

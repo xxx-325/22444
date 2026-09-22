@@ -302,12 +302,16 @@ class ModelEvidenceTests(unittest.TestCase):
 
     def test_simple_generation_and_review_use_model_view_for_all_five_review_calls(self):
         client = CapturingClient()
+        saved = {}
         generated = generate_from_facts(
             self.scope, self.facts, client, qa_mode="code",
             allowed_types={"history_tracking"}, target_type="history_tracking",
-            generation_mode="simple")
+            generation_mode="simple", checkpoint=lambda name, value: saved.update({name: copy.deepcopy(value)}))
         self.assertEqual(generated["stage_status"]["qa"], "completed")
         self.assertEqual(len(client.calls), 2)
+        self.assertEqual(saved["qa-input.json"]["prompt"], client.calls[1][0])
+        self.assertEqual(saved["qa-input.json"]["payload"], client.calls[1][1])
+        self.assertTrue(saved["qa-input.json"]["system_prompt"])
         reviewed = review_candidates(
             self.scope, self.facts, generated["questions"], client,
             qa_mode="code", review_mode="simple", allow_repair=False)

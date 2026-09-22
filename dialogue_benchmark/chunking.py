@@ -108,7 +108,7 @@ def _version_metadata(version):
     return result
 
 
-def split_scope(scope, max_chars=24000, overlap_records=2):
+def split_scope(scope, max_chars=24000, overlap_records=2, include_code_edges=True):
     """Return contiguous scope chunks without inventing or truncating records.
 
     Each chunk keeps only versions/events whose observation order intersects its
@@ -123,6 +123,13 @@ def split_scope(scope, max_chars=24000, overlap_records=2):
         return []
     chunks = []
     start = 0
+    # The same source edge persists in many repository snapshots. Fact
+    # extraction needs its source once; the complete graph retains all snapshots.
+    history = {}
+    for edge in scope.get("historical_edges", []) if include_code_edges else []:
+        identity = json.dumps({k: v for k, v in edge.items() if k != "observed_snapshot"},
+                              sort_keys=True, ensure_ascii=False)
+        history.setdefault(identity, edge)
 
     def make_chunk(window, index):
         lo, hi = window[0]["order"], window[-1]["order"]
@@ -149,9 +156,9 @@ def split_scope(scope, max_chars=24000, overlap_records=2):
         result["versions"] = [_version_metadata(v) for v in scope.get("versions", [])
                                if lo <= v.get("observed_at", -1) <= hi]
         source_ids = {e["id"] for e in result["events"]}
-        result["edges"] = [e for e in scope.get("edges", [])
-                            if e.get("source") in source_ids]
-        result["historical_edges"] = [e for e in scope.get("historical_edges", [])
+        result["edges"] = ([e for e in scope.get("edges", [])
+                            if e.get("source") in source_ids] if include_code_edges else [])
+        result["historical_edges"] = [e for e in history.values()
                                        if e.get("source") in source_ids]
         result["chunk_index"] = index
         result["chunk_window"] = [lo, hi]

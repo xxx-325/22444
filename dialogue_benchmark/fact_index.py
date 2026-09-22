@@ -6,6 +6,7 @@ from collections import deque
 
 from .normalize import source_kind_for
 from .protocol import MISSING_KINDS
+from .subgraph import _select_root_seeds
 
 
 _IDENTIFIER = re.compile(
@@ -1149,13 +1150,21 @@ def _candidate_types(infos, qa_mode, allowed_types):
 
 
 def _project_group(universe, infos, target_chars, max_chars, full_range=False,
-                   required_sources=(), include_padding=True):
+                   required_sources=(), include_padding=True, readable_budget=False):
     # Import locally to keep the low-level projection reusable without a module cycle.
-    from .llm import evidence_projection
+    from .llm import evidence_projection, simple_evidence_payload
 
     facts = [info["fact"] for info in infos]
     sources = ({source for fact in facts for source in fact.get("sources", [])}
                | {source for source in required_sources if isinstance(source, str)})
+    def payload_size(projected):
+        if readable_budget:
+            selected_sources = ({record["id"] for key in ("dialogue", "events", "versions")
+                                 for record in projected.get(key, []) if record.get("id")}
+                                if full_range else sources)
+            payload, _ = simple_evidence_payload(projected, selected_sources, facts=facts)
+            return _size(payload)
+        return _size({"scope": projected, "facts": facts})
     if full_range:
         # Adversarial review needs the complete selected dialogue range, but it
         # still does not need adaptive-search bookkeeping or a duplicate graph.
@@ -1163,7 +1172,7 @@ def _project_group(universe, infos, target_chars, max_chars, full_range=False,
         # full-range flag so the request surface stays predictable.
         projected = evidence_projection(universe, sources, padding_records=0,
                                         max_chars=max_chars, full_range=True)
-        payload_chars = _size({"scope": projected, "facts": facts})
+        payload_chars = payload_size(projected)
         if not universe.get("full_range_covered") or payload_chars + 4500 > max_chars:
             return None, None, None
         request_chars = target_chars if payload_chars + 4500 <= target_chars else max_chars
@@ -1175,7 +1184,7 @@ def _project_group(universe, infos, target_chars, max_chars, full_range=False,
     for padding in ((1, 0) if include_padding else (0,)):
         projected = evidence_projection(universe, sources, padding_records=padding,
                                         max_chars=max_chars)
-        payload_chars = _size({"scope": projected, "facts": facts})
+        payload_chars = payload_size(projected)
         reserve = 4500
         if payload_chars + reserve <= target_chars:
             request_chars = target_chars
@@ -1244,13 +1253,38 @@ def build_evidence_index(facts, scopes, qa_mode, model_request_chars=32000):
         if canonical in index["info_by_id"]:
             index["info_by_id"].setdefault(alias, index["info_by_id"][canonical])
     index["direct_graph"] = _build_direct_evidence_graph(index)
-    index["expansion_candidates"] = _build_expansion_candidates(index)
+    index["expansion_candidates"] = _ExpansionCandidates(index)
     return index
+
+
+class _ExpansionCandidates(dict):
+    """Materialize expansion choices only for facts actually selected by a group."""
+
+    def __init__(self, index):
+        super().__init__()
+        self.index = index
+
+    def __missing__(self, key):
+        base = self.index["info_by_id"].get(key)
+        if base is None:
+            raise KeyError(key)
+        value = _build_expansion_candidates(self.index, [base])[base["fact"]["id"]]
+        self[key] = value
+        return value
+
+    def get(self, key, default=None):
+        return self[key] if key in self or key in self.index["info_by_id"] else default
+
+
+class _EvidenceGraph(dict):
+    def __init__(self):
+        super().__init__()
+        self.path_trees = {}
 
 
 def _build_direct_evidence_graph(index):
     """Build direct 0/1 evidence edges; never flatten transitive closures."""
-    graph = {}
+    graph = _EvidenceGraph()
 
     def link(left, right, weight, relation):
         if not isinstance(left, str) or not isinstance(right, str) or left == right:
@@ -1287,36 +1321,21 @@ def _build_direct_evidence_graph(index):
             if marker not in seen_call_pairs:
                 seen_call_pairs.add(marker)
                 link(source_id, peer, 1, "call_result")
-    for left_index, left in enumerate(infos):
-        left_sources = set(left["fact"].get("sources", []))
-        for right in infos[left_index + 1:]:
-            right_sources = set(right["fact"].get("sources", []))
-            graph_link = _explicit_graph_link(left, right)
-            if graph_link:
-                for left_source in left_sources:
-                    for right_source in right_sources:
-                        link(left_source, right_source, 1, "graph")
-            explicitly_co_recorded = bool(left_sources & right_sources)
-            if not (graph_link or explicitly_co_recorded):
-                continue
-            # A shared record proves the two extracted facts were co-recorded,
-            # but it does not make every other citation on the left equivalent
-            # to every other citation on the right.  Only an explicit graph
-            # edge may add a direct cross-source reasoning hop here.
-            if not graph_link:
-                continue
-            if "feedback" in (left.get("statement_labels", set())
-                               | right.get("statement_labels", set())):
-                for left_source in left_sources:
-                    for right_source in right_sources:
-                        if left_source != right_source:
-                            link(left_source, right_source, 1, "feedback")
-            if "validation" in (left.get("statement_labels", set())
-                                 | right.get("statement_labels", set())):
-                for left_source in left_sources:
-                    for right_source in right_sources:
-                        if left_source != right_source:
-                            link(left_source, right_source, 1, "test")
+    path_sources = {}
+    for info in infos:
+        for path in info["paths"]:
+            for source in info["fact"].get("sources", []):
+                path_sources.setdefault(path, {}).setdefault(source, set()).update(
+                    info.get("statement_labels", set()))
+    for paths in index["graph_links"]:
+        left_path, right_path = sorted(paths)
+        for left_source, left_labels in path_sources.get(left_path, {}).items():
+            for right_source, right_labels in path_sources.get(right_path, {}).items():
+                link(left_source, right_source, 1, "graph")
+                if "feedback" in left_labels | right_labels:
+                    link(left_source, right_source, 1, "feedback")
+                if "validation" in left_labels | right_labels:
+                    link(left_source, right_source, 1, "test")
     for node in graph:
         graph[node] = sorted(set(graph[node]), key=lambda item: (item[1], item[0], item[2]))
     return graph
@@ -1325,9 +1344,10 @@ def _build_direct_evidence_graph(index):
 def _shortest_relation_path(graph, start, target):
     if start == target:
         return {"nodes": [start], "relations": [], "distance": 0}
-    queue = deque([start])
-    distances = {start: 0}
-    previous = {}
+    cache = getattr(graph, "path_trees", None)
+    cached = cache.get(start) if cache is not None else None
+    queue = deque() if cached else deque([start])
+    distances, previous = cached if cached else ({start: 0}, {})
     while queue:
         node = queue.popleft()
         for neighbor, weight, relation in graph.get(node, []):
@@ -1340,6 +1360,10 @@ def _shortest_relation_path(graph, start, target):
                 queue.appendleft(neighbor)
             else:
                 queue.append(neighbor)
+    if cache is not None and cached is None:
+        if len(cache) >= 256:
+            cache.pop(next(iter(cache)))
+        cache[start] = (distances, previous)
     if target not in distances:
         return None
     nodes, relations = [target], []
@@ -1588,26 +1612,24 @@ def _entry_sources_resolved(entry, evidence_index):
                                  for source in sources)
 
 
-def _build_expansion_candidates(index):
+def _build_expansion_candidates(index, bases=None):
     """Index only explicit relations that can answer a declared missing kind."""
     infos = index["infos"]
     source_index = index["source_index"]
-    candidates = {info["fact"]["id"]: [] for info in infos}
+    bases = infos if bases is None else bases
+    candidates = {info["fact"]["id"]: [] for info in bases}
+    markers = {key: set() for key in candidates}
 
     def add(base_id, entry):
         if not entry["fact_ids"] and not entry["source_ids"]:
             return
         marker = (entry["missing_kind"], entry["relation"],
                   tuple(entry["fact_ids"]), tuple(entry["source_ids"]))
-        existing = {
-            (item["missing_kind"], item["relation"],
-             tuple(item["fact_ids"]), tuple(item["source_ids"]))
-            for item in candidates[base_id]
-        }
-        if marker not in existing:
+        if marker not in markers[base_id]:
+            markers[base_id].add(marker)
             candidates[base_id].append(entry)
 
-    for base in infos:
+    for base in bases:
         base_id = base["fact"]["id"]
         base_order = _order(base)
         base_sources = {source for source in base["fact"].get("sources", [])
@@ -1916,7 +1938,7 @@ def expand_evidence_group_once(group, evidence_index, missing_kind,
         guard_sources = _guard_sources(guarded_infos) | extra_sources
         projected, request_chars, padding = _project_group(
             evidence_index["universe"], infos, target_chars, max_chars,
-            required_sources=guard_sources)
+            required_sources=guard_sources, readable_budget=group.get("readable_budget", False))
         if projected is None:
             over_budget.append(chosen["relation"])
             continue
@@ -2089,10 +2111,22 @@ def _evaluate_code_evidence(infos, evidence_index, target_type, text, sources,
         missing_state_kinds = {
             entry.get("missing_kind")
             for info in infos
-            for entry in evidence_index.get("expansion_candidates", {}).get(
+            for entry in dict.get(evidence_index.get("expansion_candidates", {}),
                 info["fact"].get("id"), [])
             if entry.get("missing_kind") in {"earlier_state", "later_state"}
         }
+        # Initial type checks need the direction of known version links, not
+        # every possible fact expansion and its shortest path.
+        source_index = evidence_index.get("source_index", {})
+        for info in infos:
+            at = _order(info)
+            if at is None:
+                continue
+            for source in info["fact"].get("sources", []):
+                for peer in source_index.get(source, {}).get("version_sources", set()):
+                    peer_at = _source_order(source_index, peer)
+                    if peer_at is not None and peer_at != at:
+                        missing_state_kinds.add("earlier_state" if peer_at < at else "later_state")
         if complete and (missing_state_kinds or any(
                 info.get("historical_transition") for info in infos)):
             if len(missing_state_kinds) == 1:
@@ -2351,6 +2385,31 @@ def static_candidate_labels(group, candidate, evidence_index, target_type):
     return labels
 
 
+def _initial_neighbor_lookup(infos):
+    """Bound initial proposals by shared objects while retaining distant turns."""
+    postings = {}
+    for index, info in enumerate(infos):
+        keys = ({("entity", value) for value in info["entities"]}
+                | {("path", value) for value in info["paths"]}
+                | {("source", value) for value in info["fact"].get("sources", [])})
+        for key in keys:
+            postings.setdefault(key, []).append(index)
+
+    def spread(values, limit):
+        if len(values) <= limit:
+            return values
+        return [values[round(i * (len(values) - 1) / (limit - 1))] for i in range(limit)]
+
+    def neighbors(info):
+        keys = ({("entity", value) for value in info["entities"]}
+                | {("path", value) for value in info["paths"] | info.get("graph_neighbors", set())}
+                | {("source", value) for value in info["fact"].get("sources", [])})
+        related = sorted({index for key in keys for index in spread(postings.get(key, []), 32)})
+        return spread(related, 128)
+
+    return neighbors
+
+
 def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                           target_chars=16000, max_chars=32000,
                           evidence_index=None, static_selection=False):
@@ -2392,8 +2451,13 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
             infos, qa_mode, proposed, evidence_index)
         return selected
 
+    seed_records = [{"id": info["fact"]["id"], "order": _order(info) or 0,
+                     "labels": info["labels"], "paths": info["paths"]} for info in infos]
+    roots = {item["id"] for item in _select_root_seeds(seed_records, max(16, max_groups * 4))}
     candidates = []
     for info in infos:
+        if info["fact"]["id"] not in roots:
+            continue
         proposed = _candidate_types([info], qa_mode, allowed_types)
         types = eligible([info], proposed)
         if types:
@@ -2402,20 +2466,32 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
             candidates.append(((info["fact"]["id"],), types, 10 + utility, "minimal"))
 
     pair_scores = []
+    seen_pairs = set()
+    neighbors = _initial_neighbor_lookup(infos)
     for left_index, left in enumerate(infos):
+        if left["fact"]["id"] not in roots:
+            continue
         ranked = []
-        for right in infos[left_index + 1:]:
+        for right_index in neighbors(left):
+            marker = tuple(sorted((left_index, right_index)))
+            if right_index == left_index or marker in seen_pairs:
+                continue
+            seen_pairs.add(marker)
+            right = infos[right_index]
             score, linked = _relation(left, right, qa_mode)
             if linked and score > 0:
                 ranked.append((score, right))
         ranked = sorted(ranked, key=lambda item: (-item[0], item[1]["fact"]["id"]))
+        structural_kept = 0
         for rank, (score, right) in enumerate(ranked):
-            # Keep the normal top-3 bound for lexical links, but never discard
-            # a pair backed by version ancestry or an explicit graph edge.
+            # Initial proposals are bounded. All explicit relations remain in
+            # the index for directed expansion after a group is selected.
             structural = _version_ancestry_link(left, right) \
                 or _explicit_graph_link(left, right)
-            if rank >= 3 and not structural:
-                continue
+            if rank >= 3:
+                if not structural or structural_kept >= 16:
+                    continue
+                structural_kept += 1
             pair = [left, right]
             proposed = _candidate_types(pair, qa_mode, allowed_types)
             types = eligible(pair, proposed)
@@ -2439,7 +2515,8 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
     # A three-step failure/change/validation chain is often the smallest useful
     # code-memory unit. Add only one best third fact to a connected pair.
     if qa_mode == "code" and {"failure_diagnosis", "history_tracking"} & set(allowed_types):
-        for ids, _, score, _ in pair_scores:
+        triple_seeds = sorted(pair_scores, key=lambda item: (-item[2], item[0]))[:max_groups * 4]
+        for ids, _, score, _ in triple_seeds:
             base = [info_by_id[fid] for fid in ids]
             base_entities = set().union(*(
                 {entity for entity in item["entities"]
@@ -2449,7 +2526,9 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                 for item in base))
             base_labels = set().union(*(item["labels"] for item in base))
             ranked = []
-            for extra in infos:
+            extra_indexes = {i for info in base for i in neighbors(info)}
+            for extra_index in sorted(extra_indexes):
+                extra = infos[extra_index]
                 if extra["fact"]["id"] in ids:
                     continue
                 shared = base_entities & ({entity for entity in extra["entities"]
@@ -2484,6 +2563,7 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
             by_type.setdefault(question_type, []).append(candidate)
     for question_type in by_type:
         by_type[question_type].sort(key=lambda item: (-item[2], len(item[0]), item[0]))
+    print("Evidence proposals: %s, %d distinct combinations" % (qa_mode, len(unique)), flush=True)
 
     selected = []
     seen = set()
@@ -2515,7 +2595,7 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
         projected, request_chars, padding = _project_group(
             universe, base_infos, target_chars, max_chars,
             full_range=expansion == "full_range",
-            required_sources=complete_guard_sources)
+            required_sources=complete_guard_sources, readable_budget=static_selection)
         guard_complete = projected is not None
         group_infos = base_infos
         if not guard_complete:
@@ -2525,13 +2605,13 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
             projected, request_chars, padding = _project_group(
                 universe, group_infos, target_chars, max_chars,
                 full_range=expansion == "full_range",
-                required_sources=_fact_sources(group_infos))
+                required_sources=_fact_sources(group_infos), readable_budget=static_selection)
             while projected is None and len(group_infos) > len(ids):
                 group_infos.pop()
                 projected, request_chars, padding = _project_group(
                     universe, group_infos, target_chars, max_chars,
                     full_range=expansion == "full_range",
-                    required_sources=_fact_sources(group_infos))
+                    required_sources=_fact_sources(group_infos), readable_budget=static_selection)
         if projected is None:
             return None
         included_guard_sources = (_fact_sources(group_infos) if not guard_complete
@@ -2572,6 +2652,7 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
         )
         group = {
             "id": group_id,
+            "readable_budget": static_selection,
             "qa_mode": qa_mode,
             "allowed_types": tuple(sorted(types)),
             "facts": [info["fact"] for info in group_infos],
@@ -2583,7 +2664,7 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
             "eligible_types": tuple(sorted(types)),
             "relation_path": relation_path,
             "static_difficulty": relation_path["difficulty"],
-            "expansion_pointer": _group_expansion_pointer(group_infos, evidence_index),
+            "expansion_pointer": {"candidates": [], "derived_on_demand": True},
             # Two independent grounded statements permit, but do not require,
             # two distinct answer targets in the same small request.
             "max_questions": 2 if len({
@@ -2600,9 +2681,11 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
     while len(selected) < max_groups:
         added = False
         for question_type in sorted(by_type):
-            while by_type[question_type]:
-                ranked = sorted(
-                    by_type[question_type],
+            # Usage weights change only after a group is accepted. Skipping
+            # duplicate or oversized candidates must not re-sort the pool.
+            by_type[question_type] = sorted(
+                    [item for item in by_type[question_type]
+                     if (item[0], item[3] == "full_range") not in seen],
                     key=lambda item: (
                         -(item[2]
                           - 12 * sum(used_fact_counts.get(fid, 0) for fid in item[0])
@@ -2614,10 +2697,10 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                                      for fid in item[0]
                                      for label in info_by_id[fid]["labels"])),
                         len(item[0]), item[0], item[3],
-                    ),
+                    ), reverse=True,
                 )
-                candidate = ranked[0]
-                by_type[question_type].remove(candidate)
+            while by_type[question_type]:
+                candidate = by_type[question_type].pop()
                 ids, types, score, expansion = candidate
                 # A source set is one group even when it supports several
                 # question types. The model may generate distinct targets

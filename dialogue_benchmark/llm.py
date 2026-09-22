@@ -211,6 +211,8 @@ def _replace_known_identifiers(text, source_to_ref):
         result.append(text[cursor:left])
         prose = text[left:right]
         for identifier in sorted(source_to_ref, key=len, reverse=True):
+            if identifier not in prose:
+                continue
             prose = re.sub(
                 r"(?<![A-Za-z0-9_])" + re.escape(identifier)
                 + r"(?![A-Za-z0-9_])",
@@ -222,7 +224,7 @@ def _replace_known_identifiers(text, source_to_ref):
 
 
 def _metadata_token_present(text, token):
-    if not isinstance(text, str) or not isinstance(token, str) or not token:
+    if not isinstance(text, str) or not isinstance(token, str) or not token or token not in text:
         return False
     return re.search(r"(?<![A-Za-z0-9_])" + re.escape(token)
                      + r"(?![A-Za-z0-9_])", text) is not None
@@ -444,7 +446,8 @@ def _excerpt_value(value, terms):
     return value
 
 
-def _material_view(reference, records, relative_position, excerpt_terms=None):
+def _material_view(reference, records, relative_position, excerpt_terms=None,
+                   preserve_changes=False):
     """Project source records without operational graph/scope metadata."""
     item = {"reference": reference, "relative_position": relative_position}
     kinds = sorted({source_kind_for(record) for _, record in records})
@@ -474,16 +477,21 @@ def _material_view(reference, records, relative_position, excerpt_terms=None):
         body = {}
         if isinstance(record.get("text"), str):
             text = _excerpt_string(record["text"], excerpt_terms or [])
+            if text is None and preserve_changes:
+                text = record["text"]
             if text is not None:
                 body["text"] = text
         if "content" in record:
             content = _excerpt_value(record.get("content"), excerpt_terms or [])
+            if content is None and preserve_changes:
+                content = deepcopy(record.get("content"))
             if content is not None:
                 body["content"] = content
         if isinstance(record.get("changes"), dict):
             # Changes are source text. Preserve nested diff/code/business
             # fields verbatim; only wrapper metadata is omitted.
-            changes = _excerpt_value(record["changes"], excerpt_terms or [])
+            changes = (deepcopy(record["changes"]) if preserve_changes else
+                       _excerpt_value(record["changes"], excerpt_terms or []))
             if changes is not None:
                 body["changes"] = changes
         if isinstance(record.get("success"), bool):
@@ -585,16 +593,28 @@ def simple_evidence_payload(scope, source_ids, facts=None, candidate=None):
         selected.update(identifier for identifier in metadata_tokens
                         if identifier in material_ids
                         and _metadata_token_present(statement, identifier))
-    records_by_source = {source: _material_records(scope, source)
-                         for source in selected}
+    records_by_source = {source: [] for source in selected}
+    for collection in ("dialogue", "events", "versions"):
+        for record in scope.get(collection, []):
+            if not isinstance(record, dict):
+                continue
+            for source in {record.get("id"), record.get("parent_id")} & selected:
+                records_by_source[source].append((collection, record))
     ordered_sources = sorted(
         selected, key=lambda source: (_record_position(records_by_source[source]), source))
     source_to_ref = {source: _LOCAL_REFERENCE % (index + 1)
                      for index, source in enumerate(ordered_sources)}
     ref_to_source = {reference: source for source, reference in source_to_ref.items()}
     excerpt_terms = _candidate_excerpt_terms(candidate) if candidate is not None else None
+    generation_excerpt = bool(candidate is None and facts and not scope.get("full_range_required"))
+    if generation_excerpt:
+        excerpt_terms = _candidate_excerpt_terms({"answer_points": [
+            {"text": fact.get("statement", "")} for fact in facts]})
     materials = [_material_view(source_to_ref[source], records_by_source[source],
-                                index + 1, excerpt_terms=excerpt_terms)
+                                index + 1, excerpt_terms=(excerpt_terms
+                                    if not generation_excerpt or any(source_kind_for(record) == "code"
+                                        for _, record in records_by_source[source]) else None),
+                                preserve_changes=generation_excerpt)
                  for index, source in enumerate(ordered_sources)]
     duplicate_relations = _dedupe_material_bodies(materials)
     payload = {
@@ -904,6 +924,8 @@ Do not extract acknowledgements such as 'continue' as standalone useful facts.
 Extract independently verifiable facts with necessary conditions,
 versions and source IDs. Do not merge old and new behavior. Include historical
 failures and tool-confirmed results where available. Never invent a missing edge.
+Return at most 12 useful facts per request; prefer changes and tested constraints
+over a list of facts visible in unchanged code.
 """ + FACT_FORMAT
 
 GENERAL_FACT_PROMPT = """Extract independently verifiable facts from visible user and assistant
@@ -912,6 +934,7 @@ plans, outcomes, and the order of discussion. Do not infer code or repository
 facts from tool records, and do not add outside knowledge. Cite only supplied
 record IDs. Mark a fact SOURCE_KIND=document when it comes from a supplied
 document or project specification; do not describe document rules as user preferences.
+Return at most 12 useful facts per request, each stated concisely.
 """ + FACT_FORMAT
 
 SIMPLE_QA_PROMPT = """根据输入生成一道中文问答。固定任务：TARGET_DEFINITION。
@@ -1550,7 +1573,7 @@ def _fit_projection(prompt, scope, sources, extra, budget, full_range=False,
 
 
 class ChatClient:
-    def __init__(self, endpoint, model, key_env="BENCHMARK_API_KEY", timeout=90):
+    def __init__(self, endpoint, model, key_env="BENCHMARK_API_KEY", timeout=90, *, system=SYSTEM):
         parsed = urllib.parse.urlparse(endpoint)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("LLM endpoint must be HTTPS without embedded credentials")
@@ -1561,6 +1584,7 @@ class ChatClient:
         if not self.key:
             raise ModelStageError("missing_api_key")
         self.timeout = timeout
+        self.system = system
         self.usage = []
         self.responses = []
 
@@ -1575,7 +1599,7 @@ class ChatClient:
             raise ModelStageError("request_budget", request_chars=estimated, limit_chars=request_chars)
         outbound_guard(content, self.key)
         payload = {"model": self.model, "temperature": 0,
-                   "messages": [{"role": "system", "content": SYSTEM},
+                   "messages": [{"role": "system", "content": self.system},
                                 {"role": "user", "content": prompt + "\nDATA:\n" + content}]}
         request = urllib.request.Request(self.endpoint, json.dumps(payload).encode(),
                                          {"Content-Type": "application/json",
@@ -1632,7 +1656,14 @@ def _ask_stage(client, prompt, data, stage):
     usage = getattr(client, "usage", None)
     before = len(usage) if isinstance(usage, list) else 0
     try:
-        return client.ask(prompt, data)
+        document = client.ask(prompt, data)
+        # This version is selected by the caller, not a semantic model judgment.
+        if (stage in {"review_evidence", "review_evidence_supplement"}
+                and "review_contract: simple_v1" in prompt and isinstance(document, dict)):
+            for review in document.get("reviews", []):
+                if isinstance(review, dict):
+                    review.setdefault("review_contract", "simple_v1")
+        return document
     finally:
         if isinstance(usage, list):
             for receipt in usage[before:]:
@@ -1682,6 +1713,8 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None):
         fact_prompt, _, _ = _prompt_for_mode(qa_mode, None, 1)
         source_ids = _scope_material_source_ids(scope)
         fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)
+        _check_simple_request_budget(fact_prompt, fact_payload,
+                                     scope.get("model_request_chars", 32000))
         facts_document = _restore_fact_sources(
             _ask_stage(client, fact_prompt, fact_payload, "facts"), ref_to_source)
         facts, fact_rejected = validate_facts(facts_document, scope,
@@ -1767,6 +1800,8 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             focus_payload, focus_ref_to_source = simple_focus_payload(
                 scope, focus_sources, result["facts"])
             _check_simple_request_budget(focus_prompt, focus_payload, qa_budget)
+            save("focus-input.json", {"system_prompt": SYSTEM, "prompt": focus_prompt, "payload": focus_payload,
+                                      "ref_to_source": focus_ref_to_source})
             result["generation_request_count"] += 1
             focus_document = _ask_stage(
                 client, focus_prompt, focus_payload, "focus")
@@ -1844,6 +1879,8 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 qa_budget, full_range=bool(full_range_question))
             qa_scope = payload["scope"]
         failed_stage = "qa"
+        save("qa-input.json", {"system_prompt": SYSTEM, "prompt": qa_prompt, "payload": payload,
+                               "ref_to_source": ref_to_source if generation_mode == "simple" else {}})
         result["generation_request_count"] += 1
         emitted = _ask_stage(client, qa_prompt, payload, "qa")
         if generation_mode == "simple":
@@ -2153,6 +2190,8 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
             payload["review_issue"] = _simple_repair_issue(failure)
             repair_prompt = prompt + "\n\n" + SIMPLE_REPAIR_PROMPT
             _check_simple_request_budget(repair_prompt, payload, budget)
+            save("repair-input.json", {"system_prompt": SYSTEM, "prompt": repair_prompt, "payload": payload,
+                                       "ref_to_source": ref_to_source})
             response = _ask_stage(client, repair_prompt, payload, "repair")
             response = _restore_local_sources(response, ref_to_source)
             save("repair-response.json", response)

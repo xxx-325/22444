@@ -16,10 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dialogue_benchmark.cli import _USER_PATH
 from dialogue_benchmark.security import credential_detected
 from dialogue_benchmark.selection import build_audit
+from dialogue_benchmark.storage import load as load_artifact
 
 
 def load(run, name):
-    return json.loads((run / name).read_text(encoding="utf-8"))
+    return load_artifact(run / name)
 
 
 def build(run):

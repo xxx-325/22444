@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .chunking import split_scope
 from .fact_index import (build_evidence_groups, build_evidence_index,
+                         merge_scopes,
                          candidate_review_projection, coverage_report,
                          expand_evidence_group_once,
                          static_candidate_labels, static_code_evidence_check)
@@ -23,6 +24,7 @@ from .normalize import load_dialogue
 from .protocol import MISSING_KINDS
 from .quality import CODE_QA_TYPES, GENERAL_QA_TYPES
 from .security import credential_detected
+from .storage import save_projection
 from .subgraph import adaptive_subgraphs
 from .selection import (build_audit, select_approved, deduplicate,
                         deduplicate_reviewed, replenish, globally_blocked,
@@ -46,6 +48,11 @@ CHUNK_EVIDENCE_FIELDS = (
 
 def save(directory, name, data):
     path = directory / name
+    if name in {"scope.json", "scopes.json", "general-scope.json", "evidence-groups.json"}:
+        if path.exists():
+            raise FileExistsError(path)
+        save_projection(path, data)
+        return
     with path.open("x", encoding="utf-8") as output:
         os.chmod(path, 0o600)
         json.dump(data, output, ensure_ascii=False, indent=2)
@@ -124,6 +131,8 @@ def _build_parser():
     parser.add_argument("--endpoint", help="Full HTTPS chat/completions endpoint")
     parser.add_argument("--model")
     parser.add_argument("--key-env", default="BENCHMARK_API_KEY")
+    parser.add_argument("--reuse-facts", type=Path,
+                        help="Reuse saved facts/errors from an identical normalized input and chunk layout")
     return parser
 
 
@@ -214,7 +223,7 @@ def _checkpoint(checkpoint_dir, track, phase, index):
     return write
 
 
-def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None):
+def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None, reuse_dir=None):
     """Extract every chunk's facts through one bounded shared executor."""
     if not tasks:
         return {"facts": [], "questions": [], "rejected": [], "usage": [],
@@ -225,14 +234,31 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
         index, track, scope = item
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env)
-            result = extract_facts(
-                scope, client, qa_mode=track,
-                checkpoint=_checkpoint(checkpoint_dir, track, "chunk", index))
+            saved = (Path(reuse_dir) / "stages" / ("%s-chunk-%04d-facts.json" % (track, index))) if reuse_dir else None
+            error_path = saved.with_name(saved.name.replace("facts.json", "facts-error.json")) if saved else None
+            write = _checkpoint(checkpoint_dir, track, "chunk", index)
+            if saved is not None and saved.exists():
+                facts = json.loads(saved.read_text())
+                result = {"facts": facts, "stage_status": {"facts": "completed", "reused": True}}
+                if write:
+                    write("facts.json", facts)
+            elif error_path is not None and error_path.exists():
+                error = json.loads(error_path.read_text())
+                result = {"facts": [], "stage_errors": [error],
+                          "stage_status": {"facts": "failed", "reused": True}}
+                if write:
+                    write("facts-error.json", error)
+            elif reuse_dir:
+                raise ValueError("Missing saved fact-stage result")
+            else:
+                client = ChatClient(endpoint, model, key_env)
+                result = extract_facts(
+                    scope, client, qa_mode=track,
+                    checkpoint=_checkpoint(checkpoint_dir, track, "chunk", index))
             prefix = "%s_s%d_c%d_" % (track, scope.get("scope_index", 0),
                                         scope.get("chunk_index", index))
             _prefix_facts(result, prefix, track)
-            return index, track, scope, result, client.usage
+            return index, track, scope, result, client.usage if client else []
         except Exception as error:
             diagnostic = stage_error("facts", error)
             checkpoint = _checkpoint(checkpoint_dir, track, "chunk", index)
@@ -1206,6 +1232,8 @@ def main(argv=None):
         if not 1 <= cutoff <= records[-1]["order"]:
             raise ValueError("Cutoff outside normalized event range")
         records = [record for record in records if record["order"] <= cutoff]
+        if args.reuse_facts and json.loads((args.reuse_facts / "normalized.json").read_text()) != records:
+            raise ValueError("Saved facts belong to a different normalized input")
         args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
         created = True
         os.chmod(args.output, 0o700)
@@ -1266,9 +1294,22 @@ def main(argv=None):
                 scopes_by_track.append(("code", code_scopes))
             task_index = 0
             seen_chunks = {}
+            structural_scopes = {"general": [], "code": []}
             for track, scopes in scopes_by_track:
-                for scope_index, candidate in enumerate(scopes):
-                    chunks = split_scope(candidate, args.chunk_chars, args.chunk_overlap)
+                # Extract each source once across overlapping graph candidates.
+                # QA grouping still uses the source-linked fact index afterwards.
+                extraction_scopes = ([merge_scopes(scopes, track, args.model_request_chars)]
+                                     if len(scopes) > 1 else scopes)
+                for scope_index, candidate in enumerate(extraction_scopes):
+                    # Code relations locate QA evidence after facts exist; they
+                    # need not be repeated in every source-extraction request.
+                    structural_scopes[track].append({
+                        "cutoff": cutoff, "full_range_covered": True,
+                        "edges": candidate.get("edges", []),
+                        "historical_edges": candidate.get("historical_edges", []),
+                    })
+                    chunks = split_scope(candidate, args.chunk_chars, args.chunk_overlap,
+                                         include_code_edges=False)
                     for chunk in chunks:
                         chunk["scope_index"] = scope_index
                         chunk["track"] = track
@@ -1297,6 +1338,8 @@ def main(argv=None):
             unique_chunk_count = sum(1 for item in chunk_summaries
                                      if item.get("task_index") is not None)
             save(args.output, "chunks.json", chunk_summaries)
+            if args.reuse_facts and json.loads((args.reuse_facts / "chunks.json").read_text()) != chunk_summaries:
+                raise ValueError("Saved facts use a different chunk layout")
             # Report missing evidence per enabled track.  A healthy other
             # track must not hide a scope failure in this one.
             for track in ("general", "code"):
@@ -1317,9 +1360,17 @@ def main(argv=None):
             else:
                 checkpoint_dir = args.output / "stages"
                 checkpoint_dir.mkdir(mode=0o700)
+                fact_options = {"reuse_dir": args.reuse_facts} if args.reuse_facts else {}
                 facts_result = _run_fact_tasks(
                     fact_tasks, args.endpoint, args.model, args.key_env,
-                    args.parallel_workers, checkpoint_dir)
+                    args.parallel_workers, checkpoint_dir, **fact_options)
+                save(args.output, "fact-extraction.json", {
+                    "reused_from": str(args.reuse_facts) if args.reuse_facts else None,
+                    "usage": facts_result["usage"], "stage_errors": facts_result["stage_errors"],
+                    "stage_status": facts_result["stage_status"],
+                })
+                for track, relation_scopes in structural_scopes.items():
+                    facts_result["scopes"][track].extend(relation_scopes)
                 result = {
                     "facts": facts_result["facts"], "questions": [],
                     "rejected": list(facts_result["rejected"]),
@@ -1356,10 +1407,12 @@ def main(argv=None):
                     allowed_types = options[track + "_types"]
                     count = options[track + "_group_budget"]
                     try:
+                        print("Evidence index: %s, %d facts" % (track, len(track_facts)), flush=True)
                         evidence_index = build_evidence_index(
                             track_facts, facts_result["scopes"][track], track,
                             args.model_request_chars)
                         evidence_indexes[track] = evidence_index
+                        print("Evidence groups: %s index ready" % track, flush=True)
                         track_groups = build_evidence_groups(
                             track_facts, facts_result["scopes"][track], track,
                             allowed_types, count,

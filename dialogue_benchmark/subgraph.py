@@ -77,7 +77,25 @@ def _score(events, versions, source_ids):
     return score
 
 
-def _scope(graph, records, events, cutoff, seed, max_chars):
+def _graph_context(graph, cutoff):
+    snapshots = {at: graph_at(graph, at) for at in sorted(
+        {cutoff} | {v["observed_at"] for v in graph.get("versions", [])
+                    if isinstance(v.get("observed_at"), int) and v["observed_at"] <= cutoff})}
+    historical = [dict(edge, observed_snapshot=at)
+                  for at, snapshot in snapshots.items()
+                  if any(v.get("observed_at") == at for v in graph.get("versions", []))
+                  for edge in snapshot.get("edges", [])]
+    by_source, by_path = {}, {}
+    for index, edge in enumerate(historical):
+        by_source.setdefault(edge.get("source"), []).append(index)
+        for path in {edge.get("from", "").split("::", 1)[0],
+                     edge.get("to", "").split("::", 1)[0]}:
+            by_path.setdefault(path, []).append(index)
+    return {"current": snapshots[cutoff], "historical": historical,
+            "by_source": by_source, "by_path": by_path}
+
+
+def _scope(graph, records, events, cutoff, seed, max_chars, context):
     selected_event_ids = {event["id"] for event in events}
     source_ids = {source for event in events for source in event["source_ids"]}
     orders = {event["order"] for event in events}
@@ -120,7 +138,7 @@ def _scope(graph, records, events, cutoff, seed, max_chars):
     graph_events = [copy.deepcopy(event_map[event_id]) for event_id in selected_event_ids
                     if event_id in event_map]
     graph_events.sort(key=lambda event: event["order"])
-    current = graph_at(graph, cutoff)
+    current = context["current"]
     selected_paths = {path for event in events for path in event.get("paths", [])}
     selected_paths.update(version.get("path") for version in versions
                           if isinstance(version.get("path"), str))
@@ -145,13 +163,11 @@ def _scope(graph, records, events, cutoff, seed, max_chars):
 
     edges = [copy.deepcopy(edge) for edge in current.get("edges", [])
              if edge_in_scope(edge)]
-    historical_edges = []
-    for at in sorted({version.get("observed_at") for version in graph.get("versions", [])
-                      if isinstance(version.get("observed_at"), int)
-                      and version.get("observed_at") <= cutoff}):
-        historical_edges.extend(dict(edge, observed_snapshot=at)
-                                 for edge in graph_at(graph, at).get("edges", []))
-    historical_edges = [edge for edge in historical_edges if edge_in_scope(edge)]
+    related = {index for source in selected_event_ids
+               for index in context["by_source"].get(source, [])}
+    related.update(index for path in selected_paths for index in context["by_path"].get(path, []))
+    historical_edges = [context["historical"][index] for index in sorted(related)
+                        if edge_in_scope(context["historical"][index])]
     payload = {
         "seed": seed,
         "cutoff": cutoff,
@@ -247,11 +263,12 @@ def adaptive_subgraphs(graph, records, cutoff, seed=None, max_chars=80000,
                "history": ["seed:" + event["id"]]}
               for event in seeds]
     accepted, layers = [], []
+    context = _graph_context(graph, cutoff)
     for depth in range(max_depth + 1):
         next_states = []
         for state in states:
             events = [index_by_id[event_id] for event_id in state["event_ids"]]
-            scope = _scope(graph, records, events, cutoff, seed, max_chars)
+            scope = _scope(graph, records, events, cutoff, seed, max_chars, context)
             scope["candidate_seed_event"] = state["root_id"]
             if (scope["score"] >= min_score and len(scope["versions"]) >= 2
                     and len(scope["dialogue"]) >= 2):

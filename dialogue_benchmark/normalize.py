@@ -38,12 +38,23 @@ def normalize_path(value, workspace=None):
 
 
 def load_dialogue(path):
-    raw = Path(path).read_text(encoding="utf-8")
+    path = Path(path)
+    raw = path.read_text(encoding="utf-8")
     if path.suffix == ".jsonl":
         rows = [(i, json.loads(line)) for i, line in enumerate(raw.splitlines(), 1)
                 if line.strip()]
+        if rows and rows[0][1].get("kind") in {"user", "assistant", "tool_call", "tool_result"}:
+            from .openhands_input import normalize_openhands
+            return normalize_openhands(rows)
         return normalize_codex(rows)
     document = json.loads(raw)
+    if isinstance(document, list):
+        if any(not isinstance(row, dict) or row.get("role") not in {"user", "assistant"}
+               or not isinstance(row.get("content"), (str, list)) for row in document):
+            raise ValueError("Message lists require user/assistant role and content")
+        document = {"version": 1, "records": [
+            {"kind": "message", "role": row["role"], "text": text_content(row["content"])}
+            for row in document]}
     if not isinstance(document, dict) or document.get("version") != 1:
         raise ValueError("Unified JSON requires version=1 and records[]")
     records = document.get("records")
@@ -54,7 +65,8 @@ def load_dialogue(path):
     for index, item in enumerate(records, 1):
         if not isinstance(item, dict) or item.get("kind") not in allowed:
             raise ValueError("Invalid record at position %d" % index)
-        record = dict(item, id="e%d" % index, order=index, source_line=index)
+        record = dict(item, id="e%d" % index, order=index,
+                      source_line=item.get("source_line", index))
         record["source_kind"] = source_kind_for(record)
         record["workspace"] = item.get("workspace", document.get("workspace"))
         result.append(record)

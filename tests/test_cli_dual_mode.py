@@ -130,7 +130,8 @@ class DualModeCliTests(unittest.TestCase):
                 "--general-types", "single-hop,temporal",
             ]), 0)
             public = json.loads((output / "qa-public.json").read_text())
-            scope = json.loads((output / "general-scope.json").read_text())
+            from dialogue_benchmark.storage import load
+            scope = load(output / "general-scope.json")
             self.assertEqual(public["status"], "static_only")
             self.assertEqual(public["qa_mode"], "general")
             self.assertTrue(scope["dialogue"])
