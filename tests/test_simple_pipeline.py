@@ -18,6 +18,10 @@ class CaptureClient:
         self.usage = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.prompts.append(prompt)
         self.payloads.append(copy.deepcopy(payload))
         self.usage.append({"status": "completed"})
@@ -36,7 +40,7 @@ class SimplePipelineTests(unittest.TestCase):
                 "stage_id": "s1", "text": "配置必须支持 yaml。",
             }],
             "events": [], "versions": [], "stages": [{"id": "s1"}],
-            "evidence_group": {"target_types": ["single-hop"]},
+            "evidence_group": {"target_types": ["constraint_followthrough"]},
             "model_request_chars": 60000,
             "max_context_chars": 60000,
         }
@@ -57,12 +61,12 @@ class SimplePipelineTests(unittest.TestCase):
         client = CaptureClient(self.response)
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            allowed_types={"single-hop"}, generation_mode="simple",
-            target_type="single-hop")
+            allowed_types={"constraint_followthrough"}, generation_mode="simple",
+            target_type="constraint_followthrough")
 
         self.assertEqual(result["stage_status"]["qa"], "completed")
         candidate = result["questions"][0]
-        self.assertEqual(candidate["type"], "single-hop")
+        self.assertEqual(candidate["type"], "constraint_followthrough")
         self.assertNotIn("difficulty", candidate)
         self.assertNotIn("track", candidate)
         self.assertNotIn("use_case", candidate)
@@ -76,15 +80,15 @@ class SimplePipelineTests(unittest.TestCase):
         client = CaptureClient(self.response)
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            allowed_types={"single-hop"}, generation_mode="simple",
-            target_type="temporal")
+            allowed_types={"constraint_followthrough"}, generation_mode="simple",
+            target_type="correction_update")
         self.assertEqual(result["stage_status"]["qa"], "failed")
         self.assertFalse(client.payloads)
 
         client = CaptureClient(self.response)
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            allowed_types={"single-hop", "temporal"}, generation_mode="simple")
+            allowed_types={"constraint_followthrough", "correction_update"}, generation_mode="simple")
         self.assertEqual(result["stage_status"]["qa"], "failed")
         self.assertFalse(client.payloads)
 

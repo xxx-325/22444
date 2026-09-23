@@ -24,6 +24,10 @@ class ScriptedClient:
         self.usage = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"status": "completed"})
         relevance = maybe_relevance_response(prompt, payload)
@@ -84,7 +88,7 @@ class SimpleRepairContractTests(unittest.TestCase):
         }]
         self.candidate = {
             "id": "general-g1-q1", "candidate_id": "general-g1-q1",
-            "model_id": "provider-q1", "qa_mode": "general", "type": "single-hop",
+            "model_id": "provider-q1", "qa_mode": "general", "type": "constraint_followthrough",
             "origin_qa_mode": "general", "evidence_group_id": "g1",
             "question": "端口如何变化？",
             "answer_points": [{"text": "端口由 18080 改为 18081。", "sources": ["m1"]}],
@@ -354,7 +358,7 @@ END_QA"""])
     def test_cli_validation_repair_still_runs_code_static_postcheck(self):
         """A public-text repair cannot bypass the final code evidence gate."""
         original = copy.deepcopy(self.candidate)
-        original.update(qa_mode="code", type="failure_diagnosis")
+        original.update(qa_mode="code", type="failure_avoidance")
         rejected = {
             "question": original,
             "reason": "local_reference_in_public_text",
@@ -378,7 +382,7 @@ END_QA"""])
             },
             "active_group": {
                 "id": "g1", "qa_mode": "code", "facts": self.facts,
-                "scope": self.scope, "eligible_types": ("failure_diagnosis",),
+                "scope": self.scope, "eligible_types": ("failure_avoidance",),
             },
             "static_precheck": {"status": "supported", "reason": "fixture"},
             "expanded_static_precheck": None, "expansion_audits": [],
@@ -403,7 +407,7 @@ END_QA"""])
                              return_value=(revision, revised)), \
                 patch.object(cli, "static_candidate_labels",
                              side_effect=lambda _g, _q, _i, target: {"type": target}), \
-                patch.object(cli, "static_code_evidence_check", side_effect=static_check):
+                patch.object(cli, "static_evidence_check", side_effect=static_check):
             result = cli._run_qa_tasks(
                 [(0, "code", generation["active_group"])],
                 "https://example.invalid", "model", "KEY", 1,
@@ -412,7 +416,7 @@ END_QA"""])
 
         self.assertEqual(len(result["questions"]), 1)
         self.assertEqual(result["questions"][0]["status"], "approved")
-        self.assertEqual(result["questions"][0]["static_code_evidence"]["status"],
+        self.assertEqual(result["questions"][0]["static_type_evidence"]["status"],
                          "supported")
         self.assertTrue(any(
             isinstance(candidate, dict)

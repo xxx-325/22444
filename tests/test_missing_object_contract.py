@@ -18,6 +18,10 @@ class ScriptedClient:
         self.calls = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         return parse_text_response(self.response)
 
@@ -77,8 +81,8 @@ class MissingObjectContractTests(unittest.TestCase):
 
         # General extraction may use document records, but its contract must
         # not silently turn tool output into conversation facts.
-        self.assertIn("explicitly supplied document blocks", GENERAL_FACT_PROMPT)
-        self.assertIn("Do not infer code or repository\nfacts from tool records",
+        self.assertIn("supplied documents", GENERAL_FACT_PROMPT)
+        self.assertIn("public tool actions/results",
                       GENERAL_FACT_PROMPT)
 
     def test_generation_propagates_kind_and_object_without_model_annotations(self):
@@ -86,7 +90,7 @@ class MissingObjectContractTests(unittest.TestCase):
             "NO_QA\nMISSING_KIND: dependency\nMISSING_OBJECT: runner.py")
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            allowed_types=("single-hop",), target_type="single-hop")
+            allowed_types=("constraint_followthrough",), target_type="constraint_followthrough")
 
         self.assertFalse(result["questions"])
         self.assertEqual(result["missing_kind"], "dependency")

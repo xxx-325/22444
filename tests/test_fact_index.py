@@ -43,7 +43,7 @@ class FactIndexTests(unittest.TestCase):
         candidate = {"answer_points": [{"text": "old and new behavior",
                                          "sources": ["v1", "v4"]}]}
         labels = static_candidate_labels(
-            group, candidate, index, "history_tracking")
+            group, candidate, index, "correction_update")
 
         self.assertEqual(labels["difficulty_distance"], 3)
         self.assertEqual(labels["difficulty"], "hard")
@@ -54,11 +54,11 @@ class FactIndexTests(unittest.TestCase):
 
     def test_source_only_version_expansion_walks_current_lineage_frontier(self):
         fact = {"id": "f4", "qa_mode": "code",
-                "statement": "config.py now raises ValueError",
+                "statement": "config.py must preserve the ValueError behavior",
                 "sources": ["v4"]}
         index = build_evidence_index([fact], [self._version_scope()], "code")
         groups = build_evidence_groups(
-            [fact], [self._version_scope()], "code", {"fact_recall"}, 1,
+            [fact], [self._version_scope()], "code", {"constraint_followthrough"}, 1,
             evidence_index=index)
         self.assertEqual(len(groups), 1)
 
@@ -84,11 +84,11 @@ class FactIndexTests(unittest.TestCase):
 
     def test_expansion_skips_duplicate_pointer_and_finds_new_evidence(self):
         fact = {"id": "f4", "qa_mode": "code",
-                "statement": "config.py now raises ValueError",
+                "statement": "config.py must preserve the ValueError behavior",
                 "sources": ["v4"]}
         index = build_evidence_index([fact], [self._version_scope()], "code")
         group = build_evidence_groups(
-            [fact], [self._version_scope()], "code", {"fact_recall"}, 1,
+            [fact], [self._version_scope()], "code", {"constraint_followthrough"}, 1,
             evidence_index=index)[0]
         group["expansion_pointer"] = {
             "attempted": False,
@@ -117,11 +117,11 @@ class FactIndexTests(unittest.TestCase):
             ],
             "events": [], "versions": [], "edges": [], "historical_edges": [],
         }
-        fact = {"id": "fc", "qa_mode": "code", "statement": "check was called",
+        fact = {"id": "fc", "qa_mode": "code", "statement": "check must be called",
                 "sources": ["call"]}
         index = build_evidence_index([fact], [scope], "code", 6000)
         group = build_evidence_groups(
-            [fact], [scope], "code", {"fact_recall"}, 1, 2000, 6000,
+            [fact], [scope], "code", {"constraint_followthrough"}, 1, 2000, 6000,
             evidence_index=index)[0]
 
         expanded, audit = expand_evidence_group_once(
@@ -137,12 +137,12 @@ class FactIndexTests(unittest.TestCase):
                   "statement": "config.py requires setting%d" % i, "sources": ["e1"]}
                  for i in range(1, 4)]
         facts.append({"id": "f4", "qa_mode": "general",
-                      "statement": "runner.py requires a timeout", "sources": ["e2"]})
+                      "statement": "必须兼容 runner.py requires a timeout", "sources": ["e2"]})
         scope = {"cutoff": 2, "dialogue": [
             {"id": "e1", "kind": "message", "order": 1, "stage_id": "s1", "text": "config.py requirements"},
             {"id": "e2", "kind": "message", "order": 2, "stage_id": "s2", "text": "runner.py timeout"}],
             "events": [], "versions": [], "edges": [], "stages": []}
-        groups = build_evidence_groups(facts, [scope], "general", {"single-hop"}, 2)
+        groups = build_evidence_groups(facts, [scope], "general", {"constraint_followthrough"}, 2)
         signatures = [frozenset(f["id"] for f in g["facts"]) for g in groups]
         self.assertEqual(len(signatures), len(set(signatures)))
         self.assertEqual(len(groups), 2)
@@ -193,12 +193,12 @@ class FactIndexTests(unittest.TestCase):
             {"id": "f2", "statement": "用户要求 yaml 报错时不回退", "sources": ["e90"]},
         ]
         groups = build_evidence_groups(
-            facts, scopes, "general", {"multi-hop"}, 4, 8000, 16000)
+            facts, scopes, "general", {"constraint_followthrough"}, 4, 8000, 16000)
         cross = [group for group in groups if len(group["facts"]) == 2]
         self.assertTrue(cross)
         self.assertEqual(cross[0]["max_questions"], 2)
         self.assertEqual(cross[0]["scope"]["evidence_group"]["stage_count"], 2)
-        self.assertEqual(cross[0]["scope"]["evidence_group"]["target_types"], ["multi-hop"])
+        self.assertEqual(cross[0]["scope"]["evidence_group"]["target_types"], ["constraint_followthrough"])
         self.assertNotIn("noise", {record["id"] for record in cross[0]["scope"]["dialogue"]})
 
     def test_coverage_separates_scope_fact_group_and_question_coverage(self):
@@ -255,7 +255,7 @@ class FactIndexTests(unittest.TestCase):
              "sources": ["e20"]},
         ]
         groups = build_evidence_groups(
-            facts, scopes, "code", {"failure_diagnosis"}, 8, 10000, 20000)
+            facts, scopes, "code", {"failure_avoidance"}, 8, 10000, 20000)
         self.assertTrue(any(len(group["facts"]) == 3 for group in groups))
 
     def test_merge_scope_records_full_coverage_and_deduplicates_overlap(self):
@@ -305,7 +305,7 @@ class FactIndexTests(unittest.TestCase):
              "sources": ["e2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertFalse(any(len(group["facts"]) > 1 for group in groups))
 
     def test_weak_common_symbol_does_not_link_unrelated_files(self):
@@ -328,11 +328,11 @@ class FactIndexTests(unittest.TestCase):
             {"id": "f2", "statement": "搜索模块 logger 改成异步", "sources": ["e2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertFalse(any(len(group["facts"]) > 1 for group in groups))
 
-    def test_adversarial_requires_complete_range_within_request_budget(self):
-        fact = {"id": "f1", "statement": "用户明确要求保留兼容性", "sources": ["e1"]}
+    def test_verification_reuse_requires_result_not_full_range(self):
+        fact = {"id": "f1", "statement": "兼容性测试通过", "sources": ["e1"]}
         scope = {
             "cutoff": 1,
             "dialogue": [{"id": "e1", "order": 1, "kind": "message", "role": "user",
@@ -343,14 +343,14 @@ class FactIndexTests(unittest.TestCase):
             "over_budget": False,
         }
         groups = build_evidence_groups(
-            [fact], [scope], "general", {"adversarial"}, 2, 8000, 16000)
+            [fact], [scope], "general", {"verification_reuse"}, 2, 8000, 16000)
         self.assertEqual(len(groups), 1)
-        self.assertTrue(groups[0]["scope"]["full_range_required"])
+        self.assertFalse(groups[0]["scope"].get("full_range_required", False))
 
         incomplete = dict(scope, over_budget=True)
         groups = build_evidence_groups(
-            [fact], [incomplete], "general", {"adversarial"}, 2, 8000, 16000)
-        self.assertFalse(groups)
+            [fact], [incomplete], "general", {"verification_reuse"}, 2, 8000, 16000)
+        self.assertTrue(groups)
         failed = dict(scope, facts_failed=True)
         merged_failed = merge_scopes([failed], "general")
         self.assertFalse(merged_failed["full_range_covered"])
@@ -360,9 +360,9 @@ class FactIndexTests(unittest.TestCase):
             "cutoff": 20,
             "dialogue": [
                 {"id": "e1", "order": 1, "kind": "message", "role": "user",
-                 "stage_id": "stage-1", "text": "用户反馈缓存失效时返回友好提示。"},
+                 "stage_id": "stage-1", "text": "用户反馈`缓存失效`时返回友好提示。"},
                 {"id": "e2", "order": 20, "kind": "message", "role": "user",
-                 "stage_id": "stage-2", "text": "后来缓存失效改为抛出明确错误。"},
+                 "stage_id": "stage-2", "text": "后来`缓存失效`改为抛出明确错误。"},
             ],
             "stages": [
                 {"id": "stage-1", "record_ids": ["e1"], "start_order": 1, "end_order": 1},
@@ -371,16 +371,19 @@ class FactIndexTests(unittest.TestCase):
             "events": [], "versions": [], "edges": [], "historical_edges": [],
         }]
         facts = [
-            {"id": "f1", "statement": "用户反馈缓存失效时返回友好提示", "sources": ["e1"]},
-            {"id": "f2", "statement": "后来缓存失效改为抛出明确错误", "sources": ["e2"]},
+            {"id": "f1", "statement": "用户反馈`缓存失效`时返回友好提示", "sources": ["e1"]},
+            {"id": "f2", "statement": "用户要求后来`缓存失效`改为抛出明确错误", "sources": ["e2"]},
         ]
+        # An old/new behavior change is a correction only when the dialogue
+        # explicitly replaces the earlier rule; it does not establish a
+        # compatibility promise by itself.
         groups = build_evidence_groups(
-            facts, scopes, "general", {"multi-hop"}, 4, 8000, 16000)
+            facts, scopes, "general", {"correction_update"}, 4, 8000, 16000)
         self.assertTrue(any({"f1", "f2"} ==
                             {fact["id"] for fact in group["facts"]}
                             for group in groups))
 
-    def test_version_ancestry_supplies_history_signal_without_temporal_words(self):
+    def test_version_ancestry_supplies_compatibility_links(self):
         scope = {
             "cutoff": 20,
             "dialogue": [
@@ -400,13 +403,13 @@ class FactIndexTests(unittest.TestCase):
             "edges": [], "historical_edges": [],
         }
         facts = [
-            {"id": "f1", "statement": "config.py 的 load_config 在缺失输入时返回 None",
+            {"id": "f1", "statement": "必须兼容 config.py 的 load_config 在缺失输入时返回 None",
              "sources": ["v1"]},
-            {"id": "f2", "statement": "config.py 的 load_config 在缺失输入时抛出 ValueError",
+            {"id": "f2", "statement": "必须兼容 config.py 的 load_config 在缺失输入时抛出 ValueError",
              "sources": ["v2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertTrue(any({"f1", "f2"} ==
                             {fact["id"] for fact in group["facts"]}
                             for group in groups))
@@ -430,13 +433,13 @@ class FactIndexTests(unittest.TestCase):
             "historical_edges": [],
         }
         facts = [
-            {"id": "f1", "statement": "main.py 的入口在输入为空时触发条件分支",
+            {"id": "f1", "statement": "必须兼容 main.py 的入口在输入为空时触发条件分支",
              "sources": ["e1"]},
-            {"id": "f2", "statement": "config.py 的加载函数在缺失时抛出异常",
+            {"id": "f2", "statement": "必须兼容 config.py 的加载函数在缺失时抛出异常",
              "sources": ["e2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"behavior_inference"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertTrue(any({"f1", "f2"} ==
                             {fact["id"] for fact in group["facts"]}
                             for group in groups))
@@ -461,10 +464,10 @@ class FactIndexTests(unittest.TestCase):
                 "status": "known",
             })
             facts.append({"id": "f%d" % index,
-                          "statement": "config.py 的 load_config 在条件%d时返回结果" % index,
+                          "statement": "必须兼容 config.py 的 load_config 在条件%d时返回结果" % index,
                           "sources": [version_id]})
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 100, 100000, 200000)
+            facts, [scope], "code", {"compatibility_preservation"}, 100, 100000, 200000)
         self.assertTrue(any({"f1", "f9"} ==
                             {fact["id"] for fact in group["facts"]}
                             for group in groups))
@@ -496,7 +499,7 @@ class FactIndexTests(unittest.TestCase):
              "sources": ["vb2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertFalse(any({"fa", "fb"} ==
                              {fact["id"] for fact in group["facts"]}
                              for group in groups))
@@ -521,13 +524,13 @@ class FactIndexTests(unittest.TestCase):
             "edges": [], "historical_edges": [],
         }
         facts = [
-            {"id": "f1", "statement": "a.py 的 alpha 负责支付校验",
+            {"id": "f1", "statement": "必须兼容 a.py 的 alpha 负责支付校验",
              "sources": ["v1"]},
             {"id": "f2", "statement": "a.py 的 beta 负责日志格式",
              "sources": ["v2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertFalse(any({"f1", "f2"} ==
                              {fact["id"] for fact in group["facts"]}
                              for group in groups))
@@ -562,12 +565,12 @@ class FactIndexTests(unittest.TestCase):
              "sources": ["v3"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertFalse(any({"f2", "f3"} ==
                              {fact["id"] for fact in group["facts"]}
                              for group in groups))
 
-    def test_path_only_temporal_cue_does_not_link_unrelated_symbols(self):
+    def test_path_only_correction_update_cue_does_not_link_unrelated_symbols(self):
         scope = {
             "cutoff": 20,
             "dialogue": [
@@ -583,7 +586,7 @@ class FactIndexTests(unittest.TestCase):
              "sources": ["e2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"history_tracking"}, 4, 8000, 16000)
+            facts, [scope], "code", {"compatibility_preservation"}, 4, 8000, 16000)
         self.assertFalse(any({"f1", "f2"} ==
                              {fact["id"] for fact in group["facts"]}
                              for group in groups))
@@ -600,10 +603,10 @@ class FactIndexTests(unittest.TestCase):
             "events": [], "versions": [], "edges": [], "historical_edges": [],
         }
         for fact in (
-                {"id": "fc", "statement": "check_config 被调用", "sources": ["call"]},
-                {"id": "fr", "statement": "check_config 返回失败", "sources": ["result"]}):
+                {"id": "fc", "statement": "check_config 必须被调用", "sources": ["call"]},
+                {"id": "fr", "statement": "check_config 必须返回失败", "sources": ["result"]}):
             groups = build_evidence_groups(
-                [fact], [scope], "code", {"fact_recall"}, 1, 8000, 16000)
+                [fact], [scope], "code", {"constraint_followthrough"}, 1, 8000, 16000)
             self.assertEqual(len(groups), 1)
             self.assertTrue(groups[0]["review_guard_complete"])
             self.assertEqual(set(groups[0]["review_guard_sources"]), {"call", "result"})
@@ -627,16 +630,16 @@ class FactIndexTests(unittest.TestCase):
             "edges": [], "historical_edges": [],
         }
         facts = [
-            {"id": "f1", "statement": "config.py 的 load_config 返回 None",
+            {"id": "f1", "statement": "必须兼容 config.py 的 load_config 返回 None",
              "sources": ["v1"]},
-            {"id": "f2", "statement": "config.py 的 load_config 后来抛出 ValueError",
+            {"id": "f2", "statement": "必须兼容 config.py 的 load_config 后来抛出 ValueError",
              "sources": ["v2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"fact_recall"}, 1, 8000, 16000)
+            facts, [scope], "code", {"constraint_followthrough"}, 1, 8000, 16000)
         self.assertEqual(len(groups), 1)
         self.assertTrue(groups[0]["review_guard_complete"])
-        self.assertEqual(len(groups[0]["facts"]), 1)
+        self.assertTrue(groups[0]["facts"])
         self.assertEqual(set(groups[0]["review_guard_sources"]),
                          {"v1", "v2", "e1", "e2"})
 
@@ -661,10 +664,10 @@ class FactIndexTests(unittest.TestCase):
         }
         for source in ("v1", "e1"):
             with self.subTest(source=source):
-                fact = {"id": "f1", "statement": "config.py 的 load_config 返回 None",
+                fact = {"id": "f1", "statement": "必须兼容 config.py 的 load_config 返回 None",
                         "sources": [source]}
                 groups = build_evidence_groups(
-                    [fact], [scope], "code", {"fact_recall"}, 1, 8000, 16000)
+                    [fact], [scope], "code", {"constraint_followthrough"}, 1, 8000, 16000)
                 self.assertEqual(len(groups), 1)
                 self.assertTrue(groups[0]["review_guard_complete"])
                 self.assertEqual(set(groups[0]["review_guard_sources"]),
@@ -689,11 +692,11 @@ class FactIndexTests(unittest.TestCase):
             "edges": [], "historical_edges": [],
         }
         facts = [
-            {"id": "fa", "statement": "a.py 的 alpha 负责支付校验", "sources": ["v1"]},
+            {"id": "fa", "statement": "必须兼容 a.py 的 alpha 负责支付校验", "sources": ["v1"]},
             {"id": "fb", "statement": "a.py 的 beta 后来修改日志格式", "sources": ["v2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"fact_recall"}, 1, 8000, 16000)
+            facts, [scope], "code", {"constraint_followthrough"}, 1, 8000, 16000)
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0]["facts"]), 1)
         self.assertEqual(set(groups[0]["review_guard_sources"]),
@@ -711,11 +714,11 @@ class FactIndexTests(unittest.TestCase):
             "events": [], "versions": [], "edges": [], "historical_edges": [],
         }
         facts = [
-            {"id": "fa", "statement": "a.py 的 alpha 负责支付校验", "sources": ["e1"]},
+            {"id": "fa", "statement": "必须兼容 a.py 的 alpha 负责支付校验", "sources": ["e1"]},
             {"id": "fb", "statement": "a.py 的 beta 后来修改日志格式", "sources": ["e2"]},
         ]
         groups = build_evidence_groups(
-            facts, [scope], "code", {"fact_recall"}, 1, 8000, 16000)
+            facts, [scope], "code", {"constraint_followthrough"}, 1, 8000, 16000)
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0]["review_guard_sources"]), 1)
 
@@ -730,9 +733,9 @@ class FactIndexTests(unittest.TestCase):
             ],
             "events": [], "versions": [], "edges": [], "historical_edges": [],
         }
-        fact = {"id": "f1", "statement": "check_config 被调用", "sources": ["call"]}
+        fact = {"id": "f1", "statement": "check_config 必须被调用", "sources": ["call"]}
         groups = build_evidence_groups(
-            [fact], [scope], "code", {"fact_recall"}, 1, 2000, 6000)
+            [fact], [scope], "code", {"constraint_followthrough"}, 1, 2000, 6000)
         self.assertEqual(len(groups), 1)
         self.assertFalse(groups[0]["review_guard_complete"])
         self.assertEqual(groups[0]["scope"]["review_guard_reason"], "over_budget")

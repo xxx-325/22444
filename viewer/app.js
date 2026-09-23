@@ -30,7 +30,7 @@
     return list;
   }
   const modeName = mode => mode === "general" ? "普通 QA" : "代码 QA";
-  const types = {"single-hop": "单阶段回忆", "multi-hop": "跨阶段整合", temporal: "时序变化", "open-domain": "外部常识结合", adversarial: "不可回答 / 前提识别", fact_recall: "事实找回", history_tracking: "历史追踪", behavior_inference: "行为推断", failure_diagnosis: "失败诊断"};
+  const types = {constraint_followthrough:'约束遵循',correction_update:'纠正应用',external_state_application:'外部状态应用',failure_avoidance:'失败规避',verification_reuse:'验证复用',compatibility_preservation:'兼容保留'};
   const difficulties = {easy: "简单", medium: "中等", hard: "困难"};
   const steps = ["关键主线", "挑选种子", "扩展一圈", "继续延伸", "实际证据组", "查看 QA"];
   const defaultGroup = data.groups.find(g => g.qa_mode === "code" && g.question_ids.length && g.source_ids.length > 2) || data.groups[0];

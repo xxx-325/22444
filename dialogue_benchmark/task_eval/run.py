@@ -13,6 +13,7 @@ from .metrics import compare_checkpoints
 from .runtime import configure, review_task, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline
+from .history import prepare_history, freeze_contract, historical_context, read_history_review
 
 def solver_input(task, answer=None):
     message = prompts.SOLVER + "\n\n" + task
@@ -93,20 +94,26 @@ def trial_status(verdict, checks, judge, test_mode):
     return "uncertain" if incomplete and status == "passed" else status
 
 
-def construct(item, root, baseline, config, revisions, agent_options):
+def construct(item, root, baseline, config, revisions, agent_options, *, design_probe=False):
+    direction = prompts.task_direction(item["qa"]["type"])
     feedback = ""
     reference = root / "author-reference"
     reference.mkdir(parents=True)
     save(reference / "qa.json", item["qa"])
     shutil.copy2(item["generation_input"], reference / "qa-input.json")
-    save(reference / "provenance.json", {k: v for k, v in item.items() if k != "qa"})
+    save(reference / "provenance.json", {k: v for k, v in item.items() if k not in {"qa", "public_records"}})
+    public_history = (prepare_history(item["public_records"], item["generation_input"])
+                      if item.get("public_records") else None)
+    if public_history:
+        save(reference / "history.json", public_history)
+    history_prompt = prompts.HISTORY_AUTHOR if public_history else ""
     attempts = []
     for attempt in range(revisions + 1):
         run = root / ("construction-%02d" % attempt)
         author = run / "author"
         prepare(author, baseline)
         print(root.name, "author", attempt, flush=True)
-        authored = run_agent(author, config, "judge", prompts.AUTHOR + feedback,
+        authored = run_agent(author, config, "judge", prompts.AUTHOR + direction + history_prompt + feedback,
                              reference=reference, **agent_options)
         spec = author / "workspace/checks"
         record = {"attempt": attempt, "author_status": authored["status"]}
@@ -134,12 +141,22 @@ def construct(item, root, baseline, config, revisions, agent_options):
                         "重新写齐文件。" % (attempt, task_review["issue"]))
             save(root / "construction.json", attempts)
             continue
+        history = None
+        if public_history:
+            try:
+                history = freeze_contract(spec, public_history, answer_text(item["qa"]))
+            except (ValueError, KeyError, OSError) as error:
+                record.update(accepted=False, reason="invalid_history_contract", detail=str(error))
+                feedback = "\n上一轮历史契约错误，请根据公开来源重写：" + str(error)
+                save(root / "construction.json", attempts)
+                continue
         baseline_checks = run_checks(baseline, spec, run / "baseline-checks", config["execution_image"])
         implementation = run / "reference-solver"
         prepare(implementation, baseline)
         print(root.name, "reference implementation", attempt, flush=True)
+        reference_answer = (answer_text(item["qa"]) + "\n" + historical_context(history)) if history else None
         solved = run_agent(implementation, config, "code",
-                           solver_input((spec / "task.md").read_text()), **agent_options)
+                           solver_input((spec / "task.md").read_text(), reference_answer), **agent_options)
         candidate = implementation / "workspace/candidate"
         record["reference_version"] = export_change(baseline, candidate, implementation)
         reference_checks = run_checks(candidate, spec, run / "reference-checks", config["execution_image"])
@@ -152,7 +169,8 @@ def construct(item, root, baseline, config, revisions, agent_options):
         validator = run / "validator"
         prepare(validator, baseline)
         print(root.name, "preflight validation", attempt, flush=True)
-        validated = run_agent(validator, config, "judge", prompts.VALIDATOR,
+        validated = run_agent(validator, config, "judge", prompts.VALIDATOR + (
+                              prompts.HISTORY_VALIDATOR if history else ""),
                               reference=validation_reference, **agent_options)
         verdict_file = validator / "workspace/checks/validation.txt"
         feedback = verdict_file.read_text() if verdict_file.exists() else "验收者未完成验证，请核查需求和测试。"
@@ -171,26 +189,44 @@ def construct(item, root, baseline, config, revisions, agent_options):
             record["reason"] = "missing_coverage_checks"
         record["validation_accepted"] = (agent_finished(solved) and agent_finished(validated)
                                          and final_spec is not None
+                                         and (not history or record["validation"].get("HISTORY") == "supported")
                                          and admission(record["validation"], baseline_checks, reference_checks))
         record["accepted"] = False
         save(root / "construction.json", attempts)
         if record["validation_accepted"]:
-            print(root.name, "reference trajectory checkpoints", attempt, flush=True)
-            extracted = extract_checkpoints((final_spec / "task.md").read_text(),
-                                            read(implementation / "trajectory.json"), config,
-                                            run / "checkpoint-extraction")
+            checkpoint_run = implementation
+            extracted = {"status": "unavailable", "source": "no_unassisted_design_run", "checkpoints": []}
+            if history and design_probe:
+                checkpoint_run = run / "design-probe"
+                prepare(checkpoint_run, baseline)
+                probe = run_agent(checkpoint_run, config, "code",
+                                  solver_input((final_spec / "task.md").read_text()),
+                                  history=history, **agent_options)
+                probe_checks = run_checks(checkpoint_run / "workspace/candidate", final_spec,
+                                         run / "probe-checks", config["execution_image"])
+                record["design_probe"] = {"status": probe["status"], "checks": probe_checks,
+                                           "used_for_admission": False}
+                if agent_finished(probe):
+                    extracted = extract_checkpoints((final_spec / "task.md").read_text(),
+                        read(checkpoint_run / "trajectory.json"), config, run / "checkpoint-extraction",
+                        source="independent_design_probe")
+            elif not history:
+                extracted = extract_checkpoints((final_spec / "task.md").read_text(),
+                    read(implementation / "trajectory.json"), config, run / "checkpoint-extraction")
             record["checkpoint_extraction"] = extracted
             if extracted["status"] != "completed":
-                record["reason"] = "checkpoint_extraction_failed"
-                save(root / "construction.json", attempts)
-                return None
-            write_checkpoints(final_spec, extracted, str(implementation.relative_to(root)))
+                extracted = dict(extracted, checkpoints=[])
+            write_checkpoints(final_spec, extracted, str(checkpoint_run.relative_to(root)))
             record["accepted"] = True
             save(root / "construction.json", attempts)
             receipt = freeze(final_spec, root / "frozen", baseline)
             receipt.update(qa_id=item["qa"]["id"], accepted_attempt=attempt,
                            validation=record["validation"],
                            baseline_checks=baseline_checks, reference_checks=reference_checks)
+            if history:
+                receipt.update(comparison="without_memory_vs_oracle_history",
+                               reference_information=history["reference_information"],
+                               oracle_sufficiency="not_established_by_reference")
             save(root / "frozen.json", receipt)
             return receipt
         # New author conversation receives the previous artifacts and concrete verifier feedback.
@@ -208,6 +244,7 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
     spec = root / "frozen"
     task = (spec / "task.md").read_text()
     checkpoints = read(spec / "checkpoints.json")["checkpoints"]
+    history = read(spec / "history.json") if (spec / "history.json").exists() else None
     result = {}
     order = ("without_memory", "with_memory") if index % 2 == 0 else ("with_memory", "without_memory")
     for slot, condition in enumerate(order, 1):
@@ -215,18 +252,29 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
             raise ValueError("Frozen inputs changed before evaluation")
         trial = root / ("trial-%d" % slot)
         prepare(trial, baseline)
-        message = solver_input(task, answer_text(item["qa"]) if condition == "with_memory" else None)
+        oracle = history["oracle_answer"] if history else answer_text(item["qa"])
+        message = solver_input(task, oracle if condition == "with_memory" else None)
         print(root.name, "evaluation", condition, flush=True)
-        solved = run_agent(trial, config, "code", message, **agent_options)
+        solved = run_agent(trial, config, "code", message, **agent_options,
+                           **({"history": history} if history else {}))
         candidate = trial / "workspace/candidate"
         changed = write_diff(baseline, candidate, trial / "changes.patch")
         checks = run_checks(candidate, spec, trial / "checks", config["execution_image"])
         reference = trial / "judge-reference"
         copy_tree(spec, reference / "spec")
+        if history:
+            # The judge sees criteria and observable actions, never condition labels or injected answers.
+            judge_history = read(reference / "spec/history.json")
+            for key in ("oracle_answer", "reference_information", "oracle_sufficiency"):
+                judge_history.pop(key, None)
+            save(reference / "spec/history.json", judge_history)
+            shutil.copy2(trial / "trajectory.json", reference / "trajectory.json")
+            save(reference / "clarifications.json", solved.get("clarifications", []))
         save(reference / "checks.json", checks)
         judge = trial / "judge"
         prepare(judge, candidate)
-        judged = run_agent(judge, config, "judge", prompts.JUDGE, reference=reference, **agent_options)
+        judged = run_agent(judge, config, "judge", prompts.JUDGE + (
+                           prompts.HISTORY_JUDGE if history else ""), reference=reference, **agent_options)
         verdict_path = judge / "workspace/checks/verdict.txt"
         verdict = verdict_path.read_text() if verdict_path.exists() else ""
         cp = match_checkpoints(checkpoints, read(trial / "trajectory.json"), config,
@@ -237,6 +285,22 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
                              "metrics": solved["metrics"], "checks": checks,
                              "checkpoints": cp, "changed_files": changed,
                              "judge_evidence": verdict, "trial": trial.name}
+        if history:
+            application = read_history_review(judge / "workspace/checks/history-review.txt",
+                                              history, agent_finished(judged))
+            if application["counts"]["violated"]:
+                result[condition]["result"] = "failed"
+            elif application["counts"]["insufficient"] and status == "passed":
+                result[condition]["result"] = "uncertain"
+            if solved.get("clarification_status") in {"unavailable", "budget_exhausted"} and result[condition]["result"] == "passed":
+                result[condition]["result"] = "uncertain"
+            exchanges = solved.get("clarifications", [])
+            result[condition].update(history_application=application,
+                information_condition="oracle_history" if condition == "with_memory" else "without_memory",
+                clarifications=exchanges, responder_cost=solved.get("responder_cost"),
+                clarification_status=solved.get("clarification_status", "unavailable"),
+                interaction_counts={kind: sum(e.get("kind") == kind for e in exchanges)
+                    for kind in ("historical_reask", "same_session_repeat", "update_confirmation")})
         if not unchanged(receipt, spec, baseline):
             raise ValueError("Frozen inputs changed during evaluation")
         save(root / "comparison.json", result)
@@ -278,7 +342,10 @@ def recover_checkpoint_failures(output, config, agent_options):
             continue
         if entry["status"] != "not_admitted" or (root / "checkpoint-recovery").exists():
             continue
-        attempts = read(root / "construction.json")
+        attempts_path = root / "construction.json"
+        if not attempts_path.exists():
+            attempts_path = root / "construction-summary.json"
+        attempts = read(attempts_path)
         record = attempts[-1]
         if not record.get("validation_accepted") or record.get("reason") != "checkpoint_extraction_failed":
             continue
@@ -334,6 +401,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("simulator-path", "source-run", "qa-run", "env-file", "output"):
         parser.add_argument("--" + option, type=Path, required=True)
+    parser.add_argument("--control-config", type=Path,
+                        help="Independent non-secret runtime configuration")
+    parser.add_argument("--design-probe", action="store_true",
+                        help="Run a separate no-memory design probe; never an admission gate")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
@@ -354,7 +425,8 @@ def main(argv=None):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if args.recover_checkpoints:
-        config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file)
+        config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file,
+                           **({"control_config": args.control_config} if args.control_config else {}))
         return recover_checkpoint_failures(output, config, {
             "max_requests": args.agent_requests, "max_tokens": args.agent_tokens})
     if (output / "manifest.json").exists() or (output / "baseline").exists():
@@ -362,7 +434,8 @@ def main(argv=None):
     items = qa_inputs(args.qa_run)
     if not items:
         parser.error("No approved QA with saved generation inputs")
-    config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file)
+    config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file,
+                       **({"control_config": args.control_config} if args.control_config else {}))
     baseline = args.baseline.resolve() if args.baseline else output / "baseline"
     if args.baseline:
         version = baseline_version(baseline)
@@ -396,11 +469,14 @@ def main(argv=None):
     def run(index, item):
         root = output / ("task-%02d" % (index + 1))
         try:
-            receipt = construct(item, root, baseline, config, args.revisions, agent_options)
+            receipt = construct(item, root, baseline, config, args.revisions, agent_options,
+                                **({"design_probe": True} if args.design_probe else {}))
             if receipt is None:
-                return {"task": root.name, "status": "not_admitted", "qa_id": item["qa"]["id"]}
+                return {"task": root.name, "status": "not_admitted", "qa_id": item["qa"]["id"],
+                        "type": item["qa"]["type"]}
             comparison = evaluate(item, root, baseline, receipt, config, agent_options, index)
             return {"task": root.name, "status": "evaluated", "qa_id": item["qa"]["id"],
+                    "type": item["qa"]["type"],
                     "comparison": comparison, "checkpoint_comparison": compare_checkpoints(comparison)}
         except Exception as error:
             failure = {"task": root.name, "status": "error", "error_type": type(error).__name__,

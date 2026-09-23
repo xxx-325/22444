@@ -20,7 +20,7 @@ from .quality import (
     validate_candidates,
     validate_simple_candidates,
     apply_answer_structure_review,
-    apply_code_distinctiveness_review,
+    apply_target_review,
     apply_simple_relevance_review,
     apply_simple_atomicity_review,
     apply_simple_completeness_review,
@@ -31,8 +31,7 @@ from .quality import (
     validate_sources,
 )
 from .protocol import (
-    BEHAVIOR_INFERENCE_CONTRACT,
-    CODE_DISTINCTIVENESS_RULE,
+    QA_TYPE_GUIDANCE,
     MISSING_KINDS,
     SIMPLE_ATOMICITY_RULE,
     SIMPLE_TEMPORAL_WORDING_RULE,
@@ -108,7 +107,7 @@ def evidence_projection(scope, source_ids, padding_records=1, max_chars=None,
                         full_range=False):
     """Keep cited evidence plus a small chronological neighborhood.
 
-    ``full_range`` is reserved for adversarial review: it retains every source
+    ``full_range`` is an explicit projection request: it retains every source
     record in the selected scope while still dropping graph/search bookkeeping.
     Normal QA receives only cited records and nearby dialogue.
     """
@@ -686,7 +685,7 @@ def _restore_local_focus(document, ref_to_source):
 def _simple_focus_issue(focus, qa_mode, target_type):
     """Reject an obviously bundled focus before it can broaden the QA."""
     text = focus.get("text", "") if isinstance(focus, dict) else ""
-    if qa_mode == "general" and target_type == "single-hop":
+    if qa_mode == "general" and target_type == "constraint_followthrough":
         if re.search(r"批准状态|是否.{0,12}批准|已.{0,8}批准", text):
             return ("不选“是否已批准/已确认”这类过程状态；"
                     "选批准内容中会改变后续实现或评测决策的具体约束。")
@@ -699,7 +698,7 @@ def _simple_focus_issue(focus, qa_mode, target_type):
                               re.IGNORECASE)):
             return ("不要选只对本轮有效的环境搭建或命令执行禁令；"
                     "选会改变后续实现、接口、行为、兼容性或评测决策的约束。")
-    if qa_mode == "code" and target_type == "behavior_inference":
+    if qa_mode == "code":
         if re.search(r"(?:方法|函数).{0,30}新增(?:的)?.{0,40}(?:参数|形参)|"
                      r"新增(?:的)?.{0,40}(?:参数|形参).{0,20}如何", text):
             return ("行为题把对象写成具体的值传递链，例如‘timeout_seconds 值如何传递’；"
@@ -928,11 +927,10 @@ Return at most 12 useful facts per request; prefer changes and tested constraint
 over a list of facts visible in unchanged code.
 """ + FACT_FORMAT
 
-GENERAL_FACT_PROMPT = """Extract independently verifiable facts from visible user and assistant
-messages and explicitly supplied document blocks. Preserve who said what, explicit choices, constraints, feedback,
-plans, outcomes, and the order of discussion. Do not infer code or repository
-facts from tool records, and do not add outside knowledge. Cite only supplied
-record IDs. Mark a fact SOURCE_KIND=document when it comes from a supplied
+GENERAL_FACT_PROMPT = """Extract independently verifiable facts from public messages,
+supplied documents, and public tool actions/results. Preserve attribution, conditions,
+corrections, actual observations and test outcomes. Separate requests and plans from
+completed actions. Do not add outside knowledge. Mark SOURCE_KIND=document for a supplied
 document or project specification; do not describe document rules as user preferences.
 Return at most 12 useful facts per request, each stated concisely.
 """ + FACT_FORMAT
@@ -971,35 +969,13 @@ MISSING_OBJECT: 原文中精确的路径或符号，不是资料编号
 """
 
 SIMPLE_CODE_QA_RULES = """
-Code QA has an additional memory-value gate. """ + CODE_DISTINCTIVENESS_RULE + """
-Ask about an actual old-to-new change, a recorded feedback/failure/decision, or a
-result that necessarily combines multiple code locations. Behavior inference must
-satisfy this contract: """ + BEHAVIOR_INFERENCE_CONTRACT + """ Failure diagnosis
-must connect an observed failure to its repair basis, not select a nearby guard or
-error branch. Return NO_QA for an
-untimed directory inventory, a single-line default or signature, or a current value
-wrapped in historical wording. These are semantic limits, not banned words.
-For behavior inference, answer only the selected value/condition path and its
-result. Do not add nearby defaults, signatures, or validation branches unless the
-focus explicitly asks about that exact condition.
-For a value-flow question, do not write "X receives/adds parameter p" or its default
-value. Start each point at the actual action: "X calls Y with p", "Y passes p to Z",
-or "Z uses p as timeout".
-If the focus ends at a named call argument, do not append later exception conversion
-unless the focus also asks what happens after that timeout or failure.
+Use recorded history to answer one future implementation, diagnosis, or validation
+decision. A current-code fact, signature, directory inventory, or ordinary language
+semantics alone is not a memory question. Keep actual code and test conditions.
+Do not turn a document rule into an executed code behavior.
 """
 
-SIMPLE_TYPE_GUIDANCE = {
-    "fact_recall": "Ask for a concrete explicitly stated fact needed in later work",
-    "history_tracking": "Ask what one actual past state changed from and to; ask for a reason or consequence only under the supplied causality rule",
-    "behavior_inference": BEHAVIOR_INFERENCE_CONTRACT + " Do not enumerate adjacent validation checks",
-    "failure_diagnosis": "Explain the mechanism of a recorded failure or why a recorded change addresses it; reporting only an error message or a later test result does not answer this task",
-    "single-hop": "Ask for one directly recorded, practically reusable decision, constraint, or condition",
-    "multi-hop": "Ask one useful relationship that genuinely combines indispensable discussion steps",
-    "temporal": "Ask how a stated fact or decision changed across time",
-    "open-domain": "Ask only when a supplied material is explicitly represented as outside knowledge, and combine it with supplied dialogue; otherwise return NO_QA",
-    "adversarial": "Ask a question that requires rejecting a supplied contradiction or refusing an unsupported claim within the supplied complete range; never invent the trap",
-}
+SIMPLE_TYPE_GUIDANCE = QA_TYPE_GUIDANCE
 
 SIMPLE_FOCUS_PROMPT = """Select one concrete Chinese task focus for this fixed purpose:
 TARGET_DEFINITION.
@@ -1030,22 +1006,10 @@ symbol. Never use a 资料N reference as MISSING_OBJECT. If no exact path or sym
 is available, return NO_QA alone. Do not copy the alternatives or add prose.
 """
 
-SIMPLE_CODE_FOCUS_RULES = """
-For code behavior, """ + BEHAVIOR_INFERENCE_CONTRACT + """ Do not select adjacent checks merely because
-they are near each other. For failure diagnosis, focus on an observed failure and
-the basis for its repair; patch application alone is not a verified repair, and any
-supplied later validation needed by that target must remain cited. A complete
-old-to-new transition may be represented in one fact; fact count is not reasoning.
-Stop at the last explicitly recorded operation. If the material only shows command
-construction, focus on the concrete arguments and insertion position; do not invent
-an upstream CLI parser, consumer, or later runtime effect.
-For value flow, name the value itself (for example, "timeout_seconds 值如何传递").
-Do not phrase the focus as a method "adding a parameter" unless the assigned task is
-about the signature; that wording invites irrelevant declaration facts.
-"""
+SIMPLE_CODE_FOCUS_RULES = SIMPLE_CODE_QA_RULES
 
 SIMPLE_GENERAL_FOCUS_RULES = """
-普通题只选一项决定或约束：后续做哪个具体动作前，需要确认什么？
+普通题围绕固定任务选择一项历史信息：后续做哪个具体动作前，需要确认什么？
 不要选“有哪些限制/哪些操作/输入与输出要求”这类清单或多个目标。
 把“具体约束是什么”进一步收窄成一个可直接回答的决策维度，例如“允许哪种输入凭据”。
 优先选择会改变后续实现动作的约束；表达语言、已批准、已阅读等过程性信息只有在它本身会改变任务时才选。
@@ -1092,27 +1056,19 @@ For each ID, choose one value inside angle brackets and remove the brackets. Do 
 copy the alternatives literally. Do not output a reason or any other field.
 """
 
-CODE_DISTINCTIVENESS_PROMPT = """Classify only why the immutable code question and
-its existing A*/F* points require code memory. Do not answer, rewrite, repair, or
-judge truth, completeness, atomicity, or difficulty. Classify the existing answer
-target, not the intended authoring task. If a FOCUS is supplied, also check whether
-the question answers that exact focus: aligned means the main answer target matches;
-mixed means it adds a different independent target; drifted means it answers another
-task; uncertain means the focus or target cannot be matched safely.
-""" + CODE_DISTINCTIVENESS_RULE + """
-Choose the basis that describes the question's main answer target: A mainly compares
-earlier and later states; B mainly asks how a recorded failure, feedback, decision, or
-constraint guides a later decision; C mainly derives behavior from conditions, calls,
-or data flow across code locations. Choose D when none is proven. Relevant material
-merely being present is not enough. Historical words, or old/new material that the
-answer does not need, do not make the question A.
+TARGET_REVIEW_PROMPT = """Check only whether this question and its existing answer
+serve the assigned historical-memory purpose: TARGET_DEFINITION
+If supplied, the focus fixes the concrete object and decision. Choose aligned only
+when the answer uses the required recorded history to resolve that decision.
+Choose drifted for a different goal, a bare current-code fact, or general knowledge.
+Choose mixed for multiple independent goals; uncertain if you cannot decide.
+Do not judge individual claim truth, atomicity, completeness, or difficulty here.
 Return exactly:
 REVIEW q1
-review_contract: code_distinctiveness_v1
-answer_basis: A|B|C|D
+review_contract: target_v1
 target_alignment: aligned|mixed|drifted|uncertain
 END_REVIEW
-If no FOCUS is supplied, omit target_alignment. Do not output a reason or any other field.
+Choose one value only. Do not output a reason or another field.
 """
 
 SIMPLE_COMPLETENESS_PROMPT = """Check only whether the immutable existing A* answer
@@ -1253,7 +1209,7 @@ original evidence, preferring necessary historical dependencies or nontrivial co
 logic composition. If no candidate is justified, return NO_QA alone. Do not supply the tested relationship
 inside the question. Invented inputs are allowed only as explicit hypothetical
 scenarios, not claimed past events. Split independently scored question goals.
-Select only these requested code categories: TYPES.
+Select only this requested memory purpose: TYPES.
 Copy every supplied fact ID exactly in FACT_IDS; do not shorten, rename, or invent
 an ID. Copy source IDs exactly in each SOURCES field.
 For every candidate, state internally who would retrieve this memory during what
@@ -1269,11 +1225,7 @@ a source ID with an opaque placeholder. Avoid authoring phrases such as
 file/function names, observed errors and operation stages. State an observed symptom
 if needed, but do not state the root cause, decisive relationship, or fix being asked.
 If this makes the question unclear, return no candidate.
-Categories by answer goal:
-fact_recall: retrieve explicitly stated facts, without version reconstruction or inference.
-history_tracking: reconstruct actual changes or effective state at a historical point.
-behavior_inference: derive behavior for given inputs, including comparing versions.
-failure_diagnosis: explain an actually observed failure using code and execution evidence.
+Types describe the required historical use, as defined below.
 Do not use a code QA for line numbers, import ordering, __all__ export lists,
 whitespace/formatting-only edits, or an isolated default constant unless that
 detail changes runtime behavior, compatibility, a test choice, or a concrete
@@ -1291,7 +1243,8 @@ the current function body alone is never history_core. Otherwise use
 inference_control; do not disguise a current-code question as a history question.
 Return blocks in this exact format, with no JSON:
 QA q1
-CATEGORY: fact_recall|history_tracking|behavior_inference|failure_diagnosis
+QA_MODE: code
+TYPE: TYPES
 DIFFICULTY: easy|medium|hard
 DIFFICULTY_REASON: ...
 TRACK: history_core|inference_control
@@ -1313,32 +1266,21 @@ message explicitly confirms completion. Never turn a plan into a current fact.""
 
 GENERAL_QA_PROMPT = PATH_GUIDANCE + TARGET_GUIDANCE + """Produce at most MAX_QUESTIONS natural Chinese conversation-memory QA
 candidates. If no candidate is justified, return NO_QA alone.
-Select only these requested LoCoMo-adapted types: TYPES.
-single-hop needs one discussion stage; multi-hop combines distinct conversation
-stages (not character chunks); temporal requires an order or change inference;
-open-domain combines a dialogue fact with ordinary world knowledge; adversarial
-detects an absent answer or false premise instead of inventing one. This input is
-one long coding session, so multi-hop uses distinct discussion stages rather than
-LoCoMo's original distinct sessions. Ask something a user could naturally ask
-later or an agent could retrieve to continue work. Never expose answer, source IDs,
-stage IDs, or authoring language in the public question or answer points. For
-adversarial, return no candidate unless the
-payload explicitly covers the full selected range.
+Select only these requested memory-purpose types: TYPES.
+Ask a natural future question using recorded history; do not expose internal IDs.
 Copy every supplied fact ID exactly in FACT_IDS; do not shorten, rename, or invent
 an ID. Copy source IDs exactly in each SOURCES field.
 For every candidate, state internally who would retrieve this memory during what
-future task and which decision it changes. For open-domain, separately name the
-ordinary outside knowledge used; never present it as dialogue history.
+future task and which decision it changes.
 Return this tagged format, never JSON:
 QA q1
 QA_MODE: general
-TYPE: single-hop|multi-hop|temporal|open-domain|adversarial
+TYPE: TYPES
 DIFFICULTY: easy|medium|hard
 DIFFICULTY_REASON: ...
 MEMORY_REQUIREMENT: ...
 USE_CASE: who would retrieve this memory during what task, and what decision it supports
 ANSWER_TARGET: one concise semantic target shared by the question and answer
-EXTERNAL_KNOWLEDGE: external knowledge used by open-domain, empty for other types
 FACT_IDS: f1,f2
 QUESTION: ...
 ANSWER_POINT: one atomic claim || SOURCES: e1,e2
@@ -1357,8 +1299,7 @@ plan into a current fact."""
 
 QUESTION_REVIEW_GUIDANCE = """
 Judge practical future use, natural and unambiguous wording, difficulty, type, and
-whether history is genuinely necessary. A multi-hop question needs at least two
-indispensable discussion stages. For code history, identify a concrete fact absent
+whether the answer serves the assigned historical purpose. For code history, identify a concrete fact absent
 from the current snapshot and its supplied sources; otherwise recommend
 inference_control. current_snapshot_alone_sufficient and history_evidence_required
 are diagnostic booleans, not flags that must both be true. Use false for an approval
@@ -1398,9 +1339,6 @@ type_correct: true|false
 history_requirement_correct: true|false
 current_snapshot_alone_sufficient: true|false
 history_evidence_required: true|false
-external_knowledge_separated: true|false
-external_knowledge_necessary: true|false
-full_range_checked: true|false
 recommended_type: one allowed type
 recommended_track: history_core|inference_control|none
 type_basis: concise source/stage basis
@@ -1445,9 +1383,6 @@ type_correct: true|false
 history_requirement_correct: true|false
 current_snapshot_alone_sufficient: true|false
 history_evidence_required: true|false
-external_knowledge_separated: true|false
-external_knowledge_necessary: true|false
-full_range_checked: true|false
 recommended_type: one allowed type
 recommended_track: history_core|inference_control|none
 type_basis: concise source/stage basis
@@ -1477,9 +1412,10 @@ An inference_control item must be answerable from the current snapshot.
 """ + QUESTION_REVIEW_GUIDANCE + ANSWER_REVIEW_GUIDANCE + SINGLE_REVIEW_FORMAT
 
 GENERAL_REVIEW_PROMPT = """Independently audit one general QA candidate against
-visible dialogue, supplied documents, and the full evidence group. Multi-hop needs
-distinct indispensable discussion stages. Open-domain must genuinely require and
-separate outside knowledge. Adversarial requires the complete selected cutoff range.
+visible dialogue, supplied documents, and the full evidence group. The assigned
+memory purpose is fixed; do not relabel it. Check that the cited public evidence
+contains the concrete historical constraint, correction, external observation,
+failure, verification result, or compatibility promise required by that purpose.
 Reject internal IDs and authoring language in public text.
 """ + QUESTION_REVIEW_GUIDANCE + ANSWER_REVIEW_GUIDANCE + SINGLE_REVIEW_FORMAT
 
@@ -1519,9 +1455,6 @@ type_correct: true|false
 history_requirement_correct: true|false
 current_snapshot_alone_sufficient: true|false
 history_evidence_required: true|false
-external_knowledge_separated: true|false
-external_knowledge_necessary: true|false
-full_range_checked: true|false
 recommended_type: one allowed type
 recommended_track: history_core|inference_control|none
 type_basis: concise source/stage basis
@@ -1685,15 +1618,13 @@ def _restore_fact_sources(document, ref_to_source):
 
 
 def _prompt_for_mode(qa_mode, allowed_types, max_questions):
-    if qa_mode == "general":
-        types = ",".join(sorted(allowed_types or {"single-hop", "multi-hop", "temporal",
-                                                    "open-domain", "adversarial"}))
-        return (GENERAL_FACT_PROMPT, GENERAL_QA_PROMPT.replace("TYPES", types)
-                .replace("MAX_QUESTIONS", str(max_questions)), GENERAL_REVIEW_PROMPT)
-    types = ",".join(sorted(allowed_types or {
-        "fact_recall", "history_tracking", "behavior_inference", "failure_diagnosis"}))
-    return (FACT_PROMPT, QA_PROMPT.replace("MAX_QUESTIONS", str(max_questions))
-            .replace("TYPES", types), REVIEW_PROMPT)
+    types = sorted(allowed_types or QA_TYPE_GUIDANCE)
+    guidance = "\n".join(kind + ": " + QA_TYPE_GUIDANCE[kind] for kind in types)
+    prompt = GENERAL_QA_PROMPT if qa_mode == "general" else QA_PROMPT
+    prompt = prompt.replace("MAX_QUESTIONS", str(max_questions)).replace("TYPES", ",".join(types))
+    return ((GENERAL_FACT_PROMPT if qa_mode == "general" else FACT_PROMPT),
+            prompt + "\n" + guidance,
+            GENERAL_REVIEW_PROMPT if qa_mode == "general" else REVIEW_PROMPT)
 
 
 def _empty_result(facts=None, questions=None):
@@ -1787,12 +1718,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             fact_sources.update(scope.get("review_guard_sources", []))
         qa_budget = scope.get("model_request_chars", scope.get("max_context_chars", 60000))
         group_types = scope.get("evidence_group", {}).get("target_types", [])
-        full_range_question = (
-            qa_mode == "general"
-            and (scope.get("full_range_required")
-                 or (target_type == "adversarial" if generation_mode == "simple" else
-                     ("adversarial" in set(group_types)
-                      or (allowed_types and set(allowed_types) == {"adversarial"})))))
+        full_range_question = bool(scope.get("full_range_required"))
         if generation_mode == "simple":
             failed_stage = "focus"
             focus_sources = (_scope_material_source_ids(scope)
@@ -2028,7 +1954,7 @@ def _simple_missing_evidence_payload(scope, facts, candidate, missing_ids,
     point_sources &= allowed_sources
     guard_sources = {source for source in scope.get("review_guard_sources", [])
                      if isinstance(source, str) and source in allowed_sources}
-    if candidate.get("type") == "adversarial":
+    if scope.get("full_range_required"):
         material_sources = allowed_sources
         guard_sources.update(allowed_sources - point_sources)
     else:
@@ -2131,7 +2057,7 @@ def _simple_repair_issue(failure):
         return "Remove 资料N references from QUESTION and point text; keep them only in SOURCES."
     if reason == "unsupported_temporal_reference":
         return "Replace unsupported absolute-recency wording with 之前 and the concrete event."
-    if reason == "code_answer_basis_target_mismatch":
+    if reason == "answer_target_mismatch":
         return ("The candidate answers a different task. Rewrite it to answer the "
                 "original fixed TARGET_DEFINITION and focus, using the same materials. "
                 "A change list or test result alone cannot explain a failure mechanism.")
@@ -2152,8 +2078,8 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
         }
         repairable = (
             failure.get("reason") in validation_reasons
-            or (failure.get("reason") == "code_answer_basis_target_mismatch"
-                and checks == {"code_answer_target_aligned"})
+            or (failure.get("reason") == "answer_target_mismatch"
+                and checks == {"answer_target_aligned"})
             or checks == {"atomic_points_correct"}
             or (checks == {"answer_complete"}
                 and decision.get("evidence_supported") is True
@@ -2252,7 +2178,7 @@ conjunctive conditions for one result remain one point. Return one QA or NO_QA.
         payload = _fit_projection(
             prompt, scope, sources,
             {"facts": facts, "candidate": candidate, "review": decision}, budget,
-            full_range=candidate.get("type") == "adversarial")
+            full_range=bool(scope.get("full_range_required")))
         response = _ask_stage(client, prompt, payload, "repair")
         save("repair-response.json", response)
         revision["response"] = deepcopy(response)
@@ -2392,18 +2318,20 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
     candidate = result["questions"][0]
     sources, stage_ids = _review_context(scope, result["facts"], result["questions"])
     qa_budget = scope.get("model_request_chars", scope.get("max_context_chars", 60000))
-    full_range_question = candidate.get("type") == "adversarial"
+    full_range_question = bool(scope.get("full_range_required"))
     structure_decision = None
     if review_mode == "simple":
         if full_range_question and not scope.get("full_range_covered"):
             result["questions"] = [dict(
                 candidate, status="needs_review",
-                review_error="incomplete_adversarial_range")]
+                review_error="incomplete_required_range")]
             result["stage_status"]["review"] = "blocked"
             return result
-        simple_review_stage = "review_code_distinctiveness"
+        simple_review_stage = "review_target"
         try:
-            if qa_mode == "code":
+            if candidate.get("type") in QA_TYPE_GUIDANCE:
+                target_prompt = TARGET_REVIEW_PROMPT.replace(
+                    "TARGET_DEFINITION", QA_TYPE_GUIDANCE[candidate["type"]])
                 distinctiveness_payload, _ = simple_evidence_payload(
                     scope, sources, facts=result["facts"], candidate=candidate)
                 if isinstance(candidate.get("_generation_focus"), dict):
@@ -2411,15 +2339,15 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                         "text": candidate["_generation_focus"].get("text", "")
                     }
                 _check_simple_request_budget(
-                    CODE_DISTINCTIVENESS_PROMPT, distinctiveness_payload, qa_budget)
+                    target_prompt, distinctiveness_payload, qa_budget)
                 distinctiveness_document = _ask_stage(
-                    client, CODE_DISTINCTIVENESS_PROMPT,
-                    distinctiveness_payload, "review_code_distinctiveness")
-                save("code-distinctiveness-review.json", distinctiveness_document)
+                    client, target_prompt,
+                    distinctiveness_payload, "review_target")
+                save("target-review.json", distinctiveness_document)
                 distinctive_kept, distinctive_failed = (
-                    apply_code_distinctiveness_review(
+                    apply_target_review(
                         [candidate], distinctiveness_document))
-                result["stage_status"]["review_code_distinctiveness"] = "completed"
+                result["stage_status"]["review_target"] = "completed"
                 distinctive_ready = [
                     item for item in distinctive_kept
                     if item.get("status") == "awaiting_atomicity_review"]

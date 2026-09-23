@@ -23,7 +23,7 @@ class SimpleExpansionBudgetTests(unittest.TestCase):
         }
         self.base_fact = {
             "id": "f-base", "qa_mode": "general",
-            "statement": "runner.py base", "sources": ["e-base"],
+            "statement": "runner.py must retain the base behavior", "sources": ["e-base"],
         }
         self.index = build_evidence_index(
             [self.base_fact], [self.scope], "general", 60000)
@@ -32,7 +32,7 @@ class SimpleExpansionBudgetTests(unittest.TestCase):
             "facts": [copy.deepcopy(self.base_fact)],
             "scope": copy.deepcopy(self.index["universe"]),
             "relation_path": {},
-            "eligible_types": ("single-hop",),
+            "eligible_types": ("constraint_followthrough",),
         }
 
     @staticmethod
@@ -74,7 +74,7 @@ class SimpleExpansionBudgetTests(unittest.TestCase):
                 patch.object(cli, "expand_evidence_group_once",
                              side_effect=expand) as expand_mock:
             result = cli.generate_simple_target(
-                self.group, self.index, "single-hop", object(), "general",
+                self.group, self.index, "constraint_followthrough", object(), "general",
                 expansion_budget=expansion_budget,
             )
         return result, calls, expand_mock
@@ -147,9 +147,9 @@ class SimpleExpansionBudgetTests(unittest.TestCase):
             {"f-base", "f-extra-1", "f-extra-2", "f-extra-3"},
         )
         self.assertEqual({item["cutoff"] for item in calls}, {7})
-        self.assertEqual({item["target_type"] for item in calls}, {"single-hop"})
+        self.assertEqual({item["target_type"] for item in calls}, {"constraint_followthrough"})
         self.assertEqual({item["allowed_types"] for item in calls},
-                         {("single-hop",)})
+                         {("constraint_followthrough",)})
         self.assertEqual(
             [item["fact_ids"] for item in calls],
             [

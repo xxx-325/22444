@@ -20,7 +20,7 @@ class ReviewRegressionTests(unittest.TestCase):
             }],
             "events": [], "versions": [], "edges": [], "historical_edges": [],
             "evidence_group": {
-                "id": "general-group-1", "target_types": ["single-hop"],
+                "id": "general-group-1", "target_types": ["constraint_followthrough"],
                 "stage_count": 1,
             },
         }
@@ -30,7 +30,7 @@ class ReviewRegressionTests(unittest.TestCase):
         }]
         self.candidate = {
             "id": "q1", "candidate_id": "q1", "qa_mode": "general",
-            "type": "single-hop", "difficulty": "easy",
+            "type": "constraint_followthrough", "difficulty": "easy",
             "difficulty_reason": "直接找回一条约定",
             "memory_requirement": "恢复配置格式约定",
             "use_case": "继续配置项目时选择正确格式",
@@ -59,7 +59,7 @@ class ReviewRegressionTests(unittest.TestCase):
             "useful_task": "恢复配置约定",
             "useful_decision": "选择配置格式",
             "answer_effect": "避免使用错误格式",
-            "recommended_type": "single-hop",
+            "recommended_type": "constraint_followthrough",
             "necessary_source_ids": "m1",
             "answer_requirements": "R1=配置格式",
             "requirement_coverage": "R1=A1",
@@ -103,6 +103,10 @@ class ReviewRegressionTests(unittest.TestCase):
             self.calls = []
 
         def ask(self, prompt, data):
+            # Target routing is exercised separately in test_memory_types.
+            if "review_contract: target_v1" in prompt:
+                return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                     "target_alignment": "aligned"}]}
             self.calls.append((prompt, copy.deepcopy(data)))
             return self.responses.pop(0)
 
@@ -125,7 +129,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual(result["questions"][0]["status"], "approved")
 
     def test_split_question_failure_does_not_reach_answer_lane(self):
-        decision = self._question_decision(type_correct=False, recommended_type="temporal")
+        decision = self._question_decision(type_correct=False, recommended_type="correction_update")
         client = self._Client([{"reviews": [self._answer_decision()]},
                                {"reviews": [decision]}])
         result = review_candidates(

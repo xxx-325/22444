@@ -31,7 +31,7 @@ class ReviewIsolationTests(unittest.TestCase):
             "candidate_id": "general_g1_q1",
             "model_id": "q1",
             "qa_mode": "general",
-            "type": "single-hop",
+            "type": "constraint_followthrough",
             "difficulty": "easy",
             "difficulty_reason": "同一讨论阶段直接给出两项约束",
             "memory_requirement": "恢复格式约束及后续验证动作",
@@ -55,6 +55,10 @@ class ReviewIsolationTests(unittest.TestCase):
             self.usage = []
 
         def ask(self, prompt, data):
+            # Target routing is exercised separately in test_memory_types.
+            if "review_contract: target_v1" in prompt:
+                return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                     "target_alignment": "aligned"}]}
             self.prompts.append(prompt)
             self.payloads.append(copy.deepcopy(data))
             self.usage.append({"status": "completed"})
@@ -86,7 +90,7 @@ type_correct: true
 external_knowledge_separated: true
 external_knowledge_necessary: true
 full_range_checked: true
-recommended_type: single-hop
+recommended_type: constraint_followthrough
 recommended_track: none
 type_basis: 同一讨论阶段的两条直接约束
 necessary_source_ids: m1,m2

@@ -24,7 +24,7 @@ class SplitReviewTests(unittest.TestCase):
         ]
         self.candidate = {
             "id": "general_g1_q1", "candidate_id": "general_g1_q1", "model_id": "q1",
-            "qa_mode": "general", "type": "single-hop", "difficulty": "easy",
+            "qa_mode": "general", "type": "constraint_followthrough", "difficulty": "easy",
             "difficulty_reason": "单条用户约束直接给出", "memory_requirement": "恢复配置约束",
             "use_case": "开发者实现配置解析时决定必须支持的格式",
             "answer_target": "配置必须支持的格式", "fact_ids": ["f1"],
@@ -40,7 +40,7 @@ class SplitReviewTests(unittest.TestCase):
             "not_answer_leaking": True, "natural_wording": True,
             "practical_useful": True, "type_correct": True,
             "external_knowledge_separated": True, "external_knowledge_necessary": True,
-            "full_range_checked": True, "recommended_type": "single-hop",
+            "full_range_checked": True, "recommended_type": "constraint_followthrough",
             "recommended_track": "none", "type_basis": "单条用户消息",
             "necessary_source_ids": "m1", "necessary_stage_ids": "none",
             "history_only_fact": "none", "history_source_ids": "none",
@@ -69,6 +69,10 @@ class SplitReviewTests(unittest.TestCase):
             self.usage = []
 
         def ask(self, prompt, data):
+            # Target routing is exercised separately in test_memory_types.
+            if "review_contract: target_v1" in prompt:
+                return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                     "target_alignment": "aligned"}]}
             self.payloads.append((prompt, copy.deepcopy(data)))
             self.usage.append({"status": "completed"})
             return next(self.responses)
@@ -178,6 +182,10 @@ class SplitReviewTests(unittest.TestCase):
 
         class Client(self.Client):
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 if self.payloads:
                     raise ValueError("answer transport failed")
                 return super().ask(prompt, data)
@@ -239,12 +247,12 @@ class SplitReviewTests(unittest.TestCase):
 
     def test_wrong_multi_hop_label_is_repairable_as_single_hop(self):
         candidate = copy.deepcopy(self.candidate)
-        candidate["type"] = "multi-hop"
+        candidate["type"] = "compatibility_preservation"
         negative = self.evidence_review(
-            type_correct=False, recommended_type="single-hop",
-            necessary_stage_ids="none", reason="只需一条来源，应为 single-hop")
+            type_correct=False, recommended_type="constraint_followthrough",
+            necessary_stage_ids="none", reason="只需一条来源，应为 constraint_followthrough")
         repaired = copy.deepcopy(candidate)
-        repaired.update(id="q1", type="single-hop")
+        repaired.update(id="q1", type="constraint_followthrough")
         client = self.Client([
             self.structure_review(), negative, {"questions": [repaired]},
             self.structure_review(), self.evidence_review(),
@@ -253,7 +261,7 @@ class SplitReviewTests(unittest.TestCase):
             self.scope, self.facts, [candidate], client,
             qa_mode="general", review_mode="split", allow_repair=True)
         self.assertEqual(result["questions"][0]["status"], "approved")
-        self.assertEqual(result["questions"][0]["type"], "single-hop")
+        self.assertEqual(result["questions"][0]["type"], "constraint_followthrough")
         self.assertEqual([item["stage"] for item in client.usage],
                          ["review_structure", "review_evidence", "repair",
                           "review_structure", "review_evidence"])
@@ -261,10 +269,10 @@ class SplitReviewTests(unittest.TestCase):
     def test_false_history_label_is_repairable_as_inference_control(self):
         scope = copy.deepcopy(self.scope)
         scope["qa_mode"] = "code"
-        facts = [{"id": "f1", "statement": "当前配置使用 yaml", "sources": ["m1"]}]
+        facts = [{"id": "f1", "statement": "用户要求配置必须使用 yaml", "sources": ["m1"]}]
         candidate = copy.deepcopy(self.candidate)
         candidate.update(
-            qa_mode="code", type="fact_recall", category="fact_recall",
+            qa_mode="code", type="constraint_followthrough", category="constraint_followthrough",
             track="history_core", answer_target="当前配置格式")
 
         def evidence_review(history_correct, track):
@@ -276,7 +284,7 @@ class SplitReviewTests(unittest.TestCase):
                 "history_requirement_correct": history_correct,
                 "current_snapshot_alone_sufficient": True,
                 "history_evidence_required": False,
-                "recommended_type": "fact_recall", "recommended_track": track,
+                "recommended_type": "constraint_followthrough", "recommended_track": track,
                 "type_basis": "当前快照直接给出配置",
                 "necessary_source_ids": "m1", "necessary_stage_ids": "none",
                 "history_only_fact": "none", "history_source_ids": "none",

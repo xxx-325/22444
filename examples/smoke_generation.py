@@ -35,7 +35,7 @@ from dialogue_benchmark.cli import (_safe_public_questions,
 from dialogue_benchmark.fact_index import (build_evidence_index,
                                             candidate_review_projection,
                                             static_candidate_labels,
-                                            static_code_evidence_check)
+                                            static_evidence_check)
 from dialogue_benchmark.llm import (ChatClient, generate_from_facts,
                                     repair_simple_validation_rejection,
                                     review_candidates, stage_error)
@@ -329,9 +329,9 @@ def _run_target_type(track, group_id, group, target_type, endpoint, model,
             checked = []
             checks_by_id = {}
             for question in qa_result.get("questions", []):
-                check = static_code_evidence_check(
+                check = static_evidence_check(
                     active_group, evidence_index, target_type, candidate=question)
-                question["static_code_evidence"] = check
+                question["static_type_evidence"] = check
                 checks_by_id[question.get("id")] = check
                 static_postchecks.append(check)
                 if check.get("status") == "insufficient":
@@ -340,7 +340,7 @@ def _run_target_type(track, group_id, group, target_type, endpoint, model,
                         "reason": "code_evidence_static_insufficient",
                         "static_reason": check.get("reason"),
                         "failed_checks": ["code_evidence_sufficient"],
-                        "static_code_evidence": check,
+                        "static_type_evidence": check,
                     })
                 else:
                     checked.append(question)
@@ -348,7 +348,7 @@ def _run_target_type(track, group_id, group, target_type, endpoint, model,
             for question in qa_result.get("all_candidates", []):
                 check = checks_by_id.get(question.get("id"))
                 if check is not None:
-                    question["static_code_evidence"] = check
+                    question["static_type_evidence"] = check
         _stage_receipt(target_dir, "qa", client, usage_before,
                        responses_before, result=qa_result)
 
@@ -396,9 +396,9 @@ def _run_target_type(track, group_id, group, target_type, endpoint, model,
         if track == "code" and review_mode == "simple":
             final_questions = []
             for question in review_result.get("questions", []):
-                check = static_code_evidence_check(
+                check = static_evidence_check(
                     active_group, evidence_index, target_type, candidate=question)
-                question["static_code_evidence"] = check
+                question["static_type_evidence"] = check
                 static_postchecks.append(check)
                 if check.get("status") == "insufficient":
                     review_result.setdefault("rejected", []).append({
@@ -406,7 +406,7 @@ def _run_target_type(track, group_id, group, target_type, endpoint, model,
                         "reason": "code_evidence_static_insufficient",
                         "static_reason": check.get("reason"),
                         "failed_checks": ["code_evidence_sufficient"],
-                        "static_code_evidence": check,
+                        "static_type_evidence": check,
                         "stage": "static_post_review",
                     })
                 else:

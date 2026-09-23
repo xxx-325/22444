@@ -19,6 +19,8 @@ def normalize_openhands(rows):
     from .normalize import is_truncated, source_kind_for, text_content
 
     records, calls = [], {}
+    visible = bool(rows and rows[0][1].get("schema") == "model-visible-dialogue-v1")
+    seen = set()
 
     def emit(item, row, line, suffix=""):
         records.append(dict(
@@ -26,18 +28,45 @@ def normalize_openhands(rows):
             source_line=line, original_id=str(row.get("id", line)) + suffix,
             timestamp=row.get("timestamp"), workspace="/workspace/candidate",
             source_kind=source_kind_for(item)))
+        if visible:
+            records[-1]["input_schema"] = "model-visible-dialogue-v1"
+            records[-1]["sequence"] = row["sequence"]
 
-    for line, row in rows:
+    for sequence, (line, row) in enumerate(rows, 1):
+        if visible:
+            if (row.get("schema") != "model-visible-dialogue-v1"
+                    or row.get("sequence") != sequence
+                    or not isinstance(row.get("id"), str) or not row["id"]
+                    or row["id"] in seen):
+                raise ValueError("Invalid public event identity or sequence")
+            seen.add(row["id"])
+        elif row.get("schema"):
+            raise ValueError("Mixed or unsupported dialogue schema")
         kind = row.get("kind")
         if kind in {"user", "assistant"}:
+            if visible and not isinstance(row.get("text"), str):
+                raise ValueError("Public message requires actual text")
             emit({"kind": "message", "role": kind,
                   "text": text_content(row.get("text", ""))}, row, line)
         elif kind == "tool_call":
+            if visible and (not row.get("call_id") or row["call_id"] in calls):
+                raise ValueError("Missing or repeated public call ID")
             calls[row.get("call_id")] = row
             emit({"kind": "call", "call_id": row.get("call_id"),
                   "name": row.get("tool_name"),
                   "text": _tool_text(row.get("action", {}))}, row, line)
         elif kind == "tool_result":
+            if visible:
+                call = calls.get(row.get("call_id"))
+                if (not call or call.get("tool_name") != row.get("tool_name")
+                        or not isinstance(row.get("text"), str)):
+                    raise ValueError("Unmatched public tool result or missing text")
+                item = {"kind": "result", "call_id": row["call_id"],
+                        "name": row["tool_name"], "text": row["text"]}
+                if isinstance(row.get("is_error"), bool):
+                    item["is_error"] = row["is_error"]
+                emit(item, row, line)
+                continue
             observation = row.get("observation") or {}
             emit({"kind": "result", "call_id": row.get("call_id"),
                   "name": row.get("tool_name"),

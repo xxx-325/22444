@@ -424,7 +424,7 @@ def select_approved(questions, limits):
         return ((mode, q.get("type", q.get("category"))) not in types,
                 q.get("evidence_group_id", q.get("id")) not in groups,
                 len(set(q.get("fact_ids", [])) - facts),
-                q.get("track") == "history_core" or q.get("type") in {"temporal", "multi-hop"})
+                q.get("track") == "history_core" or (q.get("difficulty_distance") or 0) > 0)
     while pending:
         q = max(pending, key=priority)
         pending.remove(q)

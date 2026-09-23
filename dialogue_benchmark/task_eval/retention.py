@@ -166,6 +166,59 @@ def preserve_test_receipt(checks):
     return [checks / "private", checks / "workspace"]
 
 
+def pending_executions(root):
+    """Leave resumable workers and timed-out test sandboxes untouched."""
+    pending = []
+    for private in (root / "tasks").glob("**/private"):
+        owner = private.parent
+        if (private / "agent").is_dir():
+            result = owner / "result.json"
+            status = read(result).get("status") if result.exists() else None
+            if status not in {"finished", "ConversationExecutionStatus.FINISHED"}:
+                pending.append(str(owner.relative_to(root)))
+        elif (private / "execution").exists() or (private / "environment.json").exists():
+            execution = owner / "execution.json"
+            if not execution.exists() or read(execution).get("exit_code") == 124:
+                pending.append(str(owner.relative_to(root)))
+    return sorted(set(pending))
+
+
+def compact_clarifications(agent):
+    """Keep outputs and exact small inputs, sharing immutable request context once."""
+    folder = agent / "clarification"
+    if not folder.is_dir():
+        return None
+    exchanges = read(agent / "clarifications.json") if (agent / "clarifications.json").exists() else []
+    bundle = {"context": None, "rounds": []}
+    for step in sorted(folder.iterdir(), key=lambda p: (int(p.name) if p.name.isdigit() else 0, p.name)):
+        if not step.is_dir() or not step.name.isdigit():
+            raise ValueError("Unknown clarification artifact: " + str(step))
+        number = int(step.name)
+        row = {"round": number}
+        for path in sorted(step.iterdir()):
+            if path.name not in {"input.json", "response.json", "response-text.json", "usage.json"}:
+                raise ValueError("Unknown clarification file: " + str(path))
+            row[path.name] = read(path)
+        request = row.get("input.json", {})
+        payload = request.get("payload", {})
+        context = {"prompt": request.get("prompt"), "supplied_history": payload.get("supplied_history")}
+        if bundle["context"] is None:
+            bundle["context"] = context
+        if (request and context == bundle["context"]
+                and payload.get("exchange") == exchanges[:number - 1]):
+            row["input.json"] = {"payload": {k: v for k, v in payload.items()
+                                              if k not in {"supplied_history", "exchange"}},
+                                 "exchange_prefix_count": number - 1,
+                                 "context": "shared"}
+        bundle["rounds"].append(row)
+    target = agent / "clarification-audit.json"
+    save(target, bundle)
+    compress_file(target)
+    if read(target) != bundle:
+        raise ValueError("Clarification audit changed during compression")
+    return folder
+
+
 def compact_run(root):
     """Compact a completed run in place after preserving every agreed artifact."""
     root = Path(root).resolve()
@@ -173,6 +226,11 @@ def compact_run(root):
         raise ValueError("Only a completed episode can be compacted")
     if (root / "retention.json").exists() and read(root / "retention.json").get("status") == "completed":
         return read(root / "retention.json")
+    pending = pending_executions(root)
+    if pending:
+        receipt = {"status": "deferred", "reason": "unfinished_execution", "pending": pending}
+        save(root / "retention.json", receipt)
+        return receipt
     codes = code_versions(root)
     print("Retention: verified %d final code versions" % len(codes), flush=True)
     inventory_path = root / "retained-docker.json"
@@ -190,8 +248,20 @@ def compact_run(root):
     def agent_evidence(agent, keep_code=False):
         save_trace(agent)
         if (agent / "trajectory.json").exists():
+            # The complete SDK event remains in trace; the browsing projection
+            # needs visible results, not a second copy of hidden editor bodies.
+            trajectory = read(agent / "trajectory.json")
+            for event in trajectory:
+                observation = event.get("observation")
+                if isinstance(observation, dict):
+                    observation.pop("old_content", None)
+                    observation.pop("new_content", None)
+            save(agent / "trajectory.json", trajectory)
             compress_file(agent / "trajectory.json")
         drop(agent / "private")
+        folder = compact_clarifications(agent)
+        if folder is not None:
+            drop(folder)
         workspace = agent / "workspace"
         if workspace.exists():
             for child in workspace.iterdir():
@@ -208,7 +278,7 @@ def compact_run(root):
     for path in (qa / "stages").glob("*raw-candidates*"):
         candidates = read(path).get("questions", [])
         ids = {q["id"] for q in candidates} & public_ids
-        if ids:
+        if candidates:
             source = path.with_name(path.name.replace("raw-candidates", "qa-input"))
             if not source.exists():
                 raise ValueError("Published QA generation input is missing: " + str(source))
@@ -244,7 +314,8 @@ def compact_run(root):
         frozen = task_root / "frozen.json"
         accepted = read(frozen)["accepted_attempt"] if frozen.exists() else None
         summary_path = task_root / "construction-summary.json"
-        attempts = read(summary_path if summary_path.exists() else task_root / "construction.json")
+        attempts_path = summary_path if summary_path.exists() else task_root / "construction.json"
+        attempts = read(attempts_path) if attempts_path.exists() else []
         summary = []
         for record in attempts:
             attempt = task_root / ("construction-%02d" % record["attempt"])
@@ -252,8 +323,23 @@ def compact_run(root):
             requirement = attempt / "author/workspace/checks/task.md"
             if requirement.exists():
                 item["requirement"] = requirement.read_text()
+            if accepted != record["attempt"]:
+                spec = attempt / "author/workspace/checks"
+                # Preserve rejected criteria and tests for debugging, without failed code copies.
+                item["artifacts"] = dict(item.get("artifacts", {}))
+                for folder in (spec, attempt / "validator/workspace/checks"):
+                    if folder.is_dir():
+                        for path in folder.rglob("*"):
+                            if path.is_file() and path.suffix in {".md", ".txt", ".py"}:
+                                item["artifacts"][str(path.relative_to(attempt))] = path.read_text()
+                for path in attempt.glob("*checks/execution.json"):
+                    item["artifacts"][str(path.relative_to(attempt))] = read(path)
+            elif (task_root / "author-reference/history.json").exists():
+                item["history_selection"] = {k: v for k, v in read(
+                    task_root / "author-reference/history.json").items() if k != "events"}
             summary.append(item)
         save(task_root / "construction-summary.json", summary)
+        drop(task_root / "construction.json")
         if accepted is None:
             last = next((item["requirement"] for item in reversed(summary) if "requirement" in item), None)
             if last:
@@ -266,6 +352,18 @@ def compact_run(root):
                 continue
             for role in ("author", "reference-solver", "validator"):
                 agent_evidence(attempt / role, keep_code=role == "reference-solver")
+            if (attempt / "design-probe/result.json").exists():
+                probe = attempt / "design-probe"
+                from .versions import export_change
+                export_change(root / "baseline", probe / "workspace/candidate", probe)
+                agent_evidence(probe)
+            # The frozen spec is authoritative; remove only byte-identical author copies.
+            author_checks = attempt / "author/workspace/checks"
+            if author_checks.is_dir():
+                for path in author_checks.rglob("*"):
+                    frozen_copy = task_root / "frozen" / path.relative_to(author_checks)
+                    if path.is_file() and frozen_copy.is_file() and path.read_bytes() == frozen_copy.read_bytes():
+                        drop(path)
             drop(attempt / "validator-reference")
             drop(attempt / "validated-spec")
             for checks in attempt.glob("*checks"):
@@ -273,6 +371,10 @@ def compact_run(root):
                     drop(path)
         for prior in (task_root / "author-reference").glob("previous-*"):
             drop(prior)
+        if (task_root / "frozen/history.json").exists():
+            history_path = task_root / "author-reference/history.json"
+            if history_path.exists() and read(history_path).get("events") == read(task_root / "frozen/history.json").get("events"):
+                drop(history_path)
         for trial in task.get("comparison", {}).values():
             trial_root = task_root / trial["trial"]
             agent_evidence(trial_root, keep_code=True)
@@ -299,6 +401,10 @@ def compact_run(root):
     print("Retention: traces and final inputs verified; releasing Docker resources", flush=True)
     receipt["docker"] = release_docker(inventory)
     save(root / "retention.json", receipt)
+    if receipt["docker"].get("errors"):
+        receipt.update(status="deferred", reason="resource_release_failed")
+        save(root / "retention.json", receipt)
+        return receipt
     print("Retention: removing %d temporary paths" % len(targets), flush=True)
     for path in targets:
         if path.is_dir():

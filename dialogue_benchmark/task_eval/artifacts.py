@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from ..storage import load
+from ..protocol import QA_TYPES
 
 
 def save(path, value):
@@ -59,6 +60,12 @@ def qa_inputs(qa_run):
     """Join approved questions to the actual saved generation request, never reconstruct it."""
     qa_run = Path(qa_run)
     public = read(qa_run / "qa-public.json")["questions"]
+    if any(question.get("type") not in QA_TYPES for question in public):
+        raise ValueError("QA input must use the six memory-purpose types; regenerate older QA")
+    normalized_path = qa_run / "normalized.json"
+    normalized = read(normalized_path) if normalized_path.exists() else []
+    public_records = (normalized if normalized and all(
+        r.get("input_schema") == "model-visible-dialogue-v1" for r in normalized) else None)
     requests = {}
     for path in sorted((qa_run / "stages").glob("*raw-candidates*")):
         input_path = path.with_name(path.name.replace("raw-candidates", "qa-input"))
@@ -70,8 +77,11 @@ def qa_inputs(qa_run):
     for question in public:
         if question.get("status") == "approved" and question["id"] in requests:
             path, original = requests[question["id"]]
-            result.append({"qa": question, "generation_input": str(path.resolve()),
-                           "original_candidate": original})
+            item = {"qa": question, "generation_input": str(path.resolve()),
+                    "original_candidate": original}
+            if public_records is not None:
+                item["public_records"] = public_records
+            result.append(item)
     return result
 
 

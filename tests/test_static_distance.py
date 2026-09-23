@@ -56,7 +56,7 @@ class StaticDistanceTests(unittest.TestCase):
             "forbidden_points": [],
         }
         return static_candidate_labels(
-            self.group, candidate, self.index, "history_tracking")
+            self.group, candidate, self.index, "correction_update")
 
     def test_version_distance_maps_to_provisional_difficulty(self):
         expected = {

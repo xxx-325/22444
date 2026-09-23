@@ -21,6 +21,10 @@ class ScriptedClient:
         self.usage = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"status": "completed"})
         relevance = maybe_relevance_response(prompt, payload)
@@ -87,7 +91,7 @@ class SimpleAtomicityTests(unittest.TestCase):
             "candidate_id": "general_g1_q1",
             "model_id": "q1",
             "qa_mode": "general",
-            "type": "single-hop",
+            "type": "constraint_followthrough",
             "question": "端口如何变化，端口不可用时如何处理？",
             "answer_points": [
                 {"text": "端口由 18080 改为 18081。", "sources": ["m1"]},

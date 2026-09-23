@@ -27,6 +27,10 @@ class _NoQaClient:
         self.calls = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         focus = maybe_focus_response(prompt, payload)
         if focus is not None:
@@ -48,7 +52,7 @@ class SimpleFocusPromptTests(unittest.TestCase):
             "events": [],
             "versions": [],
             "stages": [],
-            "evidence_group": {"target_types": ["single-hop"]},
+            "evidence_group": {"target_types": ["constraint_followthrough"]},
             "model_request_chars": 60000,
             "max_context_chars": 60000,
         }
@@ -63,7 +67,7 @@ class SimpleFocusPromptTests(unittest.TestCase):
         client = _NoQaClient()
         result = generate_from_facts(
             self.scope, [self.fact], client, qa_mode="general",
-            allowed_types=("single-hop",), target_type="single-hop",
+            allowed_types=("constraint_followthrough",), target_type="constraint_followthrough",
         )
 
         self.assertEqual(result["stage_status"]["focus"], "completed")
@@ -113,66 +117,66 @@ class SimpleFocusPromptTests(unittest.TestCase):
     def test_one_turn_environment_housekeeping_is_not_a_general_focus(self):
         issue = _simple_focus_issue(
             {"text": "本轮是否允许创建或安装 `.venv-online` 环境"},
-            "general", "single-hop")
+            "general", "constraint_followthrough")
         self.assertIsNotNone(issue)
         self.assertIn("只对本轮有效", issue)
 
     def test_plan_approval_status_is_not_a_general_focus(self):
         issue = _simple_focus_issue(
             {"text": "开始修改前需要确认用户对完整实施计划的批准状态"},
-            "general", "single-hop")
+            "general", "constraint_followthrough")
         self.assertIsNotNone(issue)
         self.assertIn("不选“是否已批准/已确认”", issue)
 
     def test_persistent_compatibility_constraint_remains_eligible(self):
         issue = _simple_focus_issue(
             {"text": "新适配器是否必须保持与旧版 CLI 的参数兼容"},
-            "general", "single-hop")
+            "general", "constraint_followthrough")
         self.assertIsNone(issue)
 
     def test_unseen_upstream_cli_consumer_is_not_a_behavior_focus(self):
         issue = _simple_focus_issue(
             {"text": "config_paths 如何通过 --config 传递到上游 CLI 的配置消费点"},
-            "code", "behavior_inference")
+            "code", "compatibility_preservation")
         self.assertIsNone(issue)
 
     def test_two_config_consumers_are_not_one_behavior_focus(self):
         issue = _simple_focus_issue(
             {"text": "说明 --config 的插入位置与模板加载的路径序列"},
-            "code", "behavior_inference")
+            "code", "compatibility_preservation")
         self.assertIsNotNone(issue)
         self.assertIn("不要把两个消费方向合成一题", issue)
 
         issue = _simple_focus_issue(
             {"text": "--config 的展开顺序与模板加载传入的路径序列"},
-            "code", "behavior_inference")
+            "code", "compatibility_preservation")
         self.assertIsNotNone(issue)
 
     def test_config_insertion_and_loading_are_not_one_causal_focus(self):
         issue = _simple_focus_issue(
             {"text": "--config 参数的插入位置与顺序，以及该顺序如何影响分层配置的加载"},
-            "code", "behavior_inference")
+            "code", "compatibility_preservation")
         self.assertIsNotNone(issue)
         self.assertIn("不要把两个并行消费方向写成因果链", issue)
 
     def test_validation_and_transfer_are_not_one_behavior_focus(self):
         issue = _simple_focus_issue(
             {"text": "config_paths 经唯一性校验后插入命令并传给模板加载器"},
-            "code", "behavior_inference")
+            "code", "compatibility_preservation")
         self.assertIsNotNone(issue)
         self.assertIn("只选一个值或条件", issue)
 
     def test_value_flow_focus_does_not_center_parameter_declarations(self):
         issue = _simple_focus_issue(
             {"text": "run 方法新增的 timeout_seconds 参数如何经 _run_command 传递"},
-            "code", "behavior_inference")
+            "code", "compatibility_preservation")
         self.assertIsNotNone(issue)
         self.assertIn("具体的值传递链", issue)
 
     def test_config_paths_do_not_claim_to_choose_a_fixed_insertion_index(self):
         issue = _simple_focus_issue(
             {"text": "config_paths 路径序列如何决定 --config 参数的插入位置"},
-            "code", "behavior_inference")
+            "code", "compatibility_preservation")
         self.assertIsNone(issue)
 
 
@@ -351,10 +355,10 @@ class ReviewGuardFocusTests(unittest.TestCase):
             ],
             "events": [], "versions": [], "edges": [], "historical_edges": [],
         }
-        fact = {"id": "call-fact", "statement": "check_config 被调用",
+        fact = {"id": "call-fact", "statement": "check_config 必须被调用",
                 "sources": ["call"]}
         groups = build_evidence_groups(
-            [fact], [scope], "code", {"fact_recall"}, 1,
+            [fact], [scope], "code", {"constraint_followthrough"}, 1,
             target_chars=2000, max_chars=6000)
 
         self.assertEqual(len(groups), 1)
@@ -371,6 +375,10 @@ class SimpleReviewGuardOrderingTests(unittest.TestCase):
             self.usage = []
 
         def ask(self, prompt, payload):
+            # Target routing is exercised separately in test_memory_types.
+            if "review_contract: target_v1" in prompt:
+                return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                     "target_alignment": "aligned"}]}
             self.calls.append((prompt, copy.deepcopy(payload)))
             self.usage.append({"status": "completed"})
             relevance = maybe_relevance_response(prompt, payload)
@@ -399,7 +407,7 @@ class SimpleReviewGuardOrderingTests(unittest.TestCase):
         return [{"id": "f1", "statement": "配置必须支持 yaml", "sources": ["m1"]}]
 
     @staticmethod
-    def _candidate(qa_mode="general", question_type="single-hop"):
+    def _candidate(qa_mode="general", question_type="constraint_followthrough"):
         return {
             "id": "q1", "candidate_id": "q1", "model_id": "q1",
             "qa_mode": qa_mode, "type": question_type, "fact_ids": ["f1"],
@@ -433,11 +441,8 @@ class SimpleReviewGuardOrderingTests(unittest.TestCase):
 
     def test_structurally_valid_candidate_stays_pending_before_evidence_when_guard_is_incomplete(self):
         for qa_mode, question_type, prefix in (
-                ("general", "single-hop", []),
-                ("code", "fact_recall", [
-                    "REVIEW q1\nreview_contract: code_distinctiveness_v1\n"
-                    "answer_basis: B\nEND_REVIEW",
-                ])):
+                ("general", "constraint_followthrough", []),
+                ("code", "constraint_followthrough", [])):
             with self.subTest(qa_mode=qa_mode):
                 responses = prefix + [self._atomicity(), self._completeness()]
                 client = self.Client(responses)
@@ -451,12 +456,7 @@ class SimpleReviewGuardOrderingTests(unittest.TestCase):
                                  "incomplete_review_guard")
                 self.assertEqual(len(client.calls), 3 + len(prefix))
                 self.assertEqual([item["stage"] for item in client.usage],
-                                 (["review_relevance", "review_atomicity",
-                                   "review_completeness"]
-                                  if qa_mode == "general" else [
-                                      "review_code_distinctiveness",
-                                      "review_relevance", "review_atomicity",
-                                      "review_completeness"]))
+                                 ["review_relevance", "review_atomicity", "review_completeness"])
                 self.assertEqual(result["stage_status"].get("review_evidence"),
                                  "skipped")
                 self.assertEqual(result["stage_status"]["review"], "blocked")

@@ -37,7 +37,7 @@ class CapturingClient:
     def ask(self, prompt, data):
         self.calls.append((prompt, copy.deepcopy(data)))
         index = len(self.calls)
-        self.stages.append(("focus", "qa", "review_code_distinctiveness",
+        self.stages.append(("focus", "qa", "review_target",
                             "review_relevance", "review_atomicity",
                             "review_completeness", "review_evidence")
                            [min(index - 1, 6)])
@@ -61,8 +61,8 @@ class CapturingClient:
             }
         if index == 3:
             return {"reviews": [{
-                "id": "q1", "review_contract": "code_distinctiveness_v1",
-                "answer_basis": "A", "target_alignment": "aligned",
+                "id": "q1", "review_contract": "target_v1",
+                "target_alignment": "aligned",
             }]}
         if index == 5:
             return {"reviews": [{
@@ -90,9 +90,9 @@ class ModelEvidenceTests(unittest.TestCase):
             "seed": "packages/memorax/config.py",
             "evidence_group": {
                 "id": "code-group-secret-36",
-                "target_types": ["history_tracking"],
+                "target_types": ["correction_update"],
                 "budget_hash": "budget-hash-private-36",
-                "constraints": {"max_questions": 1, "target_type": "history_tracking"},
+                "constraints": {"max_questions": 1, "target_type": "correction_update"},
             },
             "projection_hash": "projection-private-hash",
             "source_index": {"m-1": {"order": 1}},
@@ -305,7 +305,7 @@ class ModelEvidenceTests(unittest.TestCase):
         saved = {}
         generated = generate_from_facts(
             self.scope, self.facts, client, qa_mode="code",
-            allowed_types={"history_tracking"}, target_type="history_tracking",
+            allowed_types={"correction_update"}, target_type="correction_update",
             generation_mode="simple", checkpoint=lambda name, value: saved.update({name: copy.deepcopy(value)}))
         self.assertEqual(generated["stage_status"]["qa"], "completed")
         self.assertEqual(len(client.calls), 2)
@@ -318,12 +318,12 @@ class ModelEvidenceTests(unittest.TestCase):
         self.assertEqual(reviewed["stage_status"]["review"], "completed")
         self.assertEqual(len(client.calls), 7)
         self.assertEqual(client.stages,
-                         ["focus", "qa", "review_code_distinctiveness",
+                         ["focus", "qa", "review_target",
                           "review_relevance", "review_atomicity",
                           "review_completeness", "review_evidence"])
         distinctive_prompt, distinctive_request = client.calls[2]
-        self.assertIn("code_distinctiveness_v1", distinctive_prompt)
-        self.assertIn("answer_basis: A|B|C|D", distinctive_prompt)
+        self.assertIn("target_v1", distinctive_prompt)
+        self.assertIn("target_alignment: aligned|mixed|drifted|uncertain", distinctive_prompt)
         self.assertIn("materials", distinctive_request)
         self.assertIn("relations", distinctive_request)
         atomic_prompt = client.calls[4][0]
@@ -394,7 +394,7 @@ class ModelEvidenceTests(unittest.TestCase):
         client = LegacyClient()
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="code",
-            allowed_types={"history_tracking"}, generation_mode="legacy",
+            allowed_types={"correction_update"}, generation_mode="legacy",
             max_questions=1)
         self.assertEqual(result["stage_status"]["qa"], "completed")
         self.assertEqual(len(client.payloads), 1)

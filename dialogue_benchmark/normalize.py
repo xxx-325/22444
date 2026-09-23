@@ -37,6 +37,32 @@ def normalize_path(value, workspace=None):
     return path
 
 
+def resolve_source_events(records, event_ids):
+    """Resolve public event identities before chunks introduce local IDs."""
+    resolved = set()
+    for event_id in event_ids:
+        matches = {record["id"] for record in records
+                   if record.get("original_id", record["id"]) == event_id}
+        if not matches:
+            raise ValueError("Unknown public event before cutoff: " + event_id)
+        resolved.update(matches)
+    return resolved
+
+
+def resolve_source_objects(records, objects):
+    """Locate exact public file/symbol mentions, without asserting a relationship."""
+    result = set()
+    for name in objects:
+        tokens = name.split("::", 1)
+        patterns = [re.compile(r"(?<![\w])" + re.escape(t) + r"(?![\w])") for t in tokens]
+        matches = {r["id"] for r in records if all(pattern.search(
+            r.get("text", "") + "\n" + r.get("path", "")) for pattern in patterns)}
+        if not matches:
+            raise ValueError("Object not mentioned in public dialogue: " + name)
+        result.update(matches)
+    return result
+
+
 def load_dialogue(path):
     path = Path(path)
     raw = path.read_text(encoding="utf-8")
@@ -48,6 +74,13 @@ def load_dialogue(path):
             return normalize_openhands(rows)
         return normalize_codex(rows)
     document = json.loads(raw)
+    if isinstance(document, dict) and document.get("schema") == "model-visible-dialogue-v1":
+        from .openhands_input import normalize_openhands
+        if not isinstance(document.get("events"), list) or any(
+                not isinstance(row, dict) or row.get("schema") != "model-visible-dialogue-v1"
+                for row in document["events"]):
+            raise ValueError("Public envelope requires public-schema events")
+        return normalize_openhands(list(enumerate(document["events"], 1)))
     if isinstance(document, list):
         if any(not isinstance(row, dict) or row.get("role") not in {"user", "assistant"}
                or not isinstance(row.get("content"), (str, list)) for row in document):
@@ -110,7 +143,7 @@ def source_view(record):
     """Only these fields may be selected for model context."""
     return {key: record[key] for key in ("id", "order", "source_line", "timestamp",
                                          "kind", "source_kind", "role", "call_id", "name",
-                                         "text", "path", "content", "success", "changes")
+                                         "text", "path", "content", "success", "changes", "is_error")
             if key in record}
 
 

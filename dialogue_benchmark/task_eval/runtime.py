@@ -51,13 +51,19 @@ def review_task(task, answer, config, output):
     return result
 
 
-def configure(simulator_path, checkpoint, env_file):
+def configure(simulator_path, checkpoint, env_file, *, control_config=None):
     sys.path.insert(0, str(Path(simulator_path).resolve()))
     from simulator.episode import load_environment
     load_environment(env_file)
-    original = read(checkpoint)["config"]
+    original = read(control_config) if control_config else read(checkpoint)["config"]
     keys = {"model", "base_url", "key_env", "temperature", "candidate_pythonpath",
             "max_input_tokens", "request_timeout"}
+    if control_config:
+        if set(original) - {"image", "execution_image", "execution_backend", "code", "judge"}:
+            raise ValueError("Unsupported control config field")
+        for role in ("code", "judge"):
+            if set(original[role]) - keys:
+                raise ValueError("Unsupported model config field; use key_env for credentials")
     config = {k: original[k] for k in ("image", "execution_image", "execution_backend")}
     for role in ("code", "judge"):
         config[role] = {k: v for k, v in original[role].items() if k in keys}
@@ -94,20 +100,33 @@ def release_completed_execution(record_path):
     release_agent(record_path.parents[2])
 
 
+def public_reply(events):
+    """Use the latest actual public reply, including follow-up turns after finish."""
+    reply = ""
+    for event in events:
+        if event.get("kind") == "ActionEvent" and event.get("tool_name") == "finish":
+            reply = event.get("action", {}).get("message", "")
+        elif event.get("kind") == "MessageEvent" and event.get("source") == "agent":
+            reply = text_content(event.get("llm_message", {}).get("content"))
+    return reply
+
+
 def run_agent(root, config, role, message, *, system=None, reference=None,
-              max_requests=80, max_tokens=1500000):
+              max_requests=80, max_tokens=1500000, history=None):
     from simulator.openhands.budget import Budget
     from simulator.openhands.container import SDKContainer
 
     class CallBudget(Budget):
         def before(self, role, body, call_id=None):
-            if self.data["attempts"] >= max_requests:
+            if self.data["attempts"] + responder_cost["requests"] >= max_requests:
                 raise ValueError("model_request_budget_exhausted")
-            if self.data["prompt_tokens"] + self.data["completion_tokens"] >= max_tokens:
+            if self.data["prompt_tokens"] + self.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens:
                 raise ValueError("token_budget_exhausted")
             return super().before(role, body, call_id)
 
     root = Path(root)
+    responder_cost = {"requests": 0, "tokens": 0, "usage_complete": True}
+    exchanges = []
     private = root / "private"
     private.mkdir(parents=True, exist_ok=True)
     budget = CallBudget({"max_seconds": 1200}, journal=private / "budget.json")
@@ -125,11 +144,50 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                               readonly_candidate=role == "judge", condenser_max_size=120)
         worker.start()
         outcome = worker.turn(message)
+        while history and str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}:
+            if (budget.data["attempts"] + responder_cost["requests"] >= max_requests
+                    or budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens
+                    or time.monotonic() >= budget.deadline):
+                outcome["clarification_status"] = "budget_exhausted"
+                break
+            from .history import answer_clarification
+            last = public_reply(worker.events())
+            review_dir = root / "clarification" / str(len(exchanges) + 1)
+            responder_cost["requests"] += 1
+            try:
+                decision = answer_clarification(last, history, exchanges, config, review_dir)
+            except Exception as error:
+                decision = {"status": "unavailable", "kind": "none", "sources": [],
+                            "reply": "none", "error": type(error).__name__}
+            finally:
+                usage_path = review_dir / "usage.json"
+                usage = read(usage_path) if usage_path.exists() else []
+                responder_cost["usage_complete"] &= bool(usage) and all(
+                    "total_tokens" in u or ("prompt_tokens" in u and "completion_tokens" in u)
+                    for u in usage)
+                responder_cost["tokens"] += sum(
+                    u.get("total_tokens", u.get("prompt_tokens", 0) + u.get("completion_tokens", 0))
+                    for u in usage)
+            entry = dict(decision, question=last, delivered=False)
+            exchanges.append(entry)
+            can_continue = (budget.data["attempts"] + responder_cost["requests"] < max_requests
+                            and budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] < max_tokens
+                            and time.monotonic() < budget.deadline)
+            if decision["status"] == "answer" and can_continue:
+                entry["delivered"] = True
+            save(root / "clarifications.json", exchanges)
+            outcome["clarification_status"] = decision["status"]
+            if decision["status"] != "answer":
+                break
+            if not can_continue:
+                outcome["clarification_status"] = "budget_exhausted"
+                break
+            outcome = worker.turn(decision["reply"])
     except Exception as error:
         outcome = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}
-        if budget.data["prompt_tokens"] + budget.data["completion_tokens"] >= max_tokens:
+        if budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens:
             outcome["error_code"] = "token_budget_exhausted"
-        elif budget.data["attempts"] >= max_requests:
+        elif budget.data["attempts"] + responder_cost["requests"] >= max_requests:
             outcome["error_code"] = "request_budget_exhausted"
         elif time.monotonic() >= budget.deadline:
             outcome["error_code"] = "runtime_budget_exhausted"
@@ -140,15 +198,14 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
         except Exception as error:
             outcome["close_error"] = type(error).__name__
     events = worker.events() if worker is not None else []
-    finals = [e.get("action", {}).get("message", "") for e in events
-              if e.get("kind") == "ActionEvent" and e.get("tool_name") == "finish"]
-    if not finals:
-        finals = [text_content(e.get("llm_message", {}).get("content")) for e in events
-                  if e.get("kind") == "MessageEvent" and e.get("source") == "agent"]
-    outcome["final"] = finals[-1] if finals else ""
+    outcome["final"] = public_reply(events)
     outcome["metrics"] = measure(events, private / "agent/provider.jsonl")
     outcome["metrics"]["usage_complete"] &= not budget.data.get("usage_missing", False)
     outcome["metrics"]["attempted_requests"] = budget.data["attempts"]
+    if history:
+        outcome["clarifications"] = exchanges
+        outcome["responder_cost"] = responder_cost
+        outcome["metrics"]["total_tokens_with_responder"] = outcome["metrics"]["total_tokens"] + responder_cost["tokens"]
     save(root / "result.json", outcome)
     # Judge sees observable actions and outputs, not memory injection or model reasoning.
     trajectory = [{k: e[k] for k in ("id", "kind", "tool_name", "tool_call_id", "action", "observation") if k in e}

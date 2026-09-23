@@ -93,14 +93,14 @@ class DualModeCliTests(unittest.TestCase):
         parser = cli._build_parser()
         args = parser.parse_args([
             str(EXAMPLE), "--output", "unused", "--qa-mode", "both",
-            "--general-types", "single-hop,temporal",
-            "--code-types", "history_tracking,failure_diagnosis",
+            "--general-types", "constraint_followthrough,correction_update",
+            "--code-types", "correction_update,failure_avoidance",
             "--general-count", "3", "--code-count", "7",
         ])
         options = cli._parse_options(args, parser)
-        self.assertEqual(options["general_types"], ("single-hop", "temporal"))
+        self.assertEqual(options["general_types"], ("constraint_followthrough", "correction_update"))
         self.assertEqual(options["code_types"],
-                         ("history_tracking", "failure_diagnosis"))
+                         ("correction_update", "failure_avoidance"))
         self.assertEqual(options["general_count"], 3)
         self.assertEqual(options["code_count"], 7)
 
@@ -127,7 +127,7 @@ class DualModeCliTests(unittest.TestCase):
             output = Path(directory) / "run"
             self.assertEqual(cli.main([
                 str(EXAMPLE), "--output", str(output), "--qa-mode", "general",
-                "--general-types", "single-hop,temporal",
+                "--general-types", "constraint_followthrough,correction_update",
             ]), 0)
             public = json.loads((output / "qa-public.json").read_text())
             from dialogue_benchmark.storage import load
@@ -135,8 +135,8 @@ class DualModeCliTests(unittest.TestCase):
             self.assertEqual(public["status"], "static_only")
             self.assertEqual(public["qa_mode"], "general")
             self.assertTrue(scope["dialogue"])
-            self.assertTrue(all(record["kind"] == "message"
-                                for record in scope["dialogue"]))
+            self.assertTrue(any(record["kind"] == "message" for record in scope["dialogue"]))
+            self.assertTrue(any(record["kind"] != "message" for record in scope["dialogue"]))
             self.assertTrue((output / "general-qa.json").exists())
             self.assertTrue((output / "code-qa.json").exists())
             code = json.loads((output / "code-qa.json").read_text())
@@ -167,8 +167,8 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_public_view_redacts_home_prefix_only(self):
         candidate = {
-            "id": "q1", "qa_mode": "code", "type": "history_tracking",
-            "category": "history_tracking", "track": "history_core",
+            "id": "q1", "qa_mode": "code", "type": "correction_update",
+            "category": "correction_update", "track": "history_core",
             "question": "继续检查 /Users/example/project/src/service.py 的行为",
             "difficulty": "medium", "answer_points": [], "forbidden_points": [],
         }
@@ -298,7 +298,7 @@ class DualModeCliTests(unittest.TestCase):
             return {"questions": candidates, "rejected": [], "stage_errors": [],
                     "stage_status": {"review": "completed"}}
 
-        group = {"scope": {}, "facts": [], "allowed_types": ("single-hop",)}
+        group = {"scope": {}, "facts": [], "allowed_types": ("constraint_followthrough",)}
         with patch.object(cli, "ChatClient", FakeClient), \
                 patch.object(cli, "generate_from_facts", fake_generate), \
                 patch.object(cli, "review_candidates", fake_review):
@@ -408,7 +408,7 @@ class DualModeCliTests(unittest.TestCase):
 
         def fake_extract(scope, client, qa_mode, checkpoint=None):
             fact = {"id": "f1", "qa_mode": qa_mode,
-                    "statement": qa_mode + " fact", "sources": ["e1"]}
+                    "statement": qa_mode + " 必须保留约定；旧规则从返回 None 改为抛错", "sources": ["e1"]}
             checkpoint("facts.json", [fact])
             return {"facts": [fact], "questions": [], "rejected": [],
                     "stage_errors": [], "stage_status": {"facts": "completed"}}
@@ -418,8 +418,8 @@ class DualModeCliTests(unittest.TestCase):
                           **unused):
             question = {
                 "id": "q1", "qa_mode": qa_mode,
-                "type": "single-hop" if qa_mode == "general" else "history_tracking",
-                "category": None if qa_mode == "general" else "history_tracking",
+                "type": "constraint_followthrough" if qa_mode == "general" else "correction_update",
+                "category": None if qa_mode == "general" else "correction_update",
                 "track": None if qa_mode == "general" else "history_core",
                 "question": qa_mode + " question", "difficulty": "easy",
                 "fact_ids": ["f1"],
@@ -497,7 +497,7 @@ class DualModeCliTests(unittest.TestCase):
             raise RuntimeError("synthetic")
 
         group = {"scope": {}, "facts": [{"id": "f1"}],
-                 "allowed_types": ("single-hop",)}
+                 "allowed_types": ("constraint_followthrough",)}
         with patch.object(cli, "ChatClient", FakeClient), \
                 patch.object(cli, "generate_from_facts", fake_generate), \
                 patch.object(cli, "review_candidates", failing_review):
@@ -527,7 +527,7 @@ class DualModeCliTests(unittest.TestCase):
             return {
                 "facts": facts,
                 "questions": [{
-                    "id": "q1", "qa_mode": qa_mode, "type": "single-hop",
+                    "id": "q1", "qa_mode": qa_mode, "type": "constraint_followthrough",
                     "question": "请检查 /Users/private/project/config.py 的约束",
                     "difficulty": "easy", "difficulty_reason": "direct",
                     "memory_requirement": "恢复约束", "fact_ids": [facts[0]["id"]],
@@ -554,7 +554,7 @@ class DualModeCliTests(unittest.TestCase):
                     patch.object(cli, "review_candidates", fake_review):
                 status = cli.main([
                     str(EXAMPLE), "--output", str(output), "--qa-mode", "general",
-                    "--general-types", "single-hop", "--general-count", "1",
+                    "--general-types", "constraint_followthrough", "--general-count", "1",
                     "--parallel-workers", "1", "--allow-network",
                     "--review-mode", "single",
                     "--endpoint", "https://example.invalid", "--model", "model",

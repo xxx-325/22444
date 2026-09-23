@@ -295,7 +295,7 @@ END_FACT
 
     def test_empty_forbidden_marker_is_treated_as_empty_list(self):
         parsed = parse_text_response("""QA q1
-TYPE: single-hop
+TYPE: constraint_followthrough
 DIFFICULTY: easy
 DIFFICULTY_REASON: direct
 MEMORY_REQUIREMENT: explicit choice
@@ -317,7 +317,7 @@ END_QA
         records = load_dialogue(EXAMPLE)
         self.scope = query_scope(build_graph(records), records, "config.py", 6)
         self.fact = {"id": "f1", "statement": "旧版返回值后来改为异常的 Explicit synthetic fact", "sources": ["e2"]}
-        self.question = {"id": "q1", "question": "What changed?", "category": "history_tracking",
+        self.question = {"id": "q1", "question": "What changed?", "qa_mode": "code", "type": "correction_update", "category": "correction_update",
                          "difficulty": "medium", "difficulty_reason": "Compare versions",
                          "track": "history_core",
                          "memory_requirement": "Old return behavior", "fact_ids": ["f1"],
@@ -338,6 +338,10 @@ END_QA
         questions = [dict(self.question, id="q%d" % i) for i in range(3)]
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 calls.append(data)
                 return {"questions": questions}
         result = generate_from_facts(self.scope, [self.fact], Client(), max_questions=2,
@@ -365,6 +369,10 @@ END_QA
         saved = {}
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 return {"questions": [good, bad]}
         scope = dict(self.scope, evidence_group={"id": "code-group-2"})
         result = generate_from_facts(scope, [self.fact], Client(), max_questions=3,
@@ -422,6 +430,10 @@ END_QA
         payloads = []
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 payloads.append(data)
                 if len(payloads) == 1:
                     raise ValueError("synthetic transport failure")
@@ -456,7 +468,7 @@ END_QA
         responses = iter([{"facts": [self.fact]}, {"questions": [self.question]}, {"reviews": [decision]}])
         decision["current_snapshot_alone_sufficient"] = False
         decision.update(
-            review_contract="structured_v2", recommended_type="history_tracking",
+            review_contract="structured_v2", recommended_type="correction_update",
             recommended_track="history_core", type_basis="历史变更来源",
             necessary_source_ids="e2,e3", necessary_stage_ids="none",
             history_only_fact="旧返回值后来变成异常", history_source_ids="e2,e3",
@@ -467,6 +479,10 @@ END_QA
 
         class FakeClient:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 return next(responses)
 
         result = generate(self.scope, FakeClient(), generation_mode="legacy",
@@ -480,6 +496,10 @@ END_QA
 
         class CapturingClient:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 payloads.append(data)
                 return next(responses)
 
@@ -503,6 +523,10 @@ END_QA
                 self.calls = 0
 
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 self.calls += 1
                 if self.calls == 1:
                     return {"facts": [self.fact]}
@@ -524,6 +548,10 @@ END_QA
                 self.question = question
 
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 self.calls += 1
                 if self.calls == 1:
                     return {"facts": [self.fact]}

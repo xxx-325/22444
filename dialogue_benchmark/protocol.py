@@ -4,7 +4,24 @@
 MISSING_KINDS = {
     "earlier_state", "later_state", "reason", "outcome", "dependency",
 }
-CODE_DISTINCTIVENESS_BASES = {"A", "B", "C", "D"}
+QA_TYPE_GUIDANCE = {
+    "constraint_followthrough": "Ask which previously agreed constraint applies to one concrete future action, preserving its object and conditions. An assistant suggestion alone is not an agreement.",
+    "correction_update": "Ask how an earlier rule was corrected and where the revised rule applies. Require the old rule, the later correction, and its scope; a code edit alone is not a correction of a rule.",
+    "external_state_application": "Ask which recorded user-side or environment fact changes a future decision. Preserve when and where it was observed. General knowledge and a guess from current code are not external observations.",
+    "failure_avoidance": "Ask which previously attempted approach failed under which conditions and what that rules out for future work. Require an actual failure or explicit user feedback, not a hypothetical error branch.",
+    "verification_reuse": "Ask what a recorded test or experiment established under specified conditions and which future check it informs. A planned test or a successful file edit is not a test result.",
+    "compatibility_preservation": "Ask which historically established behavior must survive a new change, and for which callers or conditions. A version difference alone does not establish a compatibility requirement.",
+}
+QA_TYPES = frozenset(QA_TYPE_GUIDANCE)
+
+TASK_TYPE_GUIDANCE = {
+    "constraint_followthrough": "让新功能或重构实际用到已确认约束；验收其适用条件下的行为。",
+    "correction_update": "让新需求触及被纠正的规则；验收修订范围内使用新规则、范围外保留仍有效规则。",
+    "external_state_application": "让新需求适配已记录的用户侧或环境事实；冻结观测条件，不把历史状态当成当前实测。",
+    "failure_avoidance": "让新需求涉及过去失败的条件；验收功能正确及同类失败不再出现，不强制固定实现路线。",
+    "verification_reuse": "让历史测试或实验结论影响新功能的边界或验证选择；新增测试必须验证新需求，不能只重跑旧测试。",
+    "compatibility_preservation": "扩展或重构相关能力，验收新行为及已确认需要保留的旧调用行为。",
+}
 SIMPLE_ATOMICITY_STATES = {"single", "compound", "uncertain"}
 SIMPLE_EVIDENCE_STATES = {"supported", "contradicted", "insufficient", "stale"}
 
@@ -13,27 +30,6 @@ SIMPLE_TEMPORAL_WORDING_RULE = (
     "or final occurrence. In generated prose, do not write 上次, 上一次, 最近一次, "
     "or 最后一次. Use 之前 and identify the concrete test, error, task, or change. "
     "Preserve those words only when quoting supplied code or a literal string."
-)
-
-BEHAVIOR_INFERENCE_CONTRACT = (
-    "Behavior inference answers how one concrete condition, value, or dependency "
-    "produces an observed behavior. The link may cross code locations, or may "
-    "depend on an explicitly linked historical/version prerequisite that is "
-    "necessary for the behavior. Merely recalling a constraint is fact recall; "
-    "only comparing old and new states is history tracking; diagnosing an observed "
-    "failure is failure diagnosis."
-)
-
-CODE_DISTINCTIVENESS_RULE = (
-    "A code question must make at least one basis indispensable to its answer: "
-    "A compares an earlier state with a later state; B uses a recorded failure, "
-    "feedback, decision, or constraint; C connects conditions, calls, or data flow "
-    "across different code locations, or connects an explicitly linked indispensable "
-    "historical/version prerequisite to its implementation behavior. D is a single-location fact, surface inventory, "
-    "or anything whose need for A, B, or C is not proven. Material count, source "
-    "count, and historical wording do not prove a basis. A None value, path, or "
-    "parameter is allowed only when its change, cause, or cross-location dependency "
-    "is the actual answer target."
 )
 
 SIMPLE_ATOMICITY_RULE = (

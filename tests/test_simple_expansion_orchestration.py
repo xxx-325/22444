@@ -16,6 +16,10 @@ class ScriptedClient:
         self.usage = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"stage": "qa", "status": "completed"})
         focus = maybe_focus_response(prompt, payload)
@@ -42,7 +46,7 @@ class SimpleExpansionOrchestrationTests(unittest.TestCase):
         }
         self.facts = [
             {"id": "f-base", "qa_mode": "general", "statement":
-             "runner.py currently handles the request.",
+             "runner.py must handle the request.",
              "sources": ["e-base"]},
             {"id": "f-extra", "qa_mode": "general", "statement":
              "runner.py outcome was validated after the request.",
@@ -85,7 +89,7 @@ class SimpleExpansionOrchestrationTests(unittest.TestCase):
         ])
 
         result = generate_simple_target(
-            self.group, self.index, "single-hop", client, "general",
+            self.group, self.index, "constraint_followthrough", client, "general",
             expansion_budget=1)
 
         self.assertEqual(result["generation_request_count"], 4)
@@ -109,7 +113,7 @@ class SimpleExpansionOrchestrationTests(unittest.TestCase):
         ])
 
         result = generate_simple_target(
-            self.group, self.index, "single-hop", client, "general",
+            self.group, self.index, "constraint_followthrough", client, "general",
             expansion_budget=1)
 
         self.assertEqual(result["generation_request_count"], 2)
@@ -132,7 +136,7 @@ END_QA"""
         ])
 
         result = generate_simple_target(
-            self.group, self.index, "single-hop", client, "general",
+            self.group, self.index, "constraint_followthrough", client, "general",
             expansion_budget=1)
 
         self.assertEqual(result["generation_request_count"], 4)

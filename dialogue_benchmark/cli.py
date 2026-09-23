@@ -14,7 +14,7 @@ from .fact_index import (build_evidence_groups, build_evidence_index,
                          merge_scopes,
                          candidate_review_projection, coverage_report,
                          expand_evidence_group_once,
-                         static_candidate_labels, static_code_evidence_check)
+                         static_candidate_labels, static_evidence_check)
 from .general import build_general_scope, identify_stages
 from .graph import build_graph, graph_at, query_scope_adaptive
 from .llm import (ChatClient, extract_facts, generate_from_facts,
@@ -90,6 +90,10 @@ def _build_parser():
     parser.add_argument("--cutoff", type=int,
                         help="Normalized event order, not raw line number")
     parser.add_argument("--seed", help="Observed relative file path or path::symbol")
+    parser.add_argument("--source-event", action="append", default=[],
+                        help="Public original event ID to seed either track; repeatable")
+    parser.add_argument("--source-object", action="append", default=[],
+                        help="Exact public file or file::symbol mention to seed either track")
     parser.add_argument("--initial-hops", type=int, default=1)
     parser.add_argument("--max-hops", type=int, default=4)
     parser.add_argument("--max-context-chars", type=int, default=120000,
@@ -99,7 +103,7 @@ def _build_parser():
     parser.add_argument("--qa-mode", choices=("general", "code", "both"), default="code",
                         help="QA tracks to generate (default: code)")
     parser.add_argument("--general-types",
-                        help="Comma-separated LoCoMo types for the general track")
+                        help="Comma-separated memory-purpose types for the general track")
     parser.add_argument("--code-types", help="Comma-separated code QA categories")
     parser.add_argument("--general-count", type=int,
                         help="Approved, safe, unique general QA target and publication cap")
@@ -296,7 +300,7 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
         scope_for_merge = scope
         if result.get("stage_status", {}).get("facts") != "completed":
             # A failed fact task means the selected range is incomplete for
-            # full-range types such as adversarial; preserve the scope for
+            # explicit full-range requests; preserve the scope for
             # diagnostics but make that incompleteness explicit.
             scope_for_merge = dict(scope)
             scope_for_merge["facts_failed"] = True
@@ -320,11 +324,11 @@ def _static_generation_rejection(group, target_type, check):
         "all_candidates": [], "questions": [], "raw_generated": 0,
         "facts": group.get("facts", []),
         "rejected": [{
-            "reason": "code_evidence_static_insufficient",
+            "reason": "type_evidence_static_insufficient",
             "static_reason": check.get("reason"),
             "target_type": target_type,
             "stage": "static_pre_generation",
-            "static_code_evidence": check,
+            "static_type_evidence": check,
         }],
         "stage_errors": [], "stage_status": {"qa": "skipped"},
     }
@@ -409,16 +413,13 @@ def generate_simple_target(group, evidence_index, target_type, client,
         return total
 
     active_group = bind_target(group)
-    static_precheck = (static_code_evidence_check(
-        active_group, evidence_index, target_type)
-        if qa_mode == "code" else None)
+    static_precheck = static_evidence_check(active_group, evidence_index, target_type)
     if static_precheck is not None:
         static_checks.append(static_precheck)
     expanded_static_precheck = None
     generated = None
     missing_by_reason = {
-        "history_missing_earlier_state": "earlier_state",
-        "history_missing_later_state": "later_state",
+        "correction_missing_old_or_new": "earlier_state",
     }
 
     def record_expansion(missing_kind, missing_object, static_direction=False):
@@ -436,10 +437,9 @@ def generate_simple_target(group, evidence_index, target_type, client,
             return False, audit.get("reason", "expansion_failed")
         active_group = expanded
         expansion_rounds += 1
-        if qa_mode == "code":
-            expanded_static_precheck = static_code_evidence_check(
-                active_group, evidence_index, target_type)
-            static_checks.append(expanded_static_precheck)
+        expanded_static_precheck = static_evidence_check(
+            active_group, evidence_index, target_type)
+        static_checks.append(expanded_static_precheck)
         if checkpoint is not None:
             checkpoint("expanded-%d" % expansion_rounds, "evidence.json", {
                 "target_type": target_type,
@@ -457,7 +457,7 @@ def generate_simple_target(group, evidence_index, target_type, client,
         while check is not None and check.get("status") == "insufficient":
             missing_kind = missing_by_reason.get(check.get("reason"))
             if missing_kind is None:
-                expansion_stop_reason = "static_code_evidence_insufficient"
+                expansion_stop_reason = "static_type_evidence_insufficient"
                 return False, check
             ok, reason = record_expansion(
                 missing_kind, static_direction=True)
@@ -594,22 +594,22 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         question["evidence_group_id"] = group.get(
                             "id", "%s-group-%d" % (track, index))
                     static_post_rejected = []
-                    if track == "code":
+                    if type_questions:
                         checked_questions = []
                         checks_by_id = {}
                         for question in type_questions:
-                            check = static_code_evidence_check(
+                            check = static_evidence_check(
                                 active_group, evidence_index, target_type,
                                 candidate=question)
-                            question["static_code_evidence"] = check
+                            question["static_type_evidence"] = check
                             checks_by_id[question.get("id")] = check
                             if check.get("status") == "insufficient":
                                 static_post_rejected.append({
                                     "question": dict(question, status="rejected"),
-                                    "reason": "code_evidence_static_insufficient",
+                                    "reason": "type_evidence_static_insufficient",
                                     "static_reason": check.get("reason"),
-                                    "failed_checks": ["code_evidence_sufficient"],
-                                    "static_code_evidence": check,
+                                    "failed_checks": ["type_evidence_sufficient"],
+                                    "static_type_evidence": check,
                                 })
                             else:
                                 checked_questions.append(question)
@@ -617,7 +617,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         for question in generated.get("all_candidates", []):
                             check = checks_by_id.get(question.get("id"))
                             if check is not None:
-                                question["static_code_evidence"] = check
+                                question["static_type_evidence"] = check
                     reviewed_questions = type_questions
                     validation_rejected = list(generated.get("rejected", []))
                     type_rejected = [dict(item, stage="qa_validation")
@@ -698,20 +698,20 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         if isinstance(after, dict):
                             after.update(static_candidate_labels(
                                 active_group, after, evidence_index, target_type))
-                    if track == "code":
+                    if reviewed_questions:
                         final_questions = []
                         for question in reviewed_questions:
-                            check = static_code_evidence_check(
+                            check = static_evidence_check(
                                 active_group, evidence_index, target_type,
                                 candidate=question)
-                            question["static_code_evidence"] = check
+                            question["static_type_evidence"] = check
                             if check.get("status") == "insufficient":
                                 type_rejected.append({
                                     "question": dict(question, status="rejected"),
-                                    "reason": "code_evidence_static_insufficient",
+                                    "reason": "type_evidence_static_insufficient",
                                     "static_reason": check.get("reason"),
-                                    "failed_checks": ["code_evidence_sufficient"],
-                                    "static_code_evidence": check,
+                                    "failed_checks": ["type_evidence_sufficient"],
+                                    "static_type_evidence": check,
                                     "stage": "static_post_review",
                                 })
                             else:
@@ -1031,8 +1031,6 @@ def _public_question(question):
     if mode == "code":
         item.update(category=question.get("category", item["type"]),
                     track=question.get("track"))
-    elif question.get("type") == "open-domain":
-        item["external_knowledge"] = question.get("external_knowledge")
     return item
 
 
@@ -1232,6 +1230,12 @@ def main(argv=None):
         if not 1 <= cutoff <= records[-1]["order"]:
             raise ValueError("Cutoff outside normalized event range")
         records = [record for record in records if record["order"] <= cutoff]
+        from .normalize import resolve_source_events, resolve_source_objects
+        seed_sources = resolve_source_events(records, args.source_event)
+        seed_sources.update(resolve_source_objects(records, args.source_object))
+        public_input = all(r.get("input_schema") == "model-visible-dialogue-v1" for r in records)
+        if args.seed and public_input:
+            seed_sources.update(resolve_source_objects(records, [args.seed]))
         if args.reuse_facts and json.loads((args.reuse_facts / "normalized.json").read_text()) != records:
             raise ValueError("Saved facts belong to a different normalized input")
         args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -1249,13 +1253,14 @@ def main(argv=None):
             general_scope["track"] = "general"
             save(args.output, "general-scope.json", general_scope)
         if options["enabled_code"]:
-            code_scopes, adaptive_meta = _prepare_code_scopes(
-                # Scope exploration is independent from the final published
-                # question quota.  Using code_count here silently capped the
-                # graph at 20 roots even when the caller requested a larger
-                # code-group-budget, leaving most recorded events uncovered.
-                graph, records, cutoff, args,
-                max(options["code_count"], options["code_group_budget"]))
+            if seed_sources or public_input:
+                scope = build_general_scope(records, cutoff, args.max_context_chars, graph)
+                scope.update(versions=graph["versions"], events=graph["events"], track="code")
+                code_scopes = [scope]
+            else:
+                code_scopes, adaptive_meta = _prepare_code_scopes(
+                    graph, records, cutoff, args,
+                    max(options["code_count"], options["code_group_budget"]))
             if adaptive_meta is not None:
                 save(args.output, "adaptive-subgraphs.json", {
                     "meta": adaptive_meta,
@@ -1419,6 +1424,7 @@ def main(argv=None):
                             target_chars=min(16000, args.model_request_chars),
                             max_chars=args.model_request_chars,
                             evidence_index=evidence_index,
+                            seed_sources=seed_sources,
                             static_selection=args.review_mode == "simple")
                         result["stage_status"].append({
                             "track": track, "phase": "grouping",
@@ -1712,6 +1718,9 @@ def main(argv=None):
                 result.get("questions", []),
                 attempted_group_ids=result.get("progress", {}).get("attempted_group_ids", [])),
             "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
+            "seed_event_ids": args.source_event,
+            "seed_objects": args.source_object,
+            "seed_source_ids": sorted(seed_sources),
             "cutoff": cutoff, "events": len(records),
             "file_versions": len(graph["versions"]),
             "diagnostics": len(graph["diagnostics"]), "mode": public["status"],

@@ -88,8 +88,8 @@ class SmokeGenerationTests(unittest.TestCase):
         self.assertTrue(plan["allow_repair"])
 
     def test_simple_plan_is_explicit_and_does_not_reserve_annotation(self):
-        selected = [("general", "general-group", {"eligible_types": ("single-hop",)}),
-                    ("code", "code-group", {"eligible_types": ("fact_recall",)})]
+        selected = [("general", "general-group", {"eligible_types": ("constraint_followthrough",)}),
+                    ("code", "code-group", {"eligible_types": ("constraint_followthrough",)})]
         plan = smoke_generation._plan(selected, "simple")
         self.assertEqual(plan["review_mode"], "simple")
         self.assertEqual(plan["base_calls_per_group"], 6)
@@ -104,19 +104,19 @@ class SmokeGenerationTests(unittest.TestCase):
 
     def test_simple_plan_splits_a_group_by_static_target_type(self):
         selected = [("general", "general-group", {
-            "eligible_types": ("temporal", "single-hop"),
+            "eligible_types": ("correction_update", "constraint_followthrough"),
         })]
         plan = smoke_generation._plan(selected, "simple")
         self.assertEqual(
             [(unit["group_id"], unit["target_type"])
              for unit in plan["target_type_units"]],
-            [("general-group", "single-hop"), ("general-group", "temporal")])
+            [("general-group", "constraint_followthrough"), ("general-group", "correction_update")])
         self.assertEqual(plan["group_plans"][0]["units"], 2)
         self.assertEqual(plan["expected_calls_upper_bound"], 32)
 
     def test_simple_plan_does_not_fallback_to_non_static_group_types(self):
         selected = [("general", "general-group", {
-            "allowed_types": ("single-hop",),
+            "allowed_types": ("constraint_followthrough",),
         })]
         plan = smoke_generation._plan(selected, "simple")
         self.assertEqual(plan["target_type_units"], [])
@@ -125,7 +125,7 @@ class SmokeGenerationTests(unittest.TestCase):
 
     def test_simple_plan_exposes_the_per_target_expansion_budget(self):
         selected = [("general", "general-group", {
-            "eligible_types": ("single-hop",),
+            "eligible_types": ("constraint_followthrough",),
         })]
         no_expansion = smoke_generation._plan(selected, "simple", 0)
         one_expansion = smoke_generation._plan(selected, "simple", 1)
@@ -173,11 +173,11 @@ class SmokeGenerationTests(unittest.TestCase):
     def test_public_projection_excludes_non_approved_questions(self):
         questions = [{
             "id": "approved", "qa_mode": "general", "status": "approved",
-            "type": "single-hop", "question": "safe question",
+            "type": "constraint_followthrough", "question": "safe question",
             "answer_points": [], "forbidden_points": [],
         }, {
             "id": "needs-review", "qa_mode": "general", "status": "needs_review",
-            "type": "single-hop", "question": "private review item",
+            "type": "constraint_followthrough", "question": "private review item",
             "answer_points": [], "forbidden_points": [],
         }]
         public = smoke_generation._public_questions(questions)

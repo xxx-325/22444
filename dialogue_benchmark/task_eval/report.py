@@ -3,7 +3,6 @@
 from pathlib import Path
 from html import escape
 import json
-import gzip
 
 from .metrics import compare_checkpoints
 
@@ -33,6 +32,56 @@ def write_report(output, manifest):
     lines = ["# Repository task pilot", "",
              "Model-authored requirements and tests, with frozen automated judging. "
              "The memory condition receives the historical answer directly."]
+    lines += ["", "| Task | Memory purpose | QA | Status |", "|---|---|---|---|"]
+    for task in tasks:
+        lines.append("| %s | %s | %s | %s |" % (
+            task["task"], task.get("type", "unavailable"),
+            task.get("qa_id", "unavailable"), task["status"]))
+    history_tasks = [task for task in tasks if any(
+        "history_application" in trial for trial in task.get("comparison", {}).values())]
+    if history_tasks:
+        lines += ["", "## Historical constraints and repeated information", "",
+                  "The two conditions are without memory and oracle historical answers. "
+                  "Both can ask the same frozen-history responder. No retrieval system is evaluated.", "",
+                  "| Task | Condition | Applied / violated / not applicable / insufficient | Cross-session re-asks | Same-session repeats | Update confirmations |",
+                  "|---|---|---|---|---|---|"]
+        history_details = []
+        for task in history_tasks:
+            for condition, trial in task.get("comparison", {}).items():
+                counts = trial.get("history_application", {}).get("counts", {})
+                interactions = trial.get("interaction_counts", {})
+                lines.append("| %s | %s | %s | %s | %s | %s |" % (
+                    task["task"], trial.get("information_condition", condition),
+                    "/".join(str(counts.get(k, "unavailable")) for k in (
+                        "applied", "violated", "not_applicable", "insufficient")),
+                    *(interactions.get(k, "unavailable") for k in (
+                        "historical_reask", "same_session_repeat", "update_confirmation"))))
+                for row in trial.get("history_application", {}).get("rows", []):
+                    history_details.append("- %s / %s / %s: %s — %s" % (
+                        task["task"], condition, row["id"], row["status"], _cell(row["evidence"])))
+        lines += [""] + history_details
+        lines += ["", "An applied constraint records observable compliance, not proof of memory causation. "
+                  "Valid updates need not follow superseded rules. Responder errors and missing reviews remain unavailable."]
+    lines += ["", "## Aggregate execution costs", "",
+              "| Condition | Trials recorded | Passed / failed / uncertain | Solver tokens | Responder tokens | Tool calls | File views | Shell reads/searches |",
+              "|---|---|---|---|---|---|---|---|"]
+    for condition in ("without_memory", "with_memory"):
+        trials = [t["comparison"][condition] for t in tasks if condition in t.get("comparison", {})]
+        if not trials:
+            continue
+        def total(key):
+            values = [t.get("metrics", {}).get(key) for t in trials]
+            return sum(values) if all(isinstance(v, (int, float)) for v in values) else "unavailable"
+        responder = [t.get("responder_cost") for t in trials]
+        responder_tokens = (sum(r["tokens"] for r in responder) if all(
+            r and r.get("usage_complete") for r in responder) else "unavailable")
+        tokens = str(total("total_tokens"))
+        if not all(t.get("metrics", {}).get("usage_complete") for t in trials):
+            tokens += " (incomplete)"
+        lines.append("| %s | %d | %s | %s | %s | %s | %s | %s |" % (
+            "oracle_history" if condition == "with_memory" else condition, len(trials),
+            "/".join(str(sum(t.get("result") == s for t in trials)) for s in ("passed", "failed", "uncertain")),
+            tokens, responder_tokens, total("tool_calls"), total("file_view_calls"), total("shell_read_or_search_calls")))
     for note in manifest.get("notes", []):
         lines += ["", note]
     lines += ["", "| Task | Condition | Judge result | Tests passed/total | Exploration observed/total | Alternative/skipped/uncertain | Tool calls | Provider tokens |",
@@ -79,8 +128,9 @@ def write_report(output, manifest):
         for index in sorted(left.keys() | right.keys()):
             lines.append("| %s | %s | %s |" % (index, _evidence(left.get(index, {})), _evidence(right.get(index, {}))))
         lines += ["", "</details>"]
-    lines += ["", "In new task runs, checkpoints are exploration actions extracted from an accepted, independent "
-              "no-memory reference trajectory and frozen before the paired trials. "
+    lines += ["", "Checkpoints come from an independent no-memory construction run or an explicitly requested design probe, "
+              "and are frozen before paired trials. Historical references are not no-memory exploration baselines. "
+              "Missing checkpoints do not prevent correctness evaluation. "
               "Implementation, final tests, and environment setup do not enter exploration coverage. "
               "Equivalent tools obtaining the same information count as observed. "
               "An uncertain match does not count as a skipped action. "
@@ -122,11 +172,9 @@ def write_html(output, manifest):
         path = root / "trace.jsonl.gz"
         if not path.exists():
             return ""
-        with gzip.open(path, "rt", encoding="utf-8") as stream:
-            rows = [json.loads(line) for line in stream if line.strip()]
-        return '<details><summary>Original model and tool trace</summary>%s<pre>%s</pre></details>' % (
-            link(path, "Download compressed trace"),
-            safe(json.dumps(rows, ensure_ascii=False, indent=2)))
+        return '<p>%s · %s</p>' % (
+            link(path, "Original model and tool trace (compressed)"),
+            link(root / "trajectory.json", "Tool trajectory"))
 
     cards = []
     for item in manifest.get("tasks", []):
@@ -151,6 +199,10 @@ def write_html(output, manifest):
                     link(trial_root / "trajectory.json", "Tool trajectory"),
                     link(trial_root / "checks/result.json", "Tests")])),
                 safe(json.dumps({"metrics": metrics, "checkpoints": trial.get("checkpoints"),
+                                 "history_application": trial.get("history_application"),
+                                 "interactions": trial.get("interaction_counts"),
+                                 "clarifications": trial.get("clarifications"),
+                                 "responder_cost": trial.get("responder_cost"),
                                  "tests": trial.get("checks"), "judge": trial.get("judge_evidence")},
                                 ensure_ascii=False, indent=2))))
             trials.append(trace(trial_root))

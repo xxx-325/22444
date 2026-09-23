@@ -1,9 +1,19 @@
 """Short role prompts; task content is authored by the configured model."""
 
+from ..protocol import TASK_TYPE_GUIDANCE
+
+
+def task_direction(qa_type):
+    """Bind one historical purpose; the author never selects another type."""
+    return "\n本题固定用途：" + TASK_TYPE_GUIDANCE[qa_type] + (
+        "\nmemory-use.md 必须指出实际答案原文中的哪条知识影响新需求的哪项实现选择。"
+        "只主题相关不算；用不到这条知识就写 NO_TASK.md。"
+        "将对应可观察行为写入 acceptance.md，供参考验证和两组执行共同使用。\n")
+
 AUTHOR = """你是出题者。读取 /reference/qa.json 和 /reference/qa-input.json，
 后者是生成该 QA 时实际提供的材料。自主查看只读的 /workspace/candidate。
 若这两个参考文件无法读取，立即报告输入错误并结束，不猜测历史，不另选主题出题。
-先看 QA 直接关联的文件，围绕一个行为出题；没有合适需求就写 NO_TASK.md。
+先看 QA 直接关联的文件，按固定历史用途提出新开发需求；没有合适需求就写 NO_TASK.md。
 从历史知识延伸一个真实、范围适中的新开发需求。基线已有的修复要保留，
 新需求必须尚未完成。不要把 QA 改成重做原修复，也不要只考参数或文件名。
 公开说明输入、输出、兼容要求，不泄露内部改法。历史答案只能提供旧经验。
@@ -12,7 +22,7 @@ AUTHOR = """你是出题者。读取 /reference/qa.json 和 /reference/qa-input.
 task.md：给开发者的新需求，中文。
 acceptance.md：逐条可判定的行为要求、对应验证方式，以及哪些必须由 Judge 判断。
 同一对象上能同时发生的条件要写明组合结果，例如“持有引用 + 替换对象 + 异常退出”。
-所有必须满足的行为也必须出现在 task.md；验收材料不能增加开发者不知道的要求。
+所有必须满足的行为必须在 task.md 写明或明确引用已冻结的历史契约；验收不能新增要求。
 memory-use.md：一句说明历史答案可能帮助哪项开发决定，不声称已产生收益。
 test_acceptance.py：使用 pytest，通过公开行为检查新需求，不锁定参考实现。
 若部分或全部无法稳定测试，写 TESTS_UNAVAILABLE.md 说明具体缺口，
@@ -27,6 +37,7 @@ TASK_REVIEW = """只判断公开开发需求是否提前给出了历史答案中
 公开需求出现历史答案里的私有类/函数名，或写出其内部调用顺序，即为 leaked；
 写在“背景”或“兼容要求”里也一样。兼容要求应描述对外行为，不指定内部调用顺序。
 不能为了隐藏答案删掉用户必须知道的需求。仅因公共 API 或行为与答案重合，不算泄露。
+题面可以明确引用已有历史约定及对象，不必复述约定内容；引用本身不是泄露。
 只检查 public_task 是否泄露；historical_answer 本来就可以包含内部方法。
 选 clean（没有提前给出）、leaked（提前给出）或 uncertain（不能确定）。
 只返回以下文本；issue 在 clean 时为 none，否则简短指出原文位置及问题，不写新需求：
@@ -51,7 +62,7 @@ VALIDATOR = """你是独立验收者。/workspace/candidate 是未修改基线�
 将这些条件、预期结果和对应测试写到 /workspace/checks/coverage.md。
 先将遗漏的组合检查写为 /workspace/checks/test_interactions.py，再实际运行。
 补充文件必须自包含，不依赖临时实验文件；需要的辅助函数和数据也写在该文件内。
-新增测试只能检查 task.md 已要求的行为，不能限定内部实现。无新增用例也写 coverage.md。
+新增测试只能检查 task.md 已要求或明确引用的冻结历史契约，不能限定内部实现。无新增用例也写 coverage.md。
 测试失败先区分测试自身错误与实现错误；确认参考实现违反需求时，保存用例、
 coverage.md 和 revise 报告后结束，未完成项写 uncertain，不再继续其他检查。
 无法自动测试的条件在 coverage.md 写出可重复执行的 Judge 检查步骤和期望结果；
@@ -120,4 +131,63 @@ JUDGE = """你是独立 Judge。只读候选代码在 /workspace/candidate，冻
 RESULT: passed 或 failed 或 uncertain
 后面简短列出需求完成或未完成的证据。
 真实失败不能判成功；测试自身或环境故障要区分于候选实现错误。
+"""
+
+HISTORY_AUTHOR = """\n本轮使用公开历史契约。/reference/history.json 是实际公开历史，
+selected_event_ids 指向 QA 相关资料；查找同对象后续纠正，不能只看旧结论。
+task.md 明确新功能及其沿用的历史约定对象；不重复历史问题已经完成的修复或扩展。
+具体旧规则可以通过明确引用约定来要求遵循，不必在题面重述答案。
+在 history-contract.txt 按事件顺序写契约，保留旧规则与后续局部修订：
+REVIEW h1
+statement: 一条已公开事实或约定，不写新任务的实现方案
+scope: 对象和适用条件；后续修订只覆盖其明确范围
+sources: history.json 中的原始公开事件 id，逗号分隔
+supersedes: 被此条局部替代的前面契约 id，或 none
+behavior: 本任务可观察的应用行为；不能限定内部实现或固定工具路线
+repository: recoverable 或 external 或 uncertain
+END_REVIEW
+repository 表示当前仓库是否充分给出该信息；需要实际查看源码/测试/文档，
+没搜到不等于不可恢复。memory-use.md 写核查位置和缺口。
+旧新规则不能无条件同时要求满足，scope 之外不自动覆盖。未公开设定不能写入。
+acceptance.md 的行为只来自新需求和这里明确引用的历史契约。
+"""
+
+HISTORY_VALIDATOR = """\n本轮 /reference/spec/history.json 保存截止点、公开原文及历史契约。
+题面明确引用的旧约定可以作为验收要求。逐条检查 statement/scope/supersedes
+是否被 sources 原文支持、是否遗漏后续相关纠正；检查实际 oracle_answer 是否被原文支持。
+不能把同文件或先后顺序当因果，也不能把建议当已确认约定。
+充分历史参考验证可解性，不证明仅注入 oracle_answer 已足够。
+核对行为是真实新需求，不重做构造期已经完成的扩展。
+在 validation.txt 另写 HISTORY: supported 或 unsupported 或 uncertain；
+不支持或遗漏有效更新就 revise。保持冻结契约不变，不临时发明历史或新增要求。
+"""
+
+HISTORY_JUDGE = """\n本轮另读 /reference/spec/history.json 和 /reference/trajectory.json、
+/reference/clarifications.json（如有）。按截止点与对象判断历史适用范围。
+在 /workspace/checks/history-review.txt 对每条契约写：
+REVIEW 契约id
+status: applied 或 violated 或 not_applicable 或 insufficient
+evidence: 实现/工具动作/测试的具体证据；无可判定证据写 none
+END_REVIEW
+口头复述、检索命中或最终通过本身不能证明应用。只判断可观察的行为是否符合，
+不推断内部认知或归因于记忆；失效/范围外的旧规则正确不采用是 not_applicable。
+发现功能失败后也保存已查证的历史应用，其余填 insufficient，不推断全部条目。
+违反仍适用的契约意味着未完成该需求，但证据不足应写 uncertain。
+"""
+
+CLARIFY = """只判断开发者最后的公开回复是否有尚待回答的历史/外部信息问题。
+只从 supplied_history 回答实际问到的内容，遵守对象、条件和替代关系。
+没有问题选 no_question；问题无法由冻结事实回答选 unavailable，不能猜当前环境，
+不能主动纠错、追加任务、提供没问的事实或新修法。普通完成报告不是问题。
+若要求确认可能变化的状态目前是否仍成立，只有历史记录而无当前证据时选 unavailable。
+只返回：
+REVIEW clarification
+status: answer 或 no_question 或 unavailable
+sources: 实际依据的公开事件 id，逗号分隔；没有则 none
+reply: 仅 answer 时给自然回答，其余填 none
+kind: historical_reask 或 same_session_repeat 或 update_confirmation 或 none
+END_REVIEW
+historical_reask 是跨会话重新索取已明确历史；same_session_repeat 是本次交互已答过
+相同内容又问；update_confirmation 是确认可能变化的条件。类型依据 exchange，
+不依据是否注入了历史答案；输出分类不给开发者。
 """

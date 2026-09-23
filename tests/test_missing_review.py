@@ -17,6 +17,10 @@ class FakeReviewClient:
         self.usage = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"status": "completed"})
         relevance = maybe_relevance_response(prompt, payload)
@@ -62,7 +66,7 @@ class MissingReviewTests(unittest.TestCase):
             "candidate_id": "general_g7_q1",
             "model_id": "model-q1",
             "qa_mode": "general",
-            "type": "single-hop",
+            "type": "constraint_followthrough",
             "question": "配置必须支持什么格式，并保留什么兼容性？",
             "fact_ids": ["f1", "f2"],
             "answer_points": [
@@ -364,7 +368,7 @@ END_QA"""
         ]
         self.assertEqual(len(supplement_payloads), 1)
 
-    def test_adversarial_supplement_keeps_full_range_and_guards_other_materials(self):
+    def test_verification_reuse_supplement_keeps_full_range_and_guards_other_materials(self):
         scope = copy.deepcopy(self.scope)
         scope["full_range_covered"] = True
         scope["full_range_required"] = True
@@ -373,7 +377,7 @@ END_QA"""
             "stage_id": "s1", "text": "范围内还记录了另一项配置背景。",
         })
         candidate = copy.deepcopy(self.candidate)
-        candidate["type"] = "adversarial"
+        candidate["type"] = "verification_reuse"
 
         result, client = self._run([
             self.completeness(),
@@ -424,7 +428,7 @@ END_QA"""
             "answer_complete": True,
             "atomic_points_correct": True,
             "type_correct": True,
-            "recommended_type": "single-hop",
+            "recommended_type": "constraint_followthrough",
             "type_basis": "一条讨论阶段中的直接约束",
             "useful_task": "实现配置解析",
             "useful_decision": "确定支持格式和兼容性",

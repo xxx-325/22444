@@ -68,11 +68,14 @@ def _references(value, sources):
     return [sources[item] for item in references]
 
 
-def extract_checkpoints(task, trajectory, config, output):
+def extract_checkpoints(task, trajectory, config, output, *, source="accepted_reference_trajectory"):
     """Called once for the accepted reference run, before either scored trial."""
     try:
-        payload, sources = trajectory_payload({"task": task}, trajectory, prompts.CHECKPOINT_EXTRACT)
-        response = ask_model(prompts.CHECKPOINT_EXTRACT, payload, config, output)
+        prompt = prompts.CHECKPOINT_EXTRACT
+        if source == "independent_design_probe":
+            prompt = prompt.replace("一次已通过验收的无记忆参考运行", "一次独立无记忆设计探针（不保证通过验收）")
+        payload, sources = trajectory_payload({"task": task}, trajectory, prompt)
+        response = ask_model(prompt, payload, config, output)
         if not isinstance(response.get("facts"), list):
             raise ValueError("missing_checkpoint_list")
         checkpoints, seen = [], set()
@@ -86,7 +89,7 @@ def extract_checkpoints(task, trajectory, config, output):
             seen.add(text)
             checkpoints.append({"index": len(checkpoints) + 1, "text": text,
                                 "reference_evidence": evidence})
-        result = {"status": "completed", "source": "accepted_reference_trajectory",
+        result = {"status": "completed", "source": source,
                   "checkpoints": checkpoints}
     except Exception as error:
         result = {"status": "failed", "error": stage_error("checkpoint_extraction", error)}
@@ -99,7 +102,8 @@ def write_checkpoints(spec, extracted, reference_run):
     document = dict(extracted, reference_run=reference_run)
     save(Path(spec) / "checkpoints.json", document)
     lines = ["# Exploration checkpoints", "",
-             "Observed in the accepted no-memory reference run; not required implementation steps.", ""]
+             "Source: %s. Status: %s. These are observed exploration actions, not required steps." % (
+                 extracted.get("source", "unavailable"), extracted["status"]), ""]
     for row in document["checkpoints"]:
         lines.append("%d. %s" % (row["index"], row["text"]))
     if not document["checkpoints"]:

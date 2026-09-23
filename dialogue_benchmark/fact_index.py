@@ -5,7 +5,7 @@ import re
 from collections import deque
 
 from .normalize import source_kind_for
-from .protocol import MISSING_KINDS
+from .protocol import MISSING_KINDS, QA_TYPES
 from .subgraph import _select_root_seeds
 
 
@@ -52,9 +52,22 @@ _WEAK_ENTITIES = {
     "logger", "parser", "client", "handler", "manager", "helper", "util", "utils",
     "service", "config", "common", "base", "data", "request", "response",
 }
-_EXTERNAL_KNOWLEDGE_CUE = re.compile(
-    r"常识|标准|通常|一般来说|规范|协议|语义|复杂度|YAML|JSON|HTTP|REST|"
-    r"Unicode|UTF-?8|正则|时间格式|时区|操作系统", re.I)
+_EXTERNAL_OBSERVATION = re.compile(
+    r"用户侧|客户侧|生产环境|部署环境|远程环境|线上|在我(?:这|的)|实测|"
+    r"user.side|customer|production|deployment|observed.+environment", re.I)
+_VALIDATION_RESULT = re.compile(
+    r"(?:测试|实验|验证|运行|pytest|test|experiment).{0,100}"
+    r"(?:通过|失败|结果|发现|确认|显示|passed|failed|confirmed|observed)|"
+    r"\b\d+\s+(?:passed|failed)\b", re.I)
+_PLANNED_OBSERVATION = re.compile(
+    r"计划|打算|建议|将会|尚未|未执行|准备(?:运行|测试)|plan\s+to|will\s+(?:run|test)", re.I)
+_COMPATIBILITY_CUE = re.compile(
+    r"兼容|旧调用|旧接口|仍需|仍然|保持.{0,30}(?:行为|语义|接口)|"
+    r"compatib|existing\s+(?:caller|client)|preserve.{0,40}(?:behavior|contract)", re.I)
+_COMPATIBILITY_OBJECT = re.compile(
+    r"旧(?:客户端|调用方|接口|行为|语义)|现有(?:客户端|调用方|接口|行为|语义)|"
+    r"向后兼容|调用方|客户端|接口|行为|语义|caller|client|API|contract",
+    re.I)
 _CODE_FILE_SUFFIXES = (".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml")
 _OBSERVED_FAILURE = re.compile(
     r"历史失败|实际(?:运行)?失败|运行[^。\n]{0,120}(?:抛出|报错|异常|错误)|"
@@ -68,6 +81,17 @@ _FAILURE_ABSENCE = re.compile(
     r"(?:无(?:错误|异常|报错)|没有(?:错误|异常|报错|失败)|"
     r"未(?:发生|出现|记录|提供)[^。\n]{0,30}(?:失败|错误|异常|报错)|"
     r"正常(?:结束|完成|通过)|success(?:fully)?\s+(?:completed|finished))", re.I)
+_FAILURE_INPUT = re.compile(
+    r"输入|入参|参数|空值|空路径|缺失|超时|超限|无效|异常值|"
+    r"mismatch|不匹配|类型不符|empty|invalid|timeout|missing|"
+    r"当[^。\n]{0,80}(?:时|下)|如果[^。\n]{0,80}|"
+    r"for\s+[^\n]{1,60}|when\s+[^\n]{1,60}", re.I)
+_FAILURE_OUTPUT = re.compile(
+    r"报错|错误|异常|失败|抛出|返回|输出|traceback|with\s+[^\n]{1,60}|"
+    r"error|exception|failed|failure|returned|raised", re.I)
+_FAILURE_REMEDY = re.compile(
+    r"后来|之后|修复|改为|改成|改用|避免|不再|防止|替换|补丁|"
+    r"fixed|fix(?:ed)?|avoid(?:ed)?|prevent(?:ed)?|replaced?|instead", re.I)
 _COUNTEREVIDENCE_CUE = re.compile(
     r"更正|纠正|并非|不是|不对|误报|实际(?:为|是|结果)|撤回|"
     r"correct(?:ion|ed)?|incorrect|wrong|revert(?:ed)?", re.I)
@@ -76,7 +100,7 @@ _HISTORICAL_EVENT_QUESTION = re.compile(
     r"(?:应用|打上|完成)(?:该)?(?:补丁|修复|改动)后|补丁后|修复后|重新执行(?:的)?结果",
     re.I)
 _OLD_STATE_CUE = re.compile(
-    r"(?:之前|此前|原来|原先|曾经|当时|旧版|旧版本|旧实现|before|previous(?:ly)?|"
+    r"(?:之前|此前|原来|原先|曾经|当时|旧版|旧版本|旧实现|旧规则|旧行为|before|previous(?:ly)?|"
     r"formerly|used\s+to)", re.I)
 _NEW_STATE_CUE = re.compile(
     r"(?:之后|后来|现在|当前|新版|新版本|新实现|改为|改成|替换为|"
@@ -103,8 +127,8 @@ _LABELS = {
     "validation": re.compile(r"测试|实验|验证|通过|passed|pytest|结果|回归", re.I),
     "change": re.compile(r"修改|改为|改成|删除|新增|移除|替换|升级|迁移|补丁|版本", re.I),
     "feedback": re.compile(r"反馈|不对|不需要|不能|应该|希望|要求|同意|确认", re.I),
-    "constraint": re.compile(r"必须|只允许|不要|不能|限制|兼容|默认|约束", re.I),
-    "decision": re.compile(r"决定|采用|选择|方案|最终|保留|放弃", re.I),
+    "constraint": re.compile(r"必须|只允许|不要|不能|限制|兼容|默认|约束|要求|需要|\bmust\b|require|constraint", re.I),
+    "decision": re.compile(r"决定|采用|选择|方案|最终|保留|放弃|decided|agreed|confirmed", re.I),
     "temporal": re.compile(r"之前|之后|后来|先|再|当前|当时|历史|旧版|新版|曾经", re.I),
     "conditional": re.compile(r"如果|当.+时|只有|否则|unless|when|if\b", re.I),
 }
@@ -192,7 +216,7 @@ def merge_scopes(scopes, qa_mode, model_request_chars=32000):
         "stages": sorted(stages.values(), key=lambda item: item.get("start_order", 0)),
         "source_graph_hops": source_graph_hops,
         # An explicitly incomplete scope must stay incomplete after merging;
-        # otherwise adversarial questions could mistake a partial range for a
+        # otherwise full-range questions could mistake a partial range for a
         # complete history merely because each retained chunk fits its budget.
         "full_range_covered": bool(scopes) and all(coverage_flags),
         "model_request_chars": model_request_chars,
@@ -385,6 +409,7 @@ def _source_index(scope):
             "kinds": {record.get("kind")} if record.get("kind") else set(),
             "source_kinds": {source_kind_for(record)},
             "parent_id": record.get("parent_id"),
+            "public_evidence": record.get("input_schema") == "model-visible-dialogue-v1",
             "call_ids": {record["call_id"]} if isinstance(record.get("call_id"), str) else set(),
             "call_sources": set(),
         })
@@ -525,10 +550,13 @@ def _fact_info(fact, source_index, graph_links=None):
                        if token.casefold().endswith(_CODE_FILE_SUFFIXES)}
     info = {
         "fact": fact,
+        "evidence_text": source_text,
+        "public_evidence": bool(sources) and all(source.get("public_evidence") for source in sources),
         "entities": _entities(statement),
         "labels": labels,
         "statement_labels": statement_labels,
-        "source_kinds": source_kinds,
+        "source_kinds": source_kinds | set().union(*(
+            source.get("source_kinds", set()) for source in sources)),
         # A fact extracted from a result/tool record can state an observed
         # failure without using the exact "运行失败" wording.  Keep requests
         # such as "不要报错" out of this signal so they do not become
@@ -552,7 +580,10 @@ def _fact_info(fact, source_index, graph_links=None):
                                       for source in sources),
         "call_sources": set().union(*(source.get("call_sources", set())
                                       for source in sources)) if sources else set(),
-        "external_cue": bool(_EXTERNAL_KNOWLEDGE_CUE.search(statement + "\n" + source_text)),
+        "external_observation": bool(_EXTERNAL_OBSERVATION.search(statement)
+                                     and not _PLANNED_OBSERVATION.search(statement)),
+        "observed_validation": bool(_VALIDATION_RESULT.search(statement)
+                                    and not _PLANNED_OBSERVATION.search(statement)),
     }
     # Expand each cited path only through an explicit graph edge.  This gives
     # cross-file call/reference evidence a chance to form a group while still
@@ -851,9 +882,6 @@ def candidate_review_projection(group, evidence_index, candidate,
     }
     if not isinstance(candidate, dict) or not isinstance(evidence_index, dict):
         return None, audit
-    if candidate.get("type") == "adversarial":
-        audit["reason"] = "full_range_required"
-        return None, audit
     cited_sources = _candidate_sources(candidate)
     unresolved = sorted(source for source in cited_sources
                         if not _source_material_ids(
@@ -949,7 +977,7 @@ def candidate_review_projection(group, evidence_index, candidate,
         info, evidence_index.get("graph_links", set()))
         for info in available_infos]
     historical_event = bool(
-        candidate.get("type") == "failure_diagnosis"
+        candidate.get("type") == "failure_avoidance"
         and _HISTORICAL_EVENT_QUESTION.search(candidate.get("question", "")))
     guarded_infos = _candidate_guard_closure(
         base_views, all_views, historical_event=historical_event)
@@ -1020,6 +1048,10 @@ def candidate_review_projection(group, evidence_index, candidate,
 def _relation(left, right, qa_mode):
     shared_paths = left["paths"] & right["paths"]
     shared_entities = _semantic_shared_entities(left, right)
+    public_pair = left.get("public_evidence") and right.get("public_evidence")
+    if public_pair:
+        shared_entities = {entity for entity in shared_entities
+                           if not entity.casefold().endswith(_CODE_FILE_SUFFIXES)}
     shared_sources = set(left["fact"].get("sources", [])) & set(right["fact"].get("sources", []))
     graph_linked = _explicit_graph_link(left, right)
     version_link = _version_ancestry_link(left, right)
@@ -1039,6 +1071,8 @@ def _relation(left, right, qa_mode):
     # chain, where the shared path is the concrete object being repaired.
     path_link = bool(shared_paths and (complementary or version_link or (
         qa_mode == "general" and bool(labels & {"change", "temporal", "feedback"}))))
+    if public_pair:
+        path_link = bool(shared_paths and version_link)
     # A common source is useful only when the facts also mention a concrete
     # object or describe complementary stages of one event.
     source_link = bool(shared_sources and (shared_entities or complementary))
@@ -1047,107 +1081,9 @@ def _relation(left, right, qa_mode):
 
 
 def _candidate_types(infos, qa_mode, allowed_types):
-    stages = set().union(*(info["stages"] for info in infos))
-    labels = set().union(*(info["labels"] for info in infos))
-    entity_sets = [info["entities"] for info in infos]
-    path_sets = [info["paths"] for info in infos]
-    shared_entities = (_shared_entities_for_infos(infos)
-                       if len(entity_sets) > 1 else set())
-    shared_paths = set.intersection(*path_sets) if len(path_sets) > 1 else set()
-    graph_linked = any(
-        info.get("graph_neighbors", set()) & other["paths"]
-        for index, info in enumerate(infos)
-        for other in infos[index + 1:]
-    )
-    shared = shared_entities or shared_paths or graph_linked
-    order_values = [order for info in infos for order in info["orders"]]
-    source_ids = {source for info in infos for source in info["fact"].get("sources", [])}
-    distinct_time = len(set(order_values)) >= 2
-    version_link = any(
-        _version_ancestry_link(left, right)
-        for index, left in enumerate(infos)
-        for right in infos[index + 1:]
-    )
-    explicit_temporal = bool(set().union(*(
-        info.get("statement_labels", set()) for info in infos)) &
-        {"temporal", "feedback"})
-    if qa_mode == "general":
-        possible = set()
-        if len(stages) <= 1:
-            possible.add("single-hop")
-        if len(stages) >= 2 and shared:
-            possible.add("multi-hop")
-        if ((len(set(order_values)) >= 2 and shared) or "temporal" in labels) and len(infos) >= 2:
-            possible.add("temporal")
-        if any(info.get("external_cue") for info in infos):
-            possible.add("open-domain")
-    else:
-        possible = {"fact_recall"} if len(infos) == 1 else set()
-        # History tracking must cross an actual recorded point in time.  Two
-        # independent facts extracted from one version are behavior/context
-        # material, not a historical transition, even when they share a path.
-        # ``labels`` includes source-derived markers (for example, every
-        # version source receives ``temporal``). Use statement-level cues or a
-        # concrete ancestry link so an unrelated same-file pair cannot pass
-        # merely because it came from versioned records.
-        history_signal = bool(explicit_temporal
-                              or version_link
-                              or (shared_entities and "change" in labels)
-                              or (graph_linked and "change" in labels))
-        # A shared filename is a useful index hint but not a semantic link:
-        # separate functions in one file can evolve independently. Require a
-        # concrete entity or an explicit graph/ancestry relation before a
-        # history question is eligible.
-        history_relation = bool(shared_entities or graph_linked or version_link)
-        # A single fact may still be a valid historical question when it is
-        # explicitly tied to a recorded patch/version transition.  The
-        # current snapshot cannot answer “what did this old version contain?”
-        # without that source, so do not force an unrelated second fact merely
-        # to manufacture a multi-hop group.
-        historical_single = (
-            len(infos) == 1
-            and (bool(_INLINE_TRANSITION.search(
-                infos[0]["fact"].get("statement", "")))
-                 or (bool(infos[0].get("historical_transition"))
-                     and bool(infos[0].get("statement_labels", set())
-                              & {"change", "temporal"})))
-        )
-        if ((len(infos) >= 2 and len(source_ids) >= 2 and distinct_time
-             and history_relation and history_signal)
-                or historical_single):
-            possible.add("history_tracking")
-        inline_behavior = (len(infos) == 1
-                           and "conditional" in infos[0].get("statement_labels", set())
-                           and _BEHAVIOR_OUTCOME.search(
-                               infos[0]["fact"].get("statement", "")))
-        value_flow = (len(infos) >= 2
-                      and sum(bool(_VALUE_FLOW_CUE.search(
-                          info["fact"].get("statement", "")))
-                              for info in infos) >= 2)
-        flow_relation = any(
-            _strong_business_link(left, right)
-            for index, left in enumerate(infos)
-            for right in infos[index + 1:])
-        if (((shared_entities or graph_linked) and labels & {"change", "conditional"})
-                or (value_flow and flow_relation)
-                or inline_behavior):
-            possible.add("behavior_inference")
-        # A failure diagnosis must connect an observed failure to a separate
-        # change, validation, or decision fact.  A lone statement describing a
-        # validator/error is current behavior, not a historical diagnosis.
-        has_failure_chain = (
-            len(infos) >= 2
-            and any(info.get("observed_failure") for info in infos)
-            and labels & {"change", "validation", "decision"}
-        )
-        inline_failure_chain = (len(infos) == 1
-                                and infos[0].get("observed_failure")
-                                and bool(infos[0].get("statement_labels", set())
-                                         & {"change", "validation", "decision", "feedback"}))
-        if has_failure_chain or inline_failure_chain:
-            possible.add("failure_diagnosis")
-    return possible & set(allowed_types)
-
+    """Nominate purposes from recorded facts, not from hop counts."""
+    return {kind for kind in allowed_types
+            if kind in QA_TYPES and _memory_type_support(infos, kind)}
 
 def _project_group(universe, infos, target_chars, max_chars, full_range=False,
                    required_sources=(), include_padding=True, readable_budget=False):
@@ -2069,279 +2005,129 @@ def _strong_business_link(left, right):
                 or _version_ancestry_link(left, right))
 
 
-def _evaluate_code_evidence(infos, evidence_index, target_type, text, sources,
-                            complete=True, post_generation=False):
+def _concrete_fact_objects(info):
+    """Return identifiers/paths suitable for anchoring a memory purpose."""
+    return ({entity for entity in info.get("entities", set())
+             if not entity.startswith("zh:") and entity not in _WEAK_ENTITIES}
+            | set(info.get("paths", set())))
+
+
+def _memory_type_support(infos, target_type):
+    """Conservative nomination; the focused review checks the answer's purpose."""
     statements = [str(info["fact"].get("statement", "")) for info in infos]
-    statement_text = "\n".join(statements)
-    evidence_text = text if post_generation else statement_text
-    source_ids = list(sources)
-    labels = set().union(*(info.get("statement_labels", set()) for info in infos)) \
-        if infos else set()
-    relation_kinds = _source_relation_kinds(evidence_index, source_ids)
-
-    if target_type == "history_tracking":
-        # A multi-source fact may summarize both sides of a transition.  At
-        # review time it proves that transition only when the answer cites
-        # every source used by that fact; an overlap with the new side must
-        # not import the uncited old side through the extracted statement.
-        cited = set(source_ids)
-        proof_infos = [
-            info for info in infos
-            if not post_generation
-            or set(info["fact"].get("sources", [])).issubset(cited)
-        ]
-        proof_statements = [
-            str(info["fact"].get("statement", "")) for info in proof_infos
-        ]
-        proof_text = "\n".join(proof_statements)
-        source_transition = "version_previous" in relation_kinds
-        fact_inline = any(
-            _INLINE_TRANSITION.search(statement) for statement in proof_statements)
-        fact_old_new = (bool(_OLD_STATE_CUE.search(proof_text))
-                        and bool(_NEW_STATE_CUE.search(proof_text)))
-        paired_facts = any(
-            _strong_business_link(left, right)
-            for position, left in enumerate(proof_infos)
-            for right in proof_infos[position + 1:]
-        )
-        if (fact_inline or (fact_old_new and paired_facts)
-                or (source_transition and len(set(source_ids)) >= 2)):
-            return _code_evidence_result(
-                "supported", "explicit_old_new_transition", infos, source_ids)
-        missing_state_kinds = {
-            entry.get("missing_kind")
+    text = "\n".join(statements)
+    labels = set().union(*(info.get("statement_labels", set()) for info in infos))
+    if target_type == "constraint_followthrough":
+        # A generic preference or a process note is not a reusable constraint.
+        # Require an explicit obligation/decision and a concrete object or
+        # condition that a later implementation can actually apply.
+        return any(
+            (set(info.get("statement_labels", set())) & {"constraint", "decision", "feedback"})
+            and _concrete_fact_objects(info)
             for info in infos
-            for entry in dict.get(evidence_index.get("expansion_candidates", {}),
-                info["fact"].get("id"), [])
-            if entry.get("missing_kind") in {"earlier_state", "later_state"}
-        }
-        # Initial type checks need the direction of known version links, not
-        # every possible fact expansion and its shortest path.
-        source_index = evidence_index.get("source_index", {})
-        for info in infos:
-            at = _order(info)
-            if at is None:
-                continue
-            for source in info["fact"].get("sources", []):
-                for peer in source_index.get(source, {}).get("version_sources", set()):
-                    peer_at = _source_order(source_index, peer)
-                    if peer_at is not None and peer_at != at:
-                        missing_state_kinds.add("earlier_state" if peer_at < at else "later_state")
-        if complete and (missing_state_kinds or any(
-                info.get("historical_transition") for info in infos)):
-            if len(missing_state_kinds) == 1:
-                missing = next(iter(missing_state_kinds))
-                reason = "history_missing_" + missing
-            else:
-                reason = "history_missing_state"
-            return _code_evidence_result(
-                "insufficient", reason, infos, source_ids)
-        return _code_evidence_result(
-            "unknown", "history_relation_not_statically_proven", infos, source_ids)
-
-    if target_type == "failure_diagnosis":
-        failures = [info for info in infos if info.get("observed_failure")]
-        complements = [info for info in infos
-                       if info.get("statement_labels", set())
-                       & {"change", "validation", "decision", "feedback"}]
-        for failure in failures:
-            for complement in complements:
-                if failure is complement or _strong_business_link(failure, complement):
-                    return _code_evidence_result(
-                        "supported", "failure_linked_to_diagnostic_evidence",
-                        infos, source_ids)
-        return _code_evidence_result(
-            "unknown", "failure_relation_not_statically_proven", infos, source_ids)
-
-    if target_type == "behavior_inference":
-        conditions = [info for info in infos
-                      if "conditional" in info.get("statement_labels", set())]
-        outcomes = [info for info in infos
-                    if _BEHAVIOR_OUTCOME.search(info["fact"].get("statement", ""))]
-        answer_has_shape = (not post_generation or (
-            "conditional" in _labels(evidence_text)
-            and bool(_BEHAVIOR_OUTCOME.search(evidence_text))))
-        inline = any(
-            "conditional" in info.get("statement_labels", set())
-            and _BEHAVIOR_OUTCOME.search(info["fact"].get("statement", ""))
+        )
+    if target_type == "correction_update":
+        # One fact may state both sides, but a bare "changed" marker is not a
+        # correction. Otherwise require an ordered earlier rule and a later
+        # explicit replacement/feedback about the same object.
+        inline = bool(_INLINE_TRANSITION.search(text)) and bool(
+            _OLD_STATE_CUE.search(text) and _NEW_STATE_CUE.search(text))
+        paired = False
+        for pos, left in enumerate(infos):
+            for right in infos[pos + 1:]:
+                if not _explicit_update_link(left, right):
+                    continue
+                earlier, later = (left, right) if _order(left) <= _order(right) else (right, left)
+                earlier_text = earlier["fact"].get("statement", "")
+                later_text = later["fact"].get("statement", "")
+                if (_NEW_STATE_CUE.search(later_text) or _COUNTEREVIDENCE_CUE.search(later_text)) \
+                        and (earlier_text.strip() != later_text.strip()):
+                    paired = True
+                    break
+            if paired:
+                break
+        return inline or paired
+    if target_type == "external_state_application":
+        return any(info.get("external_observation")
+                   and (set(info.get("source_kinds", set())) &
+                        {"conversation", "document", "tool"})
+                   and _concrete_fact_objects(info)
+                   for info in infos)
+    if target_type == "failure_avoidance":
+        # Keep an error label alone out of this type. There must be a recorded
+        # failure plus a condition/input or an explicit runtime usage context.
+        evidence = "\n".join(
+            str(info["fact"].get("statement", "")) + "\n" +
+            str(info.get("evidence_text", "")) for info in infos)
+        has_failure = any(info.get("observed_failure") for info in infos)
+        has_path = bool(_FAILURE_INPUT.search(evidence)) and bool(
+            _FAILURE_OUTPUT.search(evidence))
+        has_remedy = bool(_FAILURE_REMEDY.search(evidence)) or any(
+            set(info.get("statement_labels", set())) &
+            {"change", "feedback", "validation", "decision"}
             for info in infos)
-        linked = any(
-            _strong_business_link(condition, outcome)
-            for condition in conditions for outcome in outcomes
-            if condition is not outcome)
-        if answer_has_shape and (inline or linked):
-            return _code_evidence_result(
-                "supported", "explicit_condition_to_behavior", infos, source_ids)
-        flow_infos = [info for info in infos if _VALUE_FLOW_CUE.search(
-            info["fact"].get("statement", ""))]
-        flow_linked = any(
-            _strong_business_link(left, right)
-            for index, left in enumerate(flow_infos)
-            for right in flow_infos[index + 1:])
-        if (len(flow_infos) >= 2 and flow_linked
-                and (not post_generation or bool(_VALUE_FLOW_CUE.search(evidence_text)))):
-            return _code_evidence_result(
-                "supported", "explicit_value_flow", infos, source_ids)
-        weak_only = bool({"call_result"} & relation_kinds) or any(
-            left.get("paths", set()) & right.get("paths", set())
-            for position, left in enumerate(infos)
-            for right in infos[position + 1:])
-        if weak_only:
-            return _code_evidence_result(
-                "unknown", "only_nonsemantic_or_shared_file_link", infos, source_ids)
+        # A bare error is useful evidence, but it is not yet a reusable
+        # failure-avoidance memory. The selected material must also record the
+        # later correction/avoidance (or state both sides in one statement).
+        return has_failure and has_path and has_remedy
+    if target_type == "verification_reuse":
+        # ``observed_validation`` is set only for a completed result; require
+        # the result wording itself so a planned test cannot nominate this type.
+        return any(info.get("observed_validation") and re.search(
+            r"通过|失败|结果|发现|确认|显示|passed|failed|confirmed|observed",
+            str(info["fact"].get("statement", "")) + "\n" +
+            str(info.get("evidence_text", "")), re.I) for info in infos)
+    if target_type == "compatibility_preservation":
+        # A compatibility promise must name the old/existing caller, API, or
+        # behavior. A shared filename, call edge, or arbitrary behavior change
+        # is not enough.
+        return bool(_COMPATIBILITY_CUE.search(text)
+                    and (set().union(*(_concrete_fact_objects(info)
+                                       for info in infos))
+                         or _COMPATIBILITY_OBJECT.search(text)))
+    return False
+
+
+def _evaluate_memory_evidence(infos, evidence_index, target_type, text, sources,
+                              complete=True, post_generation=False):
+    cited = set(sources)
+    # A partial citation cannot import the missing half of a summarized fact.
+    proof = [info for info in infos if not post_generation
+             or set(info["fact"].get("sources", [])).issubset(cited)]
+    if not _memory_type_support(proof, target_type):
         return _code_evidence_result(
-            "unknown", "behavior_relation_not_statically_proven", infos, source_ids)
-
-    if target_type == "fact_recall":
-        durable = bool(labels & {"constraint", "failure", "decision", "feedback"})
-        historical = bool(_OLD_STATE_CUE.search(statement_text)
-                          or "temporal" in labels)
-        if len(infos) == 1 and durable and historical:
-            return _code_evidence_result(
-                "supported", "historical_constraint_failure_or_decision",
-                infos, source_ids)
-        return _code_evidence_result(
-            "unknown", "fact_recall_not_statically_classified", infos, source_ids)
-
-    return _code_evidence_result(
-        "unknown", "unsupported_static_code_type", infos, source_ids)
-
-
-def static_code_evidence_check(group, evidence_index, target_type, candidate=None):
-    """Check conservative code-evidence necessities before or after generation.
-
-    ``candidate=None`` checks the selected facts before generation. Otherwise
-    only facts cited by ``answer_points`` participate. ``unknown`` means the
-    static graph lacks semantic authority; callers should continue with their
-    semantic answer-basis review rather than treating it as acceptance or
-    rejection.
-    """
-    if group.get("qa_mode") != "code":
-        return _code_evidence_result(
-            "unknown", "not_code_mode", [], ())
-    text, cited_sources = _answer_evidence(candidate or {})
-    post_generation = candidate is not None
-    complete = group.get("review_guard_complete", True) is True
-    all_infos = _group_infos(group, evidence_index)
-    if post_generation:
-        scope_sources = {
-            item.get("id")
-            for field in ("dialogue", "events", "versions")
-            for item in group.get("scope", {}).get(field, [])
-            if isinstance(item, dict) and isinstance(item.get("id"), str)
-        }
-        if not cited_sources:
+            "insufficient" if complete else "unknown",
+            "missing_type_evidence", infos, sources)
+    if target_type == "correction_update":
+        statements = [info["fact"].get("statement", "") for info in proof]
+        inline = any(_INLINE_TRANSITION.search(value) for value in statements)
+        paired = any(_explicit_update_link(left, right)
+                     for pos, left in enumerate(proof) for right in proof[pos + 1:])
+        if not (inline or paired):
             return _code_evidence_result(
                 "insufficient" if complete else "unknown",
-                "answer_has_no_source_citations", [], ())
-        unknown_sources = set(cited_sources) - scope_sources
-        if unknown_sources:
-            return _code_evidence_result(
-                "insufficient", "answer_source_out_of_scope", [], cited_sources)
-        infos = _group_infos(group, evidence_index, cited_sources)
-        if not infos:
-            return _code_evidence_result(
-                "unknown", "cited_source_has_no_extracted_fact", [], cited_sources)
-        selected_ids = {info["fact"].get("id") for info in infos}
-        if target_type == "behavior_inference" and complete:
-            if any(
-                    len(info["fact"].get("sources", [])) > 1
-                    and not set(info["fact"].get("sources", [])).issubset(
-                        set(cited_sources))
-                    for info in infos):
-                return _code_evidence_result(
-                    "insufficient", "answer_cites_partial_multi_source_fact",
-                    infos, cited_sources)
-        if target_type == "failure_diagnosis" and complete:
-            selected_failures = [info for info in infos if info.get("observed_failure")]
-            omitted_diagnostics = [
-                info for info in all_infos
-                if info["fact"].get("id") not in selected_ids
-                and info.get("statement_labels", set())
-                & {"change", "validation", "decision", "feedback"}
-                and any(_strong_business_link(failure, info)
-                        for failure in selected_failures)
-            ]
-            if selected_failures and omitted_diagnostics:
-                return _code_evidence_result(
-                    "insufficient", "answer_cites_failure_but_omits_linked_diagnosis",
-                    infos, cited_sources)
-        if target_type == "behavior_inference" and complete:
-            explicit_pairs = [
-                (condition, outcome)
-                for condition in all_infos
-                if "conditional" in condition.get("statement_labels", set())
-                for outcome in all_infos
-                if _BEHAVIOR_OUTCOME.search(
-                    outcome["fact"].get("statement", ""))
-                and condition is not outcome
-                and _strong_business_link(condition, outcome)
-                and (condition["fact"].get("id") in selected_ids
-                     or outcome["fact"].get("id") in selected_ids)
-            ]
-            if explicit_pairs and not any(
-                    condition["fact"].get("id") in selected_ids
-                    and outcome["fact"].get("id") in selected_ids
-                    for condition, outcome in explicit_pairs):
-                return _code_evidence_result(
-                    "insufficient", "answer_omits_condition_or_linked_outcome",
-                    infos, cited_sources)
-    else:
-        infos = all_infos
-        cited_sources = [source for info in infos
-                         for source in info["fact"].get("sources", [])]
-    return _evaluate_code_evidence(
-        infos, evidence_index, target_type, text, cited_sources,
-        complete=complete, post_generation=post_generation)
+                "correction_missing_old_or_new", infos, sources)
+    return _code_evidence_result("supported", "recorded_type_evidence", infos, sources)
 
+def static_evidence_check(group, evidence_index, target_type, candidate=None):
+    """Check the cited history for either track, before or after generation."""
+    text, cited_sources = _answer_evidence(candidate or {})
+    complete = group.get("review_guard_complete", True) is True
+    infos = _group_infos(group, evidence_index)
+    if candidate is not None:
+        known = {record.get("id") for key in ("dialogue", "events", "versions")
+                 for record in group.get("scope", {}).get(key, [])}
+        if not cited_sources or set(cited_sources) - known:
+            return _code_evidence_result("insufficient", "answer_source_out_of_scope", [], cited_sources)
+        infos = _group_infos(group, evidence_index, cited_sources)
+    else:
+        cited_sources = [source for info in infos for source in info["fact"].get("sources", [])]
+    return _evaluate_memory_evidence(infos, evidence_index, target_type, text,
+                                    cited_sources, complete, candidate is not None)
 
 def _static_eligible_types(infos, qa_mode, proposed, evidence_index):
-    """Apply conservative necessary conditions without claiming semantics."""
-    proposed = set(proposed)
-    unsupported = proposed & {"open-domain"}
-    if "adversarial" in proposed and not evidence_index["universe"].get(
-            "full_range_covered"):
-        unsupported.add("adversarial")
-    evidence_index["skipped_types"] = sorted(
-        set(evidence_index.get("skipped_types", [])) | unsupported)
-    proposed -= unsupported
-    relation = _relation_metadata(infos, evidence_index)
-    stages = set().union(*(info.get("stages", set()) for info in infos))
-    orders = {order for info in infos for order in info.get("orders", [])}
-    labels = set().union(*(info.get("labels", set()) for info in infos))
-    explicit_change = bool(set().union(*(
-        info.get("statement_labels", set()) for info in infos))
-        & {"change", "temporal", "feedback"})
-    connected = relation["path_complete"] and relation["max_distance"] is not None
-    crossed = connected and relation["max_distance"] >= 1
-    relation_kinds = {
-        edge["relation"] for path in relation["paths"]
-        for edge in path.get("relations", [])
-    }
-    version_change = "version_previous" in relation_kinds
-    eligible = set()
-    if qa_mode == "general":
-        if "adversarial" in proposed and evidence_index["universe"].get(
-                "full_range_covered"):
-            eligible.add("adversarial")
-        if "single-hop" in proposed and len(stages) <= 1:
-            eligible.add("single-hop")
-        if "multi-hop" in proposed and len(stages) >= 2 and crossed:
-            eligible.add("multi-hop")
-        if ("temporal" in proposed and len(orders) >= 2 and crossed
-                and (explicit_change or version_change)):
-            eligible.add("temporal")
-    else:
-        source_ids = [source for info in infos
-                      for source in info["fact"].get("sources", [])]
-        for question_type in proposed:
-            check = _evaluate_code_evidence(
-                infos, evidence_index, question_type, "", source_ids,
-                complete=True, post_generation=False)
-            if check["status"] != "insufficient":
-                eligible.add(question_type)
-    return eligible, relation
-
+    """Nominate types even when expansion still needs an earlier/later state."""
+    return _candidate_types(infos, qa_mode, proposed), _relation_metadata(infos, evidence_index)
 
 def static_candidate_labels(group, candidate, evidence_index, target_type):
     """Label one generated candidate from its actually cited answer evidence."""
@@ -2372,9 +2158,10 @@ def static_candidate_labels(group, candidate, evidence_index, target_type):
         "relation_path_complete": relation["path_complete"],
         "static_evidence_path": relation,
     }
+    requirement = static_evidence_check(group, evidence_index, target_type, candidate)
+    labels.update(static_evidence_status=requirement["status"],
+                  static_evidence_reason=requirement["reason"])
     if group.get("qa_mode") == "code":
-        requirement = static_code_evidence_check(
-            group, evidence_index, target_type, candidate)
         labels.update(
             category=target_type,
             track="unknown",
@@ -2412,7 +2199,7 @@ def _initial_neighbor_lookup(infos):
 
 def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                           target_chars=16000, max_chars=32000,
-                          evidence_index=None, static_selection=False):
+                          evidence_index=None, static_selection=False, seed_sources=()):
     """Create deterministic minimal fact groups, including cross-chunk links.
 
     The index proposes evidence groups; it never answers a question. A group is
@@ -2430,20 +2217,6 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
     infos = evidence_index["infos"]
     info_by_id = evidence_index["info_by_id"]
 
-    if static_selection:
-        unsupported = set(allowed_types) & {"open-domain"}
-        if ("adversarial" in set(allowed_types)
-                and not evidence_index["universe"].get("full_range_covered")):
-            unsupported.add("adversarial")
-        reasons = {
-            "open-domain": "external_knowledge_not_separated",
-            "adversarial": "full_range_not_proven",
-        }
-        for question_type in sorted(unsupported):
-            diagnostic = {"type": question_type, "reason": reasons[question_type]}
-            if diagnostic not in evidence_index["eligible_skips"]:
-                evidence_index["eligible_skips"].append(diagnostic)
-
     def eligible(infos, proposed):
         if not static_selection:
             return set(proposed)
@@ -2454,6 +2227,14 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
     seed_records = [{"id": info["fact"]["id"], "order": _order(info) or 0,
                      "labels": info["labels"], "paths": info["paths"]} for info in infos]
     roots = {item["id"] for item in _select_root_seeds(seed_records, max(16, max_groups * 4))}
+    if seed_sources:
+        seeds = set(seed_sources)
+        seeds.update(record["id"] for record in universe.get("dialogue", [])
+                     if record.get("parent_id") in seeds)
+        seeds.update(version["id"] for version in universe.get("versions", [])
+                     if version.get("source") in seeds)
+        roots = {info["fact"]["id"] for info in infos
+                 if seeds.intersection(info["fact"].get("sources", []))}
     candidates = []
     for info in infos:
         if info["fact"]["id"] not in roots:
@@ -2500,21 +2281,9 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                 pair_scores.append((ids, types, score + 20, "expanded_once"))
     candidates.extend(pair_scores)
 
-    if qa_mode == "general" and "adversarial" in allowed_types \
-            and universe.get("full_range_covered"):
-        ranked_infos = sorted(
-            infos,
-            key=lambda item: (-len(item["statement_labels"] & {
-                "feedback", "constraint", "decision", "temporal"}),
-                item["fact"]["id"]),
-        )
-        for info in ranked_infos[:3]:
-            candidates.append(((info["fact"]["id"],), {"adversarial"},
-                               9 + len(info["labels"]), "full_range"))
-
     # A three-step failure/change/validation chain is often the smallest useful
     # code-memory unit. Add only one best third fact to a connected pair.
-    if qa_mode == "code" and {"failure_diagnosis", "history_tracking"} & set(allowed_types):
+    if qa_mode == "code" and {"failure_avoidance", "correction_update"} & set(allowed_types):
         triple_seeds = sorted(pair_scores, key=lambda item: (-item[2], item[0]))[:max_groups * 4]
         for ids, _, score, _ in triple_seeds:
             base = [info_by_id[fid] for fid in ids]
@@ -2671,12 +2440,10 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                 (info["fact"]["statement"].strip(), tuple(sorted(info["fact"].get("sources", []))))
                 for info in group_infos}) >= 2 else 1,
         }
-        if qa_mode == "code":
-            group["static_evidence_requirements"] = {
-                question_type: static_code_evidence_check(
-                    group, evidence_index, question_type)
-                for question_type in group["allowed_types"]
-            }
+        group["static_evidence_requirements"] = {
+            question_type: static_evidence_check(group, evidence_index, question_type)
+            for question_type in group["allowed_types"]
+        }
         return group
     while len(selected) < max_groups:
         added = False
@@ -2767,8 +2534,7 @@ def coverage_report(records, versions, scopes, facts, groups, stage_status, ques
         track_scopes = scopes.get(track, [])
         track_facts = [f for f in facts if f.get("qa_mode", "code") == track]
         track_groups = [g for g in groups if g.get("qa_mode") == track]
-        eligible_records = records if track == "code" else [
-            r for r in records if r.get("kind") == "message" or r.get("source_kind") == "document"]
+        eligible_records = records
         universe = {r["id"] for r in eligible_records}
         if track == "code":
             universe |= {v["id"] for v in versions}

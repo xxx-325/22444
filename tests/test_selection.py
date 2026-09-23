@@ -110,6 +110,10 @@ class SelectionTests(unittest.TestCase):
                 self.calls = []
 
             def ask(self, prompt, payload):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 self.calls.append(payload)
                 self.usage.append({"request_count": 1})
                 pair_id = payload["pairs"][0]["id"]
@@ -144,6 +148,10 @@ class SelectionTests(unittest.TestCase):
             usage = []
 
             def ask(self, prompt, payload):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 raise RuntimeError("offline")
 
         reviewed = review_duplicate_clusters([left, right], Client())
@@ -162,6 +170,10 @@ class SelectionTests(unittest.TestCase):
             usage = []
 
             def ask(self, prompt, payload):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 pair_id = payload["pairs"][0]["id"]
                 return parse_text_response(
                     "REVIEW %s\n"
@@ -187,6 +199,10 @@ class SelectionTests(unittest.TestCase):
             usage = []
 
             def ask(self, prompt, payload):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 pair_id = payload["pairs"][0]["id"]
                 return parse_text_response(
                     "REVIEW %s\n"

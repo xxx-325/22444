@@ -79,7 +79,7 @@ class ProjectionContractTests(unittest.TestCase):
             {"id": "f2", "statement": "不相关", "sources": ["m3"]},
         ]
         candidate = {
-            "id": "q1", "qa_mode": "general", "type": "single-hop",
+            "id": "q1", "qa_mode": "general", "type": "constraint_followthrough",
             "difficulty": "easy", "difficulty_reason": "direct",
             "memory_requirement": "恢复约束", "fact_ids": ["f1"],
             "answer_target": "旧行为",
@@ -91,6 +91,10 @@ class ProjectionContractTests(unittest.TestCase):
 
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 payloads.append(data)
                 return {"reviews": []}
 
@@ -106,24 +110,28 @@ class ProjectionContractTests(unittest.TestCase):
 
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 raise AssertionError("projection should fail before transport")
 
         with patch("dialogue_benchmark.llm.simple_focus_payload",
                    side_effect=ValueError("synthetic projection failure")):
             result = generate_from_facts(self.scope, [fact], Client(), qa_mode="general",
-                                         allowed_types={"single-hop"})
+                                         allowed_types={"constraint_followthrough"})
         self.assertEqual(result["facts"], [fact])
         self.assertEqual(result["stage_status"]["focus"], "failed")
         self.assertEqual(result["stage_status"]["qa"], "not_submitted")
         self.assertEqual(result["stage_errors"][0]["stage"], "focus")
 
-    def test_explicitly_incomplete_scope_blocks_adversarial_group(self):
+    def test_explicitly_incomplete_scope_blocks_verification_reuse_group(self):
         scope = copy.deepcopy(self.scope)
         scope["full_range_covered"] = False
         merged = merge_scopes([scope], "general", model_request_chars=32000)
         self.assertFalse(merged["full_range_covered"])
         fact = {"id": "f1", "statement": "用户要求旧行为", "sources": ["m1"]}
-        groups = build_evidence_groups([fact], [scope], "general", {"adversarial"},
+        groups = build_evidence_groups([fact], [scope], "general", {"verification_reuse"},
                                        max_groups=2, target_chars=8000, max_chars=16000)
         self.assertFalse(groups)
 
@@ -137,10 +145,14 @@ class ProjectionContractTests(unittest.TestCase):
     def test_no_qa_is_completed_empty_generation(self):
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 return parse_text_response("NO_QA")
         fact = {"id": "f1", "statement": "旧行为", "sources": ["m1"]}
         result = generate_from_facts(self.scope, [fact], Client(), qa_mode="general",
-                                     target_type="single-hop")
+                                     target_type="constraint_followthrough")
         self.assertEqual(result["stage_status"]["qa"], "completed")
         self.assertEqual(result["questions"], [])
         self.assertEqual(result["stage_errors"], [])
@@ -156,6 +168,10 @@ class ProjectionContractTests(unittest.TestCase):
         payloads = []
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 self_size = request_size(prompt, data)
                 assert self_size <= 9000
                 payloads.append(data)
@@ -173,6 +189,10 @@ class ProjectionContractTests(unittest.TestCase):
                      "forbidden_points": []}
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 raise AssertionError("Must fail before network")
         saved = {}
         result = review_candidates(scope, facts, [candidate], Client(),
@@ -198,7 +218,7 @@ history_evidence_required: false
 external_knowledge_separated: true
 external_knowledge_necessary: true
 full_range_checked: true
-recommended_type: single-hop
+recommended_type: constraint_followthrough
 recommended_track: none
 type_basis: 单条消息直接给出
 necessary_source_ids: m1
@@ -233,7 +253,7 @@ END_REVIEW"""
         facts = [{"id": "f1", "statement": "配置使用 yaml", "sources": ["m1"]}]
         candidate = {
             "id": candidate_id, "candidate_id": candidate_id, "model_id": "q1",
-            "qa_mode": "general", "type": "single-hop", "difficulty": "easy",
+            "qa_mode": "general", "type": "constraint_followthrough", "difficulty": "easy",
             "difficulty_reason": "直接事实", "memory_requirement": "恢复配置约定",
             "use_case": "实现解析器时选择格式", "answer_target": "配置格式",
             "fact_ids": ["f1"], "question": "配置使用什么格式？",

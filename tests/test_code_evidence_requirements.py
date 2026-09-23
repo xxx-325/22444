@@ -3,7 +3,7 @@ import unittest
 from dialogue_benchmark.fact_index import (
     build_evidence_groups,
     build_evidence_index,
-    static_code_evidence_check,
+    static_evidence_check,
 )
 
 
@@ -76,11 +76,11 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
             "review_guard_complete": True,
         }
 
-        check = static_code_evidence_check(
-            group, index, "behavior_inference")
+        check = static_evidence_check(
+            group, index, "compatibility_preservation")
 
-        self.assertEqual(check["status"], "unknown")
-        self.assertEqual(check["reason"], "only_nonsemantic_or_shared_file_link")
+        self.assertEqual(check["status"], "insufficient")
+        self.assertEqual(check["reason"], "missing_type_evidence")
 
     def test_only_new_version_is_insufficient_for_history(self):
         dialogue = [
@@ -100,12 +100,12 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         group = {"qa_mode": "code", "facts": [fact], "scope": index["universe"],
                  "review_guard_complete": True}
 
-        check = static_code_evidence_check(group, index, "history_tracking")
+        check = static_evidence_check(group, index, "correction_update")
 
         self.assertEqual(check["status"], "insufficient")
-        self.assertEqual(check["reason"], "history_missing_earlier_state")
+        self.assertEqual(check["reason"], "missing_type_evidence")
 
-    def test_only_error_is_not_statically_approved_for_failure_diagnosis(self):
+    def test_single_error_without_failure_condition_is_not_failure_avoidance(self):
         scope = self._scope([{
             "id": "failed", "order": 1, "kind": "result",
             "text": "load_config failed with ValueError",
@@ -116,10 +116,10 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         group = {"qa_mode": "code", "facts": [fact], "scope": index["universe"],
                  "review_guard_complete": True}
 
-        check = static_code_evidence_check(group, index, "failure_diagnosis")
+        check = static_evidence_check(group, index, "failure_avoidance")
 
-        self.assertEqual(check["status"], "unknown")
-        self.assertEqual(check["reason"], "failure_relation_not_statically_proven")
+        self.assertEqual(check["status"], "insufficient")
+        self.assertEqual(check["reason"], "missing_type_evidence")
 
     def test_one_message_can_contain_a_complete_old_new_transition(self):
         scope = self._scope([{
@@ -131,15 +131,15 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
                 "sources": ["decision"]}
         index = build_evidence_index([fact], [scope], "code")
         groups = build_evidence_groups(
-            [fact], [scope], "code", {"history_tracking"}, 1,
+            [fact], [scope], "code", {"correction_update"}, 1,
             evidence_index=index, static_selection=True)
 
         self.assertEqual(len(groups), 1)
         self.assertEqual(
-            groups[0]["static_evidence_requirements"]["history_tracking"]["status"],
+            groups[0]["static_evidence_requirements"]["correction_update"]["status"],
             "supported")
 
-    def test_historical_constraint_is_valid_fact_recall(self):
+    def test_historical_constraint_is_valid_constraint_followthrough(self):
         scope = self._scope([{
             "id": "constraint", "order": 1, "kind": "message",
             "text": "此前用户要求 load_config 必须拒绝空路径。",
@@ -149,15 +149,15 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
                 "sources": ["constraint"]}
         index = build_evidence_index([fact], [scope], "code")
         groups = build_evidence_groups(
-            [fact], [scope], "code", {"fact_recall"}, 1,
+            [fact], [scope], "code", {"constraint_followthrough"}, 1,
             evidence_index=index, static_selection=True)
 
         self.assertEqual(len(groups), 1)
         self.assertEqual(
-            groups[0]["static_evidence_requirements"]["fact_recall"]["status"],
+            groups[0]["static_evidence_requirements"]["constraint_followthrough"]["status"],
             "supported")
 
-    def test_explicit_cross_file_dependency_supports_behavior(self):
+    def test_explicit_cross_file_dependency_alone_is_not_compatibility(self):
         scope = self._scope(
             [
                 {"id": "main", "order": 1, "kind": "observation",
@@ -178,13 +178,10 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         ]
         index = build_evidence_index(facts, [scope], "code")
         groups = build_evidence_groups(
-            facts, [scope], "code", {"behavior_inference"}, 1,
+            facts, [scope], "code", {"compatibility_preservation"}, 1,
             evidence_index=index, static_selection=True)
 
-        self.assertEqual(len(groups), 1)
-        self.assertEqual(
-            groups[0]["static_evidence_requirements"]["behavior_inference"]["status"],
-            "supported")
+        self.assertFalse(groups)
 
     def test_post_generation_checks_only_actual_answer_citations(self):
         dialogue = [
@@ -200,7 +197,7 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         scope = self._scope(dialogue, versions)
         facts = [
             {"id": "old", "statement": "之前 load_config 返回 None", "sources": ["v1"]},
-            {"id": "new", "statement": "现在 load_config 抛出 ValueError", "sources": ["v2"]},
+            {"id": "new", "statement": "用户纠正 load_config 规则，现在改为抛出 ValueError", "sources": ["v2"]},
         ]
         index = build_evidence_index(facts, [scope], "code")
         group = {"qa_mode": "code", "facts": facts, "scope": index["universe"],
@@ -208,8 +205,8 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         candidate = {"answer_points": [{"text": "现在会抛出 ValueError",
                                           "sources": ["v2"]}]}
 
-        check = static_code_evidence_check(
-            group, index, "history_tracking", candidate)
+        check = static_evidence_check(
+            group, index, "correction_update", candidate)
 
         self.assertEqual(check["status"], "insufficient")
 
@@ -217,8 +214,8 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
             "answer_points": [{"text": "load_config 的行为发生了变化",
                                "sources": ["v1", "v2"]}],
         }
-        complete_check = static_code_evidence_check(
-            group, index, "history_tracking", complete_candidate)
+        complete_check = static_evidence_check(
+            group, index, "correction_update", complete_candidate)
         self.assertEqual(complete_check["status"], "supported")
 
     def test_multi_source_transition_fact_requires_all_answer_citations(self):
@@ -246,19 +243,19 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
                                "sources": ["v2"]}],
         }
 
-        partial = static_code_evidence_check(
-            group, index, "history_tracking", partial_candidate)
-        complete = static_code_evidence_check(
-            group, index, "history_tracking", {
+        partial = static_evidence_check(
+            group, index, "correction_update", partial_candidate)
+        complete = static_evidence_check(
+            group, index, "correction_update", {
                 "answer_points": [{"text": "load_config changed its behavior",
                                    "sources": ["v1", "v2"]}],
             })
 
         self.assertEqual(partial["status"], "insufficient")
-        self.assertEqual(partial["reason"], "history_missing_earlier_state")
+        self.assertEqual(partial["reason"], "missing_type_evidence")
         self.assertEqual(complete["status"], "supported")
 
-    def test_post_generation_failure_answer_cannot_only_repeat_error(self):
+    def test_failure_source_gate_does_not_claim_semantic_target_approval(self):
         scope = self._scope(
             [
                 {"id": "failed", "order": 1, "kind": "result",
@@ -284,11 +281,11 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         candidate = {"answer_points": [{"text": "出现了 ValueError 报错",
                                           "sources": ["failed"]}]}
 
-        check = static_code_evidence_check(
-            group, index, "failure_diagnosis", candidate)
+        check = static_evidence_check(
+            group, index, "failure_avoidance", candidate)
 
         self.assertEqual(check["status"], "insufficient")
-        self.assertEqual(check["reason"], "answer_cites_failure_but_omits_linked_diagnosis")
+        self.assertEqual(check["reason"], "missing_type_evidence")
 
     def test_post_generation_behavior_answer_cannot_cite_only_outcome(self):
         scope = self._scope(
@@ -313,26 +310,50 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         candidate = {"answer_points": [{"text": "load_config 返回默认配置",
                                           "sources": ["outcome-source"]}]}
 
-        check = static_code_evidence_check(
-            group, index, "behavior_inference", candidate)
+        check = static_evidence_check(
+            group, index, "compatibility_preservation", candidate)
 
         self.assertEqual(check["status"], "insufficient")
-        self.assertEqual(check["reason"], "answer_omits_condition_or_linked_outcome")
+        self.assertEqual(check["reason"], "missing_type_evidence")
 
     def test_general_qa_grouping_is_unchanged(self):
         scope = self._scope([{
             "id": "message", "order": 1, "kind": "message", "stage_id": "s1",
-            "text": "用户喜欢简洁答案。",
+            "text": "用户要求 export 输出简洁答案。",
         }])
-        fact = {"id": "preference", "statement": "用户喜欢简洁答案",
+        fact = {"id": "preference", "statement": "用户要求 export 输出简洁答案",
                 "sources": ["message"]}
 
         groups = build_evidence_groups(
-            [fact], [scope], "general", {"single-hop"}, 1,
+            [fact], [scope], "general", {"constraint_followthrough"}, 1,
             static_selection=True)
 
         self.assertEqual(len(groups), 1)
-        self.assertNotIn("static_evidence_requirements", groups[0])
+        self.assertIn("static_evidence_requirements", groups[0])
+
+    def test_planned_test_is_not_verification_reuse(self):
+        scope = self._scope([{
+            "id": "plan", "order": 1, "kind": "message",
+            "text": "计划运行 export 的 EU 输入测试。",
+        }])
+        fact = {"id": "plan-fact", "statement": "计划运行 export 的 EU 输入测试",
+                "sources": ["plan"]}
+        index = build_evidence_index([fact], [scope], "general")
+        self.assertEqual(build_evidence_groups(
+            [fact], [scope], "general", {"verification_reuse"}, 1,
+            evidence_index=index, static_selection=True), [])
+
+    def test_code_only_environment_text_is_not_external_state(self):
+        scope = self._scope([{
+            "id": "source", "order": 1, "kind": "observation",
+            "source_kind": "code", "text": "production export path",
+        }])
+        fact = {"id": "code-fact", "statement": "production 环境只支持 EU 编码",
+                "sources": ["source"]}
+        index = build_evidence_index([fact], [scope], "code")
+        self.assertEqual(build_evidence_groups(
+            [fact], [scope], "code", {"external_state_application"}, 1,
+            evidence_index=index, static_selection=True), [])
 
 
 if __name__ == "__main__":

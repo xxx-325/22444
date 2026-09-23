@@ -15,6 +15,10 @@ class _ScriptedClient:
         self.usage = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"status": "completed"})
         relevance = maybe_relevance_response(prompt, payload)
@@ -61,7 +65,7 @@ class CandidateReviewRepairScopeTests(unittest.TestCase):
         ]
         candidate = {
             "id": "q1", "candidate_id": "q1", "model_id": "model-q1",
-            "qa_mode": "general", "type": "single-hop", "fact_ids": ["f-a"],
+            "qa_mode": "general", "type": "constraint_followthrough", "fact_ids": ["f-a"],
             "question": "记录的一个变化是什么？",
             "answer_points": [{
                 "text": "pkg/alpha.py::load_config 从旧值改为新值，并且随后校验。",
@@ -71,7 +75,7 @@ class CandidateReviewRepairScopeTests(unittest.TestCase):
         }
         group = {
             "id": "g1", "qa_mode": "general",
-            "allowed_types": ("single-hop",), "eligible_types": ("single-hop",),
+            "allowed_types": ("constraint_followthrough",), "eligible_types": ("constraint_followthrough",),
             "facts": copy.deepcopy(facts), "scope": copy.deepcopy(scope),
             "review_guard_complete": True,
         }
@@ -154,7 +158,7 @@ END_QA"""
         }]
         candidate = {
             "id": "q1", "candidate_id": "q1", "model_id": "model-q1",
-            "qa_mode": "general", "type": "single-hop", "fact_ids": ["f-a"],
+            "qa_mode": "general", "type": "constraint_followthrough", "fact_ids": ["f-a"],
             "question": "pkg/alpha.py::load_config 的记录是什么？",
             "answer_points": [{"text": "记录了变化。", "sources": ["source-a"]}],
             "forbidden_points": [],

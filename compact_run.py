@@ -14,6 +14,9 @@ def main():
     parser.add_argument("run", type=Path)
     args = parser.parse_args()
     receipt = compact_run(args.run)
+    if receipt["status"] == "deferred":
+        print("Compaction deferred:", receipt["reason"], ", ".join(receipt.get("pending", [])))
+        return
     write_report(args.run / "tasks", read(args.run / "tasks/manifest.json"))
     render(args.run)
     print("Retained code versions:", receipt["retained_code_versions"])

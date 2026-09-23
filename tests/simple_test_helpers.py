@@ -45,6 +45,9 @@ def relevance_response_for(payload):
 
 def maybe_relevance_response(prompt, payload):
     """Return the default all-direct response only for relevance prompts."""
+    if "review_contract: target_v1" in prompt:
+        return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                             "target_alignment": "aligned"}]}
     if (isinstance(prompt, str)
             and "simple_relevance_v1" in prompt):
         return relevance_response_for(payload)

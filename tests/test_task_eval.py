@@ -225,7 +225,7 @@ class TaskEvaluationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "stages").mkdir()
-            question = {"id": "g1_q1", "status": "approved", "question": "Question"}
+            question = {"type": "constraint_followthrough", "id": "g1_q1", "status": "approved", "question": "Question"}
             (root / "qa-public.json").write_text(json.dumps({"questions": [question]}))
             self.assertEqual(qa_inputs(root), [])
             (root / "stages/group-raw-candidates.json").write_text(json.dumps({"questions": [question]}))
@@ -237,6 +237,10 @@ class TaskEvaluationTests(unittest.TestCase):
     def test_evidence_contract_is_bound_without_inventing_judgments(self):
         class Client:
             def ask(self, prompt, data):
+                # Target routing is exercised separately in test_memory_types.
+                if "review_contract: target_v1" in prompt:
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                         "target_alignment": "aligned"}]}
                 return {"reviews": [{"id": "q1", "point_evidence": "A1=insufficient"}]}
         document = _ask_stage(Client(), "review_contract: simple_v1", {}, "review_evidence")
         self.assertEqual(document["reviews"][0]["review_contract"], "simple_v1")

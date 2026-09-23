@@ -24,7 +24,7 @@ class TaskPreflightTests(unittest.TestCase):
         pin_baseline(self.baseline)
         input_path = self.base / "qa-input.json"
         save(input_path, {"payload": "Actual evidence"})
-        self.item = {"qa": {"id": "q1", "answer_points": [{"text": "Historical behavior"}]},
+        self.item = {"qa": {"type": "constraint_followthrough", "id": "q1", "answer_points": [{"text": "Historical behavior"}]},
                      "generation_input": str(input_path)}
         self.root = self.base / "task"
         self.with_coverage = True
@@ -114,12 +114,12 @@ class TaskPreflightTests(unittest.TestCase):
         with patch.object(self, "extract", return_value={"status": "failed", "error": {"code": "timeout"}}):
             receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},
                                        {"status": "failed"}, {"status": "passed"}])
-        self.assertIsNone(receipt)
+        self.assertIsNotNone(receipt)
         records = read(self.root / "construction.json")
         self.assertEqual(len(records), 1)
         self.assertTrue(records[0]["validation_accepted"])
-        self.assertFalse(records[0]["accepted"])
-        self.assertEqual(records[0]["reason"], "checkpoint_extraction_failed")
+        self.assertTrue(records[0]["accepted"])
+        self.assertEqual(read(self.root / "frozen/checkpoints.json")["status"], "failed")
 
     def test_leaking_task_is_rejected_before_reference_solver(self):
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent) as agent, \

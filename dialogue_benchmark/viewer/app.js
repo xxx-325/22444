@@ -14,7 +14,7 @@
     ['候选 QA', '模型生成 · 待核验', '问题、答题要点与来源']
   ];
   const kindNames = {message:'消息',call:'工具调用',result:'工具结果',patch:'补丁',observation:'代码观察'};
-  const categories = {fact_recall:'事实回忆',history_tracking:'历史追踪',behavior_inference:'行为推演',failure_diagnosis:'故障诊断'};
+  const categories = {constraint_followthrough:'约束遵循',correction_update:'纠正应用',external_state_application:'外部状态应用',failure_avoidance:'失败规避',verification_reuse:'验证复用',compatibility_preservation:'兼容保留'};
   const difficulties = {easy:'简单',medium:'中等',hard:'困难'};
   const state = {stage:0, index:0, selected:'', graphMode:'events', playing:null, filter:'all', search:''};
 

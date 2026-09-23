@@ -23,13 +23,13 @@ class SimpleCliPipelineTests(unittest.TestCase):
             "stages": [{"id": "s1", "record_ids": ["e1"]}],
         }
         fact = {"id": "f1", "qa_mode": "general",
-                "statement": "keep yaml", "sources": ["e1"]}
+                "statement": "keep yaml as required; yaml 测试通过", "sources": ["e1"]}
         index = build_evidence_index([fact], [scope], "general")
         group = {
             "id": "general-group-1", "qa_mode": "general",
             "scope": scope, "facts": [fact],
-            "allowed_types": ("single-hop", "adversarial"),
-            "eligible_types": ("single-hop", "adversarial"),
+            "allowed_types": ("constraint_followthrough", "verification_reuse"),
+            "eligible_types": ("constraint_followthrough", "verification_reuse"),
             "relation_path": {"seed_node": "e1"},
             "expansion_pointer": {"attempted": False, "candidates": []},
         }
@@ -62,10 +62,10 @@ class SimpleCliPipelineTests(unittest.TestCase):
                 [(0, "general", group)], "https://example.invalid", "model", "KEY", 1,
                 review_mode="simple", evidence_indexes={"general": index})
 
-        self.assertEqual(calls, [("single-hop", 1), ("adversarial", 1)])
+        self.assertEqual(calls, [("constraint_followthrough", 1), ("verification_reuse", 1)])
         self.assertEqual(len(result["questions"]), 2)
         self.assertEqual([item["target_type"] for item in result["type_attempts"]],
-                         ["single-hop", "adversarial"])
+                         ["constraint_followthrough", "verification_reuse"])
         for question in result["questions"]:
             self.assertEqual(question["type_origin"], "static_target")
             self.assertEqual(question["difficulty_origin"], "static_graph_distance")
@@ -77,7 +77,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
                 self.usage = []
 
         group = {"id": "g1", "scope": {}, "facts": [],
-                 "allowed_types": ("single-hop",), "eligible_types": ()}
+                 "allowed_types": ("constraint_followthrough",), "eligible_types": ()}
         index = {"qa_mode": "general"}
         with patch.object(cli, "ChatClient", FakeClient), \
                 patch.object(cli, "generate_from_facts") as generate:
@@ -90,7 +90,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
 
     def test_approved_unknown_difficulty_is_published_with_the_label(self):
         question = {
-            "id": "q1", "qa_mode": "general", "type": "single-hop",
+            "id": "q1", "qa_mode": "general", "type": "constraint_followthrough",
             "type_origin": "static_target", "question": "What was required?",
             "difficulty": "unknown", "difficulty_distance": None,
             "difficulty_origin": "static_graph_distance", "status": "approved",
@@ -113,7 +113,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
             source = scope["dialogue"][0]["id"]
             return {
                 "facts": [{"id": "f1", "qa_mode": qa_mode,
-                           "statement": qa_mode + " grounded fact",
+                           "statement": qa_mode + " must retain the recorded behavior",
                            "sources": [source]}],
                 "questions": [], "rejected": [], "stage_errors": [],
                 "stage_status": {"facts": "completed"},
@@ -151,14 +151,14 @@ class SimpleCliPipelineTests(unittest.TestCase):
                     patch.object(cli, "extract_facts", extract), \
                     patch.object(cli, "generate_from_facts", generate), \
                     patch.object(cli, "review_candidates", review), \
-                    patch.object(cli, "static_code_evidence_check", return_value={
+                    patch.object(cli, "static_evidence_check", return_value={
                         "status": "unknown", "reason": "synthetic_unknown",
                         "fact_ids": [], "source_ids": [],
                     }), \
                     patch.object(cli, "review_duplicate_clusters", duplicate_review):
                 status = cli.main([
                     str(EXAMPLE), "--output", str(output), "--qa-mode", "both",
-                    "--general-types", "single-hop", "--code-types", "fact_recall",
+                    "--general-types", "constraint_followthrough", "--code-types", "constraint_followthrough",
                     "--general-count", "1", "--code-count", "1",
                     "--general-group-budget", "1", "--code-group-budget", "1",
                     "--parallel-workers", "1", "--allow-network",
@@ -168,7 +168,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
             audit = json.loads((output / "qa-audit.json").read_text())
 
         self.assertEqual(status, 0)
-        self.assertEqual(calls, [("general", "single-hop"), ("code", "fact_recall")])
+        self.assertEqual(calls, [("general", "constraint_followthrough"), ("code", "constraint_followthrough")])
         self.assertEqual(public["counts"], {"general": 1, "code": 1})
         self.assertFalse(audit["stage_errors"])
         for question in public["questions"]:

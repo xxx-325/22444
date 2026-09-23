@@ -30,7 +30,7 @@ class ReviewModeCliTests(unittest.TestCase):
         }
         tasks = [(0, "general", {
             "id": "general-group-1", "scope": {}, "facts": [],
-            "allowed_types": ("single-hop",),
+            "allowed_types": ("constraint_followthrough",),
         })]
         with patch.object(cli, "ChatClient", FakeClient), \
                 patch.object(cli, "generate_from_facts", return_value=generated), \

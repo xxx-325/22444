@@ -74,6 +74,7 @@ def build_object_index(dialogue, graph=None):
     for record in dialogue:
         text = record.get("text", "") if isinstance(record.get("text"), str) else ""
         stage_id = record.get("stage_id")
+        bucket = "message_ids" if record.get("kind", "message") == "message" else "event_ids"
         names = set(_FILE.findall(text)) | set(_SYMBOL.findall(text))
         for name in names:
             kind = "file" if "." in name and name.rsplit(".", 1)[-1].lower() in {
@@ -81,17 +82,14 @@ def build_object_index(dialogue, graph=None):
             aliases = {name}
             if kind == "file":
                 aliases.add(name.rsplit("/", 1)[-1])
-            item = add(kind, name, aliases, record.get("id"), stage_id,
-                       source_bucket="message_ids")
-            if record.get("id") not in item["message_ids"]:
-                item["message_ids"].append(record.get("id"))
+            add(kind, name, aliases, record.get("id"), stage_id, source_bucket=bucket)
         # Add explicit Chinese/English decision objects only when a cue and a
         # concrete token coexist; generic prose is intentionally excluded.
         if _RELATION_CUE.search(text):
             for token in sorted(_tokens(text)):
                 if len(token) >= 3 and token not in {"user", "assistant", "需要", "可以"}:
                     add("conversation_object", token, {token}, record.get("id"), stage_id,
-                        source_bucket="message_ids")
+                        source_bucket=bucket)
     return sorted(objects.values(), key=lambda item: item["object_id"])
 
 
@@ -175,20 +173,30 @@ def _discussion_edges(dialogue, stages):
 
 
 def build_general_scope(records, cutoff, max_chars=24000, graph=None):
-    """Create a dialogue-only scope; no repository facts are added."""
+    """Use public messages and tool evidence without adding repository facts."""
     dialogue = [dict(record) for record in records
-                if record.get("kind") == "message"
-                and record.get("role") in {"user", "assistant"}
-                and record.get("order", 0) <= cutoff]
+                if record.get("order", 0) <= cutoff]
     stages = identify_stages(dialogue)
     stage_by_record = {
         record_id: stage["id"]
         for stage in stages for record_id in stage["record_ids"]
     }
+    stage_by_id = {stage["id"]: stage for stage in stages}
+    current_stage = None
+    call_stages = {}
     for record in dialogue:
-        record["stage_id"] = stage_by_record.get(record["id"])
+        current_stage = stage_by_record.get(record["id"], current_stage)
+        stage_id = (call_stages.get(record.get("call_id"), current_stage)
+                    if record.get("kind") == "result" else current_stage)
+        record["stage_id"] = stage_id
+        if record.get("kind") == "call":
+            call_stages[record.get("call_id")] = stage_id
+        if stage_id and record["id"] not in stage_by_id[stage_id]["record_ids"]:
+            stage_by_id[stage_id]["record_ids"].append(record["id"])
+            stage_by_id[stage_id]["end_order"] = max(
+                stage_by_id[stage_id]["end_order"], record["order"])
     object_index = build_object_index(dialogue, graph)
-    edges = _discussion_edges(dialogue, stages)
+    edges = _discussion_edges([r for r in dialogue if r.get("kind") == "message"], stages)
     scope = {
         "seed": None,
         "cutoff": cutoff,

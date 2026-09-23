@@ -4,25 +4,14 @@ import re
 
 from .normalize import SOURCE_KINDS, source_kind_for
 from .protocol import (
-    CODE_DISTINCTIVENESS_BASES,
+    QA_TYPES,
     SIMPLE_ATOMICITY_STATES,
     SIMPLE_EVIDENCE_STATES,
     simple_point_ids,
 )
 
-CODE_QA_TYPES = {
-    "fact_recall",
-    "history_tracking",
-    "behavior_inference",
-    "failure_diagnosis",
-}
-GENERAL_QA_TYPES = {
-    "single-hop",
-    "multi-hop",
-    "temporal",
-    "open-domain",
-    "adversarial",
-}
+CODE_QA_TYPES = QA_TYPES
+GENERAL_QA_TYPES = QA_TYPES
 QA_MODES = {"general", "code"}
 DIFFICULTIES = {"easy", "medium", "hard"}
 TRACKS = {"history_core", "inference_control"}
@@ -63,11 +52,6 @@ def _has_unsupported_temporal_reference(text):
     return bool(isinstance(text, str) and _UNSUPPORTED_TEMPORAL_REFERENCE.search(
         _QUOTED_LITERAL.sub("", text)))
 
-# Compatibility names used by the original code-only pipeline.
-CATEGORIES = CODE_QA_TYPES
-CODE_TYPES = CODE_QA_TYPES
-GENERAL_TYPES = GENERAL_QA_TYPES
-
 
 def validate_sources(sources, allowed):
     """Return whether a non-empty source list is unique and in ``allowed``."""
@@ -82,8 +66,8 @@ def _dialogue_source_ids(scope, visible_messages_only=False):
         if not isinstance(record, dict):
             continue
         if visible_messages_only and not (
-                record.get("kind") == "message"
-                and record.get("role") in {"user", "assistant"}):
+                (record.get("kind") == "message" and record.get("role") in {"user", "assistant"})
+                or record.get("input_schema") == "model-visible-dialogue-v1"):
             continue
         if isinstance(record.get("id"), str):
             ids.add(record["id"])
@@ -97,9 +81,8 @@ def _dialogue_source_ids(scope, visible_messages_only=False):
 def scope_source_ids(scope, qa_mode=None):
     """IDs a mode may cite from the supplied evidence scope.
 
-    General QA is intentionally limited to visible user/assistant messages. Code
-    QA may additionally cite tool events and reconstructed file versions. Omitting
-    the mode retains the original permissive code-pipeline behavior.
+    General QA includes public dialogue and its public tool evidence. Code QA
+    additionally cites reconstructed file versions.
     """
     if qa_mode is not None and qa_mode not in QA_MODES | {"both"}:
         raise ValueError("qa_mode must be general, code, or both")
@@ -229,19 +212,12 @@ def validate_facts(document, scope, return_rejected=False, qa_mode=None):
 def _candidate_mode_and_type(question, expected_mode):
     explicit_mode = question.get("qa_mode")
     question_type = question.get("type")
-    category = question.get("category")
     if explicit_mode is not None:
         mode = explicit_mode
-    elif question_type in GENERAL_QA_TYPES:
-        mode = "general"
-    elif question_type in CODE_QA_TYPES or category in CODE_QA_TYPES:
-        mode = "code"
     elif expected_mode in QA_MODES:
         mode = expected_mode
     else:
         mode = None
-    if question_type is None and mode == "code":
-        question_type = category
     return mode, question_type
 
 
@@ -305,48 +281,17 @@ def _code_historical_signal(scope, sources, facts):
 
 def _deterministic_type_guard(question, mode, question_type, scope, fact_sources,
                               selected_facts=None):
-    """Reject type labels contradicted by observable source structure."""
-    if mode == "general":
-        stages = _source_stage_ids(scope, fact_sources)
-        if question_type == "multi-hop" and len(stages) < 2:
-            return "multi_hop_same_stage"
-        if question_type == "temporal":
-            # Temporal reasoning may happen inside one discussion stage. It
-            # still needs two source positions or an explicit before/after
-            # cue; stage count is a boundary for multi-hop only.
-            orders = _source_orders(scope, fact_sources)
-            source_text = "\n".join(
-                str(record.get("text", "")) for record in scope.get("dialogue", [])
-                if record.get("id") in fact_sources)
-            if len(orders) < 2 and not re.search(
-                    r"之前|后来|之后|先|再|当前|当时|旧版|新版|previous|later|before|after",
-                    source_text, re.I):
-                return "temporal_without_change"
-        if question_type == "adversarial" and not (
-                scope.get("full_range_required") or scope.get("full_range_covered")):
-            return "adversarial_without_full_range"
-        return None
-    if mode == "code":
-        selected_facts = selected_facts or []
-        track = question.get("track", "history_core")
-        if track == "history_core" and not _code_historical_signal(
-                scope, fact_sources, selected_facts):
-            return "history_without_historical_signal"
-        if question_type == "failure_diagnosis":
-            text = "\n".join(str(f.get("statement", "")) for f in selected_facts)
-            if not re.search(r"失败|报错|错误|异常|failure|failed|error|exception|bug", text, re.I):
-                return "failure_without_observed_failure"
-    return None
+    """Reuse the same source-based gate used during group selection."""
+    from .fact_index import build_evidence_index, static_evidence_check
+    index = build_evidence_index(selected_facts or [], [scope], mode)
+    check = static_evidence_check(
+        {"facts": selected_facts or [], "scope": scope, "qa_mode": mode},
+        index, question_type, question)
+    return check["reason"] if check["status"] == "insufficient" else None
 
 
 def validate_candidates(document, facts, scope, qa_mode=None, allowed_types=None):
-    """Validate general/code QA candidates while preserving legacy code input.
-
-    ``qa_mode`` optionally constrains the expected branch. ``both`` accepts both
-    branches. ``allowed_types`` applies an additional caller-selected type filter.
-    Legacy candidates containing only ``category`` and ``track`` are normalized to
-    ``qa_mode=code`` and expose the same value through the new ``type`` field.
-    """
+    """Validate source closure and the shared task-oriented taxonomy."""
     if qa_mode not in {None, "general", "code", "both"}:
         raise ValueError("qa_mode must be general, code, both, or None")
     if allowed_types is not None:
@@ -361,8 +306,6 @@ def validate_candidates(document, facts, scope, qa_mode=None, allowed_types=None
     accepted, rejected, seen = [], [], set()
     repairable_semantic = {
         "compound_answer_point", "compound_forbidden_point",
-        "multi_hop_same_stage", "temporal_without_change",
-        "history_without_historical_signal", "failure_without_observed_failure",
     }
     for question in document["questions"]:
         reason = None
@@ -401,10 +344,6 @@ def validate_candidates(document, facts, scope, qa_mode=None, allowed_types=None
             reason = "vacuous_question"
         elif not isinstance(question.get("use_case"), str) or not question["use_case"].strip():
             reason = "missing_practical_use"
-        elif (mode == "general" and question_type == "open-domain"
-              and (not isinstance(question.get("external_knowledge"), str)
-                   or not question["external_knowledge"].strip())):
-            reason = "missing_external_knowledge"
 
         fact_ids = question.get("fact_ids")
         if not reason and not validate_sources(fact_ids, set(facts_by_id)):
@@ -668,16 +607,6 @@ def _structured_question_diagnostics(question, decision, allowed_sources=None,
                 decision["type_correct"] != derived_type_correct):
             conflicts.append("type_correct")
 
-    # Validate the reviewer's recommended shape. A coherent negative judgment
-    # on an incorrectly labelled multi-hop question must remain repairable,
-    # rather than becoming a malformed review merely because the original
-    # candidate claimed the wrong type.
-    if mode == "general" and recommended_type == "multi-hop":
-        stages = _csv_tokens(decision.get("necessary_stage_ids"))
-        if stages is None or len(set(stages)) < 2:
-            malformed.append("necessary_stage_ids")
-        elif allowed_stage_ids is not None and not set(stages) <= set(allowed_stage_ids):
-            malformed.append("necessary_stage_ids_out_of_scope")
     if mode == "code":
         recommended_track = decision.get("recommended_track")
         if recommended_track not in TRACKS:
@@ -1012,7 +941,6 @@ def apply_simple_relevance_review(candidates, review):
         static_extra_ids = set()
         question_text = question.get("question", "")
         if (question.get("qa_mode") == "code"
-                and question.get("type", question.get("category")) == "behavior_inference"
                 and _FLOW_QUESTION.search(question_text)
                 and not _SIGNATURE_REQUEST.search(question_text)):
             for index, point in enumerate(question.get("answer_points", []), 1):
@@ -1044,8 +972,8 @@ def apply_simple_relevance_review(candidates, review):
     return kept, rejected
 
 
-def apply_code_distinctiveness_review(candidates, review):
-    """Apply the code-only answer-basis selection contract."""
+def apply_target_review(candidates, review):
+    """Check alignment with one preselected purpose, without relabeling it."""
     decisions, malformed, blocked = _match_review_decisions(
         candidates, review, local_single_id="q1")
     rejected = list(malformed)
@@ -1055,68 +983,37 @@ def apply_code_distinctiveness_review(candidates, review):
         if not decision or question["id"] in blocked:
             kept.append(dict(
                 question, status="needs_review",
-                review_error="code_distinctiveness_review_unmatched"))
+                review_error="target_review_unmatched"))
             continue
         unexpected = set(decision) - {
             "id", "returned_id", "id_inferred", "review_contract",
-            "answer_basis", "target_alignment",
+            "target_alignment",
         }
-        basis = decision.get("answer_basis")
-        requires_alignment = bool(question.get("_generation_focus"))
         alignment = decision.get("target_alignment")
-        if (decision.get("review_contract") != "code_distinctiveness_v1"
-                or unexpected or basis not in CODE_DISTINCTIVENESS_BASES):
+        if (decision.get("review_contract") != "target_v1"
+                or unexpected or alignment not in {"aligned", "mixed", "drifted", "uncertain"}):
             kept.append(dict(
                 question, status="needs_review",
-                distinctiveness_review=decision,
-                review_error="invalid_code_distinctiveness_review"))
-        elif requires_alignment and alignment not in {
-                "aligned", "mixed", "drifted", "uncertain"}:
-            kept.append(dict(
-                question, status="needs_review",
-                distinctiveness_review=decision,
-                review_error="missing_code_target_alignment"))
-        elif requires_alignment and alignment in {"mixed", "drifted"}:
+                target_review=decision,
+                review_error="invalid_target_review"))
+        elif alignment in {"mixed", "drifted"}:
             rejected.append({
                 "question": dict(
                     question, status="rejected",
-                    distinctiveness_review=decision),
-                "reason": "code_answer_basis_target_mismatch",
-                "failed_checks": ["code_answer_target_aligned"],
-                "review": dict(decision, code_answer_target_aligned=False),
+                    target_review=decision),
+                "reason": "answer_target_mismatch",
+                "failed_checks": ["answer_target_aligned"],
+                "review": dict(decision, answer_target_aligned=False),
             })
-        elif requires_alignment and alignment == "uncertain":
+        elif alignment == "uncertain":
             kept.append(dict(
                 question, status="needs_review",
-                distinctiveness_review=decision,
-                review_error="uncertain_code_target_alignment"))
-        elif basis == "D":
-            rejected.append({
-                "question": dict(
-                    question, status="rejected",
-                    distinctiveness_review=decision),
-                "reason": "code_answer_not_distinctive",
-                "failed_checks": ["code_answer_distinctive"],
-                "review": dict(decision, code_answer_distinctive=False),
-            })
-        elif basis not in {
-                "history_tracking": {"A"},
-                "behavior_inference": {"C"},
-                "failure_diagnosis": {"B", "C"},
-                "fact_recall": {"B"},
-        }.get(question.get("type"), set()):
-            rejected.append({
-                "question": dict(
-                    question, status="rejected",
-                    distinctiveness_review=decision),
-                "reason": "code_answer_basis_target_mismatch",
-                "failed_checks": ["code_answer_target_aligned"],
-                "review": dict(decision, code_answer_target_aligned=False),
-            })
+                target_review=decision,
+                review_error="uncertain_target_alignment"))
         else:
             kept.append(dict(
                 question, status="awaiting_atomicity_review",
-                distinctiveness_review=decision))
+                target_review=decision))
     return kept, rejected
 
 
@@ -1287,12 +1184,6 @@ def apply_question_review(candidates, review, allowed_sources=None, allowed_stag
             approval_checks.append("history_requirement_correct")
             required += ["history_requirement_correct", "current_snapshot_alone_sufficient",
                          "history_evidence_required"]
-        if question.get("type") == "open-domain":
-            approval_checks += ["external_knowledge_separated", "external_knowledge_necessary"]
-            required += ["external_knowledge_separated", "external_knowledge_necessary"]
-        if question.get("type") == "adversarial":
-            approval_checks.append("full_range_checked")
-            required += ["full_range_checked"]
         missing = [key for key in required if not isinstance(decision.get(key), bool)]
         structure_missing, conflicts = _structured_question_diagnostics(
             question, decision, allowed_sources, allowed_stage_ids)
@@ -1329,19 +1220,13 @@ def apply_review(candidates, review, require_structured=False, allowed_sources=N
                          "difficulty_justified", "not_answer_leaking", "natural_wording",
                          "practical_useful", "answer_complete", "atomic_points_correct",
                          "type_correct")
-        causal = (question.get("type", question.get("category")) in
-                  {"behavior_inference", "failure_diagnosis"}
-                  or bool(re.search(r"为什么|为何|原因|导致|why|cause", question.get("question", ""), re.I)))
+        causal = (bool(re.search(r"为什么|为何|原因|导致|why|cause", question.get("question", ""), re.I)))
         if causal:
             common_checks += ("causal_support",)
         required = list(common_checks)
         if mode == "code":
             required += ["history_requirement_correct", "current_snapshot_alone_sufficient",
                          "history_evidence_required"]
-        if question.get("type") == "open-domain":
-            required += ["external_knowledge_separated", "external_knowledge_necessary"]
-        if question.get("type") == "adversarial":
-            required += ["full_range_checked"]
         structure_missing, structure_conflicts = [], []
         if require_structured:
             question_missing, question_conflicts = _structured_question_diagnostics(
@@ -1383,11 +1268,6 @@ def apply_review(candidates, review, require_structured=False, allowed_sources=N
             review_valid = (review_valid
                             and decision.get("history_requirement_correct") is True
                             and history_fields_present and track_consistent)
-        elif question.get("type") == "open-domain":
-            review_valid = (review_valid and decision.get("external_knowledge_separated") is True
-                            and decision.get("external_knowledge_necessary") is True)
-        elif question.get("type") == "adversarial":
-            review_valid = review_valid and decision.get("full_range_checked") is True
         rationale = decision.get("reason", "")
         if isinstance(rationale, str):
             contradictory = (

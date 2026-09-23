@@ -1,4 +1,4 @@
-"""Offline contracts for the content-level focus stage and temporal wording."""
+"""Offline contracts for the content-level focus stage and correction_update wording."""
 
 import copy
 import json
@@ -21,6 +21,10 @@ class ScriptedClient:
         self.usage = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"status": "completed"})
         response = next(self.responses)
@@ -29,6 +33,10 @@ class ScriptedClient:
 
 class FailingClient(ScriptedClient):
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"status": "failed"})
         raise RuntimeError("synthetic focus transport failure")
@@ -48,7 +56,7 @@ class SimpleContentFocusTests(unittest.TestCase):
             ],
             "events": [], "versions": [], "stages": [],
             "generation_extra_sources": ["extra-source"],
-            "evidence_group": {"target_types": ["single-hop"]},
+            "evidence_group": {"target_types": ["constraint_followthrough"]},
             "model_request_chars": 60000,
             "max_context_chars": 60000,
         }
@@ -69,7 +77,7 @@ END_QA"""
         ])
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            allowed_types={"single-hop"}, target_type="single-hop",
+            allowed_types={"constraint_followthrough"}, target_type="constraint_followthrough",
             generation_mode="simple")
 
         self.assertEqual(result["stage_status"]["focus"], "completed")
@@ -115,7 +123,7 @@ END_QA"""
                 client = ScriptedClient([response])
                 result = generate_from_facts(
                     self.scope, self.facts, client, qa_mode="general",
-                    allowed_types={"single-hop"}, target_type="single-hop",
+                    allowed_types={"constraint_followthrough"}, target_type="constraint_followthrough",
                     generation_mode="simple", checkpoint=checkpoint)
 
                 self.assertEqual(result["stage_status"]["focus"], "failed")
@@ -126,7 +134,7 @@ END_QA"""
         client = FailingClient([])
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            allowed_types={"single-hop"}, target_type="single-hop",
+            allowed_types={"constraint_followthrough"}, target_type="constraint_followthrough",
             generation_mode="simple")
         self.assertEqual(result["stage_status"]["focus"], "failed")
         self.assertFalse(result["questions"])
@@ -138,7 +146,7 @@ END_QA"""
         ])
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            allowed_types={"single-hop"}, target_type="single-hop",
+            allowed_types={"constraint_followthrough"}, target_type="constraint_followthrough",
             generation_mode="simple")
 
         self.assertEqual(result["stage_status"]["focus"], "failed")
@@ -174,7 +182,7 @@ END_QA""",
         ])
         result = generate_from_facts(
             scope, facts, client, qa_mode="general",
-            allowed_types={"single-hop"}, target_type="single-hop",
+            allowed_types={"constraint_followthrough"}, target_type="constraint_followthrough",
             generation_mode="simple")
 
         self.assertEqual(len(client.calls), 2)
@@ -203,7 +211,7 @@ END_QA""",
         }
         facts = [
             {"id": "f-base", "qa_mode": "general",
-             "statement": "runner.py currently handles the request.",
+             "statement": "runner.py must handle the request.",
              "sources": ["e-base"]},
             {"id": "f-extra", "qa_mode": "general",
              "statement": "runner.py outcome was validated after the request.",
@@ -239,7 +247,7 @@ END_QA""",
         ])
 
         result = generate_simple_target(
-            group, index, "single-hop", client, "general", expansion_budget=1)
+            group, index, "constraint_followthrough", client, "general", expansion_budget=1)
 
         self.assertEqual(len(client.calls), 3)
         self.assertEqual(result["generation_request_count"], 3)
@@ -297,7 +305,7 @@ class SimpleTemporalReferenceTests(unittest.TestCase):
                 self.assertEqual(len(accepted), 1)
                 self.assertFalse(rejected)
 
-    def test_temporal_gate_checks_answer_and_forbidden_text_but_ignores_literals(self):
+    def test_correction_update_gate_checks_answer_and_forbidden_text_but_ignores_literals(self):
         for field in ("answer_points", "forbidden_points"):
             with self.subTest(field=field):
                 candidate = self.candidate("配置使用了什么格式？")

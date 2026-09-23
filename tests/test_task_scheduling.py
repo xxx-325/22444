@@ -14,7 +14,7 @@ class TaskSchedulingTests(unittest.TestCase):
             source = root / "source/workspace/candidate"
             source.mkdir(parents=True)
             (source / "a.py").write_text("value = 1\n")
-            items = [{"qa": {"id": "q%d" % n}, "original_candidate": {"evidence_group_id": "g%d" % n}}
+            items = [{"qa": {"type": "constraint_followthrough", "id": "q%d" % n}, "original_candidate": {"evidence_group_id": "g%d" % n}}
                      for n in range(5)]
             def construct(item, *args):
                 return None if item["qa"]["id"] == "q0" else {"accepted": True}

@@ -19,6 +19,10 @@ class TextClient:
         self.usage = []
 
     def ask(self, prompt, data):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.prompts.append(prompt)
         self.payloads.append(copy.deepcopy(data))
         self.usage.append({"status": "completed"})
@@ -40,6 +44,10 @@ class RelevanceScriptedClient:
         self.stages = []
 
     def ask(self, prompt, payload):
+        # Target routing is exercised separately in test_memory_types.
+        if "review_contract: target_v1" in prompt:
+            return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                                 "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
         if "simple_relevance_v1" in prompt:
             self.stages.append("review_relevance")
@@ -90,7 +98,7 @@ class SimpleReviewTests(unittest.TestCase):
         ]
         self.candidate = {
             "id": "general_g1_q1", "candidate_id": "general_g1_q1",
-            "model_id": "q1", "qa_mode": "general", "type": "single-hop",
+            "model_id": "q1", "qa_mode": "general", "type": "constraint_followthrough",
             "fact_ids": ["f1"], "question": "配置必须支持什么格式？",
             "answer_points": [{"text": "配置必须支持 yaml。", "sources": ["m1"]}],
             "forbidden_points": [
@@ -124,8 +132,8 @@ END_QA"""
         client = TextClient([response])
         result = generate_from_facts(
             self.scope, self.facts, client, qa_mode="general",
-            target_type="single-hop")
-        self.assertEqual(result["questions"][0]["type"], "single-hop")
+            target_type="constraint_followthrough")
+        self.assertEqual(result["questions"][0]["type"], "constraint_followthrough")
         self.assertEqual(result["questions"][0]["fact_ids"], ["f1"])
         self.assertNotIn("difficulty", result["questions"][0])
         self.assertNotIn("scope", client.payloads[0])
@@ -133,15 +141,15 @@ END_QA"""
         self.assertNotIn("id", client.payloads[0]["material_references"][0])
         self.assertEqual(client.payloads[1]["facts"], [{
             "text": "配置必须支持 yaml", "materials": ["资料1"]}])
-        self.assertNotIn("single-hop", client.prompts[1])
+        self.assertNotIn("constraint_followthrough", client.prompts[1])
         self.assertNotIn("TARGET_TYPE", client.prompts[1])
 
         noisy = response.replace(
-            "QA q1", "QA q1\nTYPE: temporal\nDIFFICULTY: hard\nTRACK: history_core\nFACT_IDS: f3,f4")
+            "QA q1", "QA q1\nTYPE: correction_update\nDIFFICULTY: hard\nTRACK: history_core\nFACT_IDS: f3,f4")
         result = generate_from_facts(
             self.scope, self.facts, TextClient([noisy]), qa_mode="general",
-            target_type="single-hop")
-        self.assertEqual(result["questions"][0]["type"], "single-hop")
+            target_type="constraint_followthrough")
+        self.assertEqual(result["questions"][0]["type"], "constraint_followthrough")
         self.assertNotIn("difficulty", result["questions"][0])
         self.assertNotIn("track", result["questions"][0])
         self.assertEqual(result["questions"][0]["fact_ids"], ["f1"])
@@ -150,7 +158,7 @@ END_QA"""
         bad_source = response.replace("SOURCES: 资料1", "SOURCES: 资料999")
         result = generate_from_facts(
             self.scope, self.facts, TextClient([bad_source]), qa_mode="general",
-            target_type="single-hop")
+            target_type="constraint_followthrough")
         self.assertFalse(result["questions"])
         self.assertEqual(result["rejected"][0]["reason"],
                          "invalid_answer_evidence")
@@ -159,7 +167,7 @@ END_QA"""
             "配置必须支持什么格式？", "配置在 e228 时必须支持什么格式？")
         result = generate_from_facts(
             self.scope, self.facts, TextClient([internal_id]), qa_mode="general",
-            target_type="single-hop")
+            target_type="constraint_followthrough")
         self.assertFalse(result["questions"])
         self.assertEqual(result["rejected"][0]["reason"],
                          "internal_id_in_public_text")
@@ -168,7 +176,7 @@ END_QA"""
             "配置必须支持什么格式？", "资料1中的配置必须支持什么格式？")
         result = generate_from_facts(
             self.scope, self.facts, TextClient([local_reference]), qa_mode="general",
-            target_type="single-hop")
+            target_type="constraint_followthrough")
         self.assertFalse(result["questions"])
         self.assertEqual(result["rejected"][0]["reason"],
                          "local_reference_in_public_text")
@@ -177,7 +185,7 @@ END_QA"""
             "配置必须支持什么格式？", "m1 中的配置必须支持什么格式？")
         result = generate_from_facts(
             self.scope, self.facts, TextClient([raw_source_id]), qa_mode="general",
-            target_type="single-hop")
+            target_type="constraint_followthrough")
         self.assertFalse(result["questions"])
         self.assertEqual(result["rejected"][0]["reason"],
                          "internal_id_in_public_text")
@@ -187,7 +195,7 @@ END_QA"""
         ])
         result = generate_from_facts(
             self.scope, self.facts, no_qa, qa_mode="general",
-            target_type="single-hop")
+            target_type="constraint_followthrough")
         self.assertEqual(result["missing_kind"], "reason")
         self.assertEqual(result["missing_object"], "yaml")
         self.assertEqual(result["questions"], [])
@@ -197,7 +205,7 @@ END_QA"""
         never_called = TextClient([])
         result = generate_from_facts(
             self.scope, self.facts, never_called, qa_mode="general",
-            allowed_types={"temporal"}, target_type="single-hop")
+            allowed_types={"correction_update"}, target_type="constraint_followthrough")
         self.assertEqual(result["stage_status"]["qa"], "failed")
         self.assertFalse(never_called.payloads)
 
@@ -270,7 +278,7 @@ END_REVIEW""",
     def test_relevance_filters_side_points_before_atomicity_for_thin_cli(self):
         candidate = {
             "id": "general_cli_q1", "candidate_id": "general_cli_q1",
-            "model_id": "q1", "qa_mode": "general", "type": "single-hop",
+            "model_id": "q1", "qa_mode": "general", "type": "constraint_followthrough",
             "fact_ids": ["f-cli"],
             "question": "薄 CLI 的 train 子命令接收哪种凭据？",
             "answer_points": [
@@ -309,7 +317,7 @@ END_REVIEW""",
     def test_static_relevance_drops_signature_only_steps_from_value_flow(self):
         candidate = {
             "id": "code-flow-q1", "qa_mode": "code",
-            "type": "behavior_inference",
+            "type": "compatibility_preservation",
             "question": "timeout_seconds 如何一路传到 subprocess.run 并最终成为 timeout 参数？",
             "answer_points": [
                 {"text": "run 方法新增 timeout_seconds: int = 3600 参数。",

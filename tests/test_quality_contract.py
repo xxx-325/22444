@@ -21,13 +21,13 @@ class DualTrackQualityTests(unittest.TestCase):
             "versions": [],
         }
         self.general_fact = {"id": "fg", "statement": "用户要求支持 yaml", "sources": ["m1"]}
-        self.code_fact = {"id": "fc", "statement": "运行曾报错，修复后测试结果为通过", "sources": ["tool1"]}
+        self.code_fact = {"id": "fc", "statement": "空输入运行曾报错，修复后测试结果为通过", "sources": ["tool1"]}
 
     def _question(self, **updates):
         question = {
             "id": "q1",
             "qa_mode": "general",
-            "type": "single-hop",
+            "type": "constraint_followthrough",
             "difficulty": "easy",
             "difficulty_reason": "单条消息直接给出",
             "memory_requirement": "找回用户已确认的约束",
@@ -41,33 +41,32 @@ class DualTrackQualityTests(unittest.TestCase):
         question.update(updates)
         return question
 
-    def test_public_type_sets_are_disjoint(self):
-        self.assertEqual(len(GENERAL_QA_TYPES), 5)
-        self.assertEqual(len(CODE_QA_TYPES), 4)
-        self.assertTrue(GENERAL_QA_TYPES.isdisjoint(CODE_QA_TYPES))
+    def test_tracks_share_six_purposes(self):
+        self.assertEqual(len(GENERAL_QA_TYPES), 6)
+        self.assertEqual(CODE_QA_TYPES, GENERAL_QA_TYPES)
 
     def test_general_candidate_is_normalized(self):
         accepted, rejected = validate_candidates(
             {"questions": [self._question()]}, [self.general_fact], self.scope,
-            qa_mode="general", allowed_types={"single-hop"})
+            qa_mode="general", allowed_types={"constraint_followthrough"})
         self.assertFalse(rejected)
         self.assertEqual(accepted[0]["qa_mode"], "general")
-        self.assertEqual(accepted[0]["type"], "single-hop")
+        self.assertEqual(accepted[0]["type"], "constraint_followthrough")
         self.assertEqual(accepted[0]["use_case"], self._question()["use_case"])
 
-    def test_open_domain_records_external_knowledge_separately(self):
-        question = self._question(type="open-domain")
+    def test_external_state_requires_observation_not_general_knowledge(self):
+        question = self._question(type="external_state_application")
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.general_fact], self.scope,
-            qa_mode="general", allowed_types={"open-domain"})
+            qa_mode="general", allowed_types={"external_state_application"})
         self.assertFalse(accepted)
-        self.assertEqual(rejected[0]["reason"], "missing_external_knowledge")
+        self.assertEqual(rejected[0]["reason"], "missing_type_evidence")
         question["external_knowledge"] = "YAML is a structured data serialization format."
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.general_fact], self.scope,
-            qa_mode="general", allowed_types={"open-domain"})
-        self.assertFalse(rejected)
-        self.assertEqual(accepted[0]["external_knowledge"], question["external_knowledge"])
+            qa_mode="general", allowed_types={"external_state_application"})
+        self.assertFalse(accepted)
+        self.assertEqual(rejected[0]["reason"], "missing_type_evidence")
 
     def test_general_cannot_cite_tool_or_code_fields(self):
         tool_fact = {"id": "ft", "statement": "工具通过", "sources": ["tool1"]}
@@ -78,18 +77,18 @@ class DualTrackQualityTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertEqual(rejected[0]["reason"], "fact_source_not_allowed_for_mode")
 
-        question = self._question(category="history_tracking", track="history_core")
+        question = self._question(category="correction_update", track="history_core")
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.general_fact], self.scope, qa_mode="general")
         self.assertFalse(accepted)
         self.assertEqual(rejected[0]["reason"], "code_fields_on_general_question")
 
-    def test_code_candidate_uses_new_fields_and_legacy_alias(self):
+    def test_code_candidate_requires_explicit_type(self):
         question = {
             "id": "qc",
             "qa_mode": "code",
-            "type": "failure_diagnosis",
-            "category": "failure_diagnosis",
+            "type": "failure_avoidance",
+            "category": "failure_avoidance",
             "track": "history_core",
             "difficulty": "medium",
             "difficulty_reason": "需要结合测试结果",
@@ -104,23 +103,22 @@ class DualTrackQualityTests(unittest.TestCase):
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.code_fact], self.scope, qa_mode="code")
         self.assertFalse(rejected)
-        self.assertEqual(accepted[0]["category"], "failure_diagnosis")
+        self.assertEqual(accepted[0]["category"], "failure_avoidance")
 
         legacy = dict(question)
         legacy.pop("qa_mode")
         legacy.pop("type")
         accepted, rejected = validate_candidates(
             {"questions": [legacy]}, [self.code_fact], self.scope)
-        self.assertFalse(rejected)
-        self.assertEqual(accepted[0]["qa_mode"], "code")
-        self.assertEqual(accepted[0]["type"], "failure_diagnosis")
+        self.assertFalse(accepted)
+        self.assertEqual(rejected[0]["reason"], "unknown_qa_mode")
 
-    def test_surface_usefulness_is_left_to_semantic_review(self):
+    def test_unrelated_test_result_cannot_supply_correction_type(self):
         question = {
             "id": "surface",
             "qa_mode": "code",
-            "type": "history_tracking",
-            "category": "history_tracking",
+            "type": "correction_update",
+            "category": "correction_update",
             "track": "history_core",
             "difficulty": "easy",
             "difficulty_reason": "直接回忆补丁",
@@ -134,8 +132,8 @@ class DualTrackQualityTests(unittest.TestCase):
         }
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.code_fact], self.scope, qa_mode="code")
-        self.assertFalse(rejected)
-        self.assertEqual(accepted[0]["status"], "awaiting_semantic_review")
+        self.assertFalse(accepted)
+        self.assertEqual(rejected[0]["reason"], "missing_type_evidence")
 
     def test_bad_question_does_not_discard_good_question(self):
         good = self._question(id="good")

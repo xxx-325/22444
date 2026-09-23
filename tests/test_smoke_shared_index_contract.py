@@ -35,14 +35,14 @@ class SmokeSharedIndexContractTests(unittest.TestCase):
             "groups": {
                 "general-selected": {
                     "qa_mode": "general",
-                    "eligible_types": ["single-hop"],
+                    "eligible_types": ["constraint_followthrough"],
                     "facts": [{"id": "f-selected", "statement":
                                "selected material", "sources": ["e-selected"]}],
                     "scope": selected_scope,
                 },
                 "general-other": {
                     "qa_mode": "general",
-                    "eligible_types": ["single-hop"],
+                    "eligible_types": ["constraint_followthrough"],
                     "facts": [{"id": "f-outside", "statement":
                                "outside material", "sources": ["e-outside"]}],
                     "scope": outside_scope,
@@ -138,7 +138,7 @@ class SmokeSharedIndexContractTests(unittest.TestCase):
             "sources": ["e-outside"],
         })
         candidate = {
-            "id": "q1", "qa_mode": "general", "type": "single-hop",
+            "id": "q1", "qa_mode": "general", "type": "constraint_followthrough",
             "question": "outside material 是什么？",
             "answer_points": [{"text": "outside material", "sources": ["e-outside"]}],
             "forbidden_points": [],
@@ -185,7 +185,7 @@ class SmokeSharedIndexContractTests(unittest.TestCase):
                     patch.object(smoke_generation, "review_candidates",
                                  side_effect=fake_review):
                 smoke_generation._run_target_type(
-                    "general", "general-selected", base_group, "single-hop",
+                    "general", "general-selected", base_group, "constraint_followthrough",
                     "endpoint", "model", "KEY", 1, "simple", target_dir,
                     indexes["general"], "saved_extraction_pool", 3)
 

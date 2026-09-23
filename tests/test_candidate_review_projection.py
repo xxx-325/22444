@@ -93,8 +93,8 @@ class CandidateReviewProjectionTests(unittest.TestCase):
         return {
             "id": "code-group-1",
             "qa_mode": "code",
-            "allowed_types": ("history_tracking",),
-            "eligible_types": ("history_tracking",),
+            "allowed_types": ("correction_update",),
+            "eligible_types": ("correction_update",),
             "facts": copy.deepcopy(facts),
             "scope": copy.deepcopy(scope),
             "review_guard_complete": True,
@@ -111,7 +111,7 @@ class CandidateReviewProjectionTests(unittest.TestCase):
             "id": "q-" + fact_id,
             "candidate_id": "q-" + fact_id,
             "qa_mode": "code",
-            "type": "history_tracking",
+            "type": "correction_update",
             "fact_ids": fact_ids,
             "question": "%s 的记录变化是什么？" % object_name,
             "answer_points": [{"text": "%s 的记录变化" % object_name,
@@ -208,7 +208,7 @@ class CandidateReviewProjectionTests(unittest.TestCase):
         index = build_evidence_index(facts, [scope], "code", 16000)
         candidate = {
             "id": "q-failure", "candidate_id": "q-failure",
-            "qa_mode": "code", "type": "failure_diagnosis",
+            "qa_mode": "code", "type": "failure_avoidance",
             "fact_ids": ["f-failure"],
             "question": "当时在 pkg/a.py::load_config 失败中，失败机制是什么？",
             "answer_points": [{"text": "记录的失败机制", "sources": ["failure"]}],
@@ -279,7 +279,7 @@ class CandidateReviewProjectionTests(unittest.TestCase):
         ]
         index = build_evidence_index(facts, [scope], "code", 16000)
         candidate = {
-            "id": "q1", "qa_mode": "code", "type": "behavior_inference",
+            "id": "q1", "qa_mode": "code", "type": "compatibility_preservation",
             "question": "src/a.py 中 timeout_seconds 如何控制执行？",
             "answer_points": [{"text": "src/a.py 使用 timeout_seconds。",
                                "sources": ["a"]}],
