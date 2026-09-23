@@ -145,6 +145,30 @@ class MemoryTypeTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         qa_inputs(directory)
 
+    def test_fragment_parent_alias_is_valid_without_importing_other_fragments(self):
+        record = dict(self.scope["dialogue"][0], id="message#fragment-1", parent_id="message",
+                      text="export must keep nulls")
+        scope = dict(self.scope, dialogue=[record])
+        facts = [dict(self.facts[0], statement="export must keep nulls")]
+        index = build_evidence_index(facts, [scope], "general")
+        group = {"qa_mode": "general", "facts": facts, "scope": scope}
+        result = static_evidence_check(group, index, "constraint_followthrough", self.question)
+        self.assertEqual(result["status"], "supported")
+        fragment = dict(self.question, answer_points=[{"text": "export must keep nulls", "sources": ["message#fragment-1"]}])
+        self.assertEqual(static_evidence_check(group, index, "constraint_followthrough", fragment)["status"], "supported")
+        missing = dict(self.question, answer_points=[{"text": "unprovided", "sources": ["message#fragment-2"]}])
+        self.assertEqual(static_evidence_check(group, index, "constraint_followthrough", missing)["reason"],
+                         "answer_source_out_of_scope")
+
+    def test_correction_gap_points_in_the_missing_direction(self):
+        for statement, reason in (("export 之前要求丢弃 null", "correction_missing_new"),
+                                  ("export 现在改为保留 null", "correction_missing_old")):
+            facts = [dict(self.facts[0], statement=statement)]
+            index = build_evidence_index(facts, [self.scope], "general")
+            result = static_evidence_check({"qa_mode": "general", "facts": facts, "scope": self.scope},
+                                          index, "correction_update")
+            self.assertEqual(result["reason"], reason)
+
 
 if __name__ == "__main__":
     unittest.main()

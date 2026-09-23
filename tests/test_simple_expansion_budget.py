@@ -13,7 +13,7 @@ class SimpleExpansionBudgetTests(unittest.TestCase):
         self.scope = {
             "cutoff": 7,
             "dialogue": [{
-                "id": "e-base", "order": 1, "kind": "message",
+                "id": "e-base", "order": 1, "kind": "message", "role": "user",
                 "source_kind": "conversation", "text": "runner.py base",
             }],
             "events": [], "versions": [], "edges": [],
@@ -303,6 +303,17 @@ class SimpleExpansionBudgetTests(unittest.TestCase):
         self.assertEqual(
             {fact["id"] for fact in seen_facts[0]}, {"f-base", "f-extra"})
         self.assertEqual(len(result["questions"]), 1)
+
+    def test_static_correction_gaps_reach_directional_expansion(self):
+        for reason, direction in (("correction_missing_old", "earlier_state"),
+                                  ("correction_missing_new", "later_state")):
+            with patch.object(cli, "static_evidence_check", return_value={"status": "insufficient", "reason": reason}), \
+                 patch.object(cli, "expand_evidence_group_once", return_value=(None, {"reason": "no_related_evidence"})) as expand:
+                result = cli.generate_simple_target(self.group, self.index, "correction_update",
+                                                    object(), "general", expansion_budget=2)
+            self.assertEqual(expand.call_args.args[2], direction)
+            self.assertTrue(expand.call_args.kwargs["static_direction"])
+            self.assertEqual(result["expansion_stop_reason"], "no_related_evidence")
 
 
 if __name__ == "__main__":

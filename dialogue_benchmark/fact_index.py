@@ -7,6 +7,7 @@ from collections import deque
 from .normalize import source_kind_for
 from .protocol import MISSING_KINDS, QA_TYPES
 from .subgraph import _select_root_seeds
+from .quality import scope_source_ids
 
 
 _IDENTIFIER = re.compile(
@@ -1526,16 +1527,11 @@ def _general_expansion_entry_allowed(entry, evidence_index):
 def _entry_sources_resolved(entry, evidence_index):
     """Require candidate citations to resolve to real retained records."""
     universe = evidence_index["universe"]
-    records = [record for key in ("dialogue", "events", "versions")
-               for record in universe.get(key, []) if isinstance(record, dict)]
-    exact_ids = {
-        record.get("id") for record in records
-        if isinstance(record.get("id"), str)
-        and any(key in record for key in (
-            "text", "content", "changes", "success", "partial", "status", "complete"))
-    }
-    parent_ids = {record.get("parent_id") for record in records
-                  if isinstance(record.get("parent_id"), str)}
+    retained = {key: [record for record in universe.get(key, [])
+                      if isinstance(record, dict) and any(field in record for field in (
+                          "text", "content", "changes", "success", "partial", "status", "complete"))]
+                for key in ("dialogue", "events", "versions")}
+    known = scope_source_ids(retained)
     sources = {source for source in entry.get("source_ids", [])
                if isinstance(source, str)}
     for fact_id in entry.get("fact_ids", []):
@@ -1544,8 +1540,7 @@ def _entry_sources_resolved(entry, evidence_index):
             return False
         sources.update(source for source in info["fact"].get("sources", [])
                        if isinstance(source, str))
-    return bool(sources) and all(source in exact_ids or source in parent_ids
-                                 for source in sources)
+    return bool(sources) and sources <= known
 
 
 def _build_expansion_candidates(index, bases=None):
@@ -1980,9 +1975,12 @@ def _group_infos(group, evidence_index, cited_sources=None):
         info = evidence_index.get("info_by_id", {}).get(canonical)
         if info is None or info["fact"].get("id") in seen:
             continue
-        if cited_sources is not None and not (
-                set(info["fact"].get("sources", [])) & set(cited_sources)):
-            continue
+        if cited_sources is not None:
+            scope = group.get("scope", {})
+            cited_materials = set().union(*(_source_material_ids(scope, source) for source in cited_sources))
+            materials = set().union(*(_source_material_ids(scope, source) for source in info["fact"].get("sources", [])))
+            if not materials & cited_materials:
+                continue
         selected.append(info)
         seen.add(info["fact"].get("id"))
     return selected
@@ -2089,15 +2087,24 @@ def _memory_type_support(infos, target_type):
 
 
 def _evaluate_memory_evidence(infos, evidence_index, target_type, text, sources,
-                              complete=True, post_generation=False):
-    cited = set(sources)
+                              complete=True, post_generation=False, scope=None):
+    scope = evidence_index["universe"] if scope is None else scope
+    cited = set().union(*(_source_material_ids(scope, source) for source in sources))
     # A partial citation cannot import the missing half of a summarized fact.
     proof = [info for info in infos if not post_generation
-             or set(info["fact"].get("sources", [])).issubset(cited)]
+             or all(_source_material_ids(scope, source) and _source_material_ids(scope, source) <= cited
+                    for source in info["fact"].get("sources", []))]
     if not _memory_type_support(proof, target_type):
+        reason = "missing_type_evidence"
+        if target_type == "correction_update":
+            statements = "\n".join(info["fact"].get("statement", "") for info in proof)
+            old, new = bool(_OLD_STATE_CUE.search(statements)), bool(_NEW_STATE_CUE.search(statements))
+            reason = ("correction_missing_new" if old and not new else
+                      "correction_missing_old" if new and not old else
+                      "correction_missing_old_or_new" if old or new else "missing_type_evidence")
         return _code_evidence_result(
             "insufficient" if complete else "unknown",
-            "missing_type_evidence", infos, sources)
+            reason, infos, sources)
     if target_type == "correction_update":
         statements = [info["fact"].get("statement", "") for info in proof]
         inline = any(_INLINE_TRANSITION.search(value) for value in statements)
@@ -2115,15 +2122,14 @@ def static_evidence_check(group, evidence_index, target_type, candidate=None):
     complete = group.get("review_guard_complete", True) is True
     infos = _group_infos(group, evidence_index)
     if candidate is not None:
-        known = {record.get("id") for key in ("dialogue", "events", "versions")
-                 for record in group.get("scope", {}).get(key, [])}
+        known = scope_source_ids(group.get("scope", {}), group.get("qa_mode"))
         if not cited_sources or set(cited_sources) - known:
             return _code_evidence_result("insufficient", "answer_source_out_of_scope", [], cited_sources)
         infos = _group_infos(group, evidence_index, cited_sources)
     else:
         cited_sources = [source for info in infos for source in info["fact"].get("sources", [])]
     return _evaluate_memory_evidence(infos, evidence_index, target_type, text,
-                                    cited_sources, complete, candidate is not None)
+                                    cited_sources, complete, candidate is not None, group.get("scope", {}))
 
 def _static_eligible_types(infos, qa_mode, proposed, evidence_index):
     """Nominate types even when expansion still needs an earlier/later state."""

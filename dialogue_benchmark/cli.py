@@ -420,9 +420,11 @@ def generate_simple_target(group, evidence_index, target_type, client,
     generated = None
     missing_by_reason = {
         "correction_missing_old_or_new": "earlier_state",
+        "correction_missing_old": "earlier_state",
+        "correction_missing_new": "later_state",
     }
 
-    def record_expansion(missing_kind, missing_object, static_direction=False):
+    def record_expansion(missing_kind, missing_object=None, static_direction=False):
         nonlocal active_group, expansion_rounds, expanded_static_precheck
         if expansion_rounds >= expansion_budget:
             return False, "expansion_budget_exhausted"

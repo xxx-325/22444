@@ -103,7 +103,7 @@ class CodeEvidenceRequirementTests(unittest.TestCase):
         check = static_evidence_check(group, index, "correction_update")
 
         self.assertEqual(check["status"], "insufficient")
-        self.assertEqual(check["reason"], "missing_type_evidence")
+        self.assertEqual(check["reason"], "correction_missing_old")
 
     def test_single_error_without_failure_condition_is_not_failure_avoidance(self):
         scope = self._scope([{
