@@ -110,6 +110,16 @@ class TaskPreflightTests(unittest.TestCase):
         checks.assert_not_called()
         self.assertTrue((self.root / "author-reference/previous-00/task.md").exists())
 
+    def test_author_budget_failure_keeps_cause_without_identical_retries(self):
+        with patch("dialogue_benchmark.task_eval.run.run_agent", return_value={
+                "status": "error", "error_code": "token_budget_exhausted", "error_type": "RuntimeError"}) as agent:
+            receipt = construct(self.item, self.root, self.baseline, {}, 5, {})
+        self.assertIsNone(receipt)
+        self.assertEqual(agent.call_count, 1)
+        records = read(self.root / "construction.json")
+        self.assertEqual(records[0]["reason"], "token_budget_exhausted")
+        self.assertEqual(records[0]["author_error"]["error_code"], "token_budget_exhausted")
+
     def test_public_review_is_small_and_does_not_resolve_conflicts_as_clean(self):
         config = {"judge": {"base_url": "https://example.com/v1", "model": "test", "key_env": "KEY"}}
         with patch("dialogue_benchmark.llm.ChatClient") as client:

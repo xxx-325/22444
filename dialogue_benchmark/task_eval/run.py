@@ -105,13 +105,18 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                              reference=reference, **agent_options)
         spec = author / "workspace/checks"
         record = {"attempt": attempt, "author_status": authored["status"]}
+        if authored.get("error_code") or authored.get("error_type"):
+            record["author_error"] = {k: authored[k] for k in ("error_code", "error_type", "detail") if k in authored}
         attempts.append(record)
         if (spec / "NO_TASK.md").exists():
             record["reason"] = (spec / "NO_TASK.md").read_text()
             break
         required = ("task.md", "acceptance.md")
         if any(not (spec / name).exists() for name in required):
-            record["reason"] = "missing_author_artifacts"
+            record["reason"] = authored.get("error_code", "missing_author_artifacts")
+            if record["reason"] in {"token_budget_exhausted", "request_budget_exhausted", "runtime_budget_exhausted"}:
+                save(root / "construction.json", attempts)
+                break
             feedback = ("\n上一轮状态：%s。没有写齐 task.md、acceptance.md。"
                         "请完成文件。搜索无结果不代表环境故障，不要反复执行同一空搜索；"
                         "无法提出适当需求时写 NO_TASK.md。" % authored["status"])
