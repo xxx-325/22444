@@ -53,6 +53,9 @@ failure/change/verification chain. The model does not choose the difficulty.
 
 ## Install and run
 
+For concrete QA, an authored task draft, observed failures, and construction
+costs, see the [real task-construction examples](examples/task-construction-review.md).
+
 Python 3.9+ is required. From this directory:
 
 ```sh
