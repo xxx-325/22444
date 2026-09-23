@@ -40,7 +40,10 @@ def measure(events, provider_path):
                  for r in responses for choice in r.get("output", {}).get("choices", [])]
     reasoning = [r for r in reasoning if isinstance(r, str)]
     thoughts = [text_content(e.get("thought")) for e in actions if text_content(e.get("thought"))]
-    result = {"tool_calls": len(actions), "tool_calls_by_type": dict(counts),
+    development = [e for e in actions if e.get("tool_name") not in {"think", "finish"}]
+    result = {"tool_calls": len(development), "raw_action_count": len(actions),
+              "tool_calls_by_type": dict(Counter(e.get("tool_name") for e in development)),
+              "raw_actions_by_type": dict(counts),
               "file_view_calls": len(views),
               "file_view_chars": sum(map(len, file_texts)),
               "file_read_scope": "Explicit file views plus separately labeled shell read/search observations; not all script reads",
@@ -74,38 +77,20 @@ def measure(events, provider_path):
     return result
 
 
-def checkpoint_summary(rows, expected):
-    valid = (len(rows) == expected and {r["index"] for r in rows} == set(range(1, expected + 1))
-             and all(r["status"] in {"observed", "alternative", "skipped", "uncertain"} for r in rows))
-    counts = {status: sum(r["status"] == status for r in rows)
-              for status in ("observed", "alternative", "skipped", "uncertain")}
-    resolved = valid and expected > 0 and counts["uncertain"] == 0
-    return {"rows": rows, "complete": valid, "resolved": resolved, "total": expected,
-            "counts": counts, "action_coverage": counts["observed"] / expected if resolved else None}
 
-
-def compare_checkpoints(comparison):
-    """Compare exploration only when both tasks and both trace reviews are complete."""
-    without = comparison.get("without_memory", {})
-    with_memory = comparison.get("with_memory", {})
-    both_passed = without.get("result") == with_memory.get("result") == "passed"
-    left, right = without.get("checkpoints", {}), with_memory.get("checkpoints", {})
-    eligible = (both_passed and left.get("resolved", False) and right.get("resolved", False)
-                and left.get("total") == right.get("total"))
-    result = {"eligible": bool(eligible), "both_passed": both_passed,
-              "reason": ("both_passed_with_resolved_checkpoints" if eligible else
-                         "task_not_passed" if not both_passed else "checkpoint_review_incomplete")}
-    if not eligible:
-        return result
-    left_rows = {row["index"]: row["status"] for row in left["rows"]}
-    right_rows = {row["index"]: row["status"] for row in right["rows"]}
-    result.update(without_memory_coverage=left["action_coverage"],
-                  with_memory_coverage=right["action_coverage"],
-                  coverage_reduction=left["action_coverage"] - right["action_coverage"],
-                  skipped_in_memory=[i for i in left_rows if left_rows[i] == "observed"
-                                     and right_rows[i] == "skipped"],
-                  alternative_in_memory=[i for i in left_rows if left_rows[i] == "observed"
-                                         and right_rows[i] == "alternative"],
-                  additional_in_memory=[i for i in left_rows if left_rows[i] != "observed"
-                                        and right_rows[i] == "observed"])
+def compare_trials(comparison):
+    """Compare costs only for two successfully completed implementations."""
+    left, right = (comparison.get(k, {}) for k in ("without_memory", "with_memory"))
+    both = left.get("result") == right.get("result") == "passed"
+    result = {"both_passed": both, "completion_difference":
+              int(right.get("result") == "passed") - int(left.get("result") == "passed"),
+              "cost_differences": {}}
+    for key in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"):
+        a, b = left.get("metrics", {}).get(key), right.get("metrics", {}).get(key)
+        valid = both and isinstance(a, (int, float)) and isinstance(b, (int, float))
+        if key == "total_tokens":
+            valid = valid and all(t.get("metrics", {}).get("usage_complete") for t in (left, right))
+        result["cost_differences"][key] = b - a if valid else None
+    a, b = left.get("history_question_count"), right.get("history_question_count")
+    result["history_question_difference"] = b - a if isinstance(a, int) and isinstance(b, int) else None
     return result

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from dialogue_benchmark.task_eval.artifacts import read, save
+from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
     answer_clarification, freeze_contract, historical_context, prepare_history, read_history_review)
 from dialogue_benchmark.task_eval.runtime import run_agent, configure
@@ -20,6 +21,7 @@ scope: All tenants before the correction; non-EU tenants afterwards.
 sources: old
 supersedes: none
 behavior: Preserve explicit blank values.
+active: yes
 repository: external
 END_REVIEW
 REVIEW h2
@@ -28,6 +30,7 @@ scope: EU tenants after the correction only.
 sources: correction
 supersedes: h1
 behavior: EU blanks are rejected; other tenants keep the original rule.
+active: yes
 repository: external
 END_REVIEW
 """
@@ -65,13 +68,13 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(result["selected_event_ids"], ["old"])
         self.assertEqual(result["events"][-1]["id"], "correction")
 
-    def test_missing_or_unfinished_judge_does_not_imply_application(self):
+    def test_history_uses_same_acceptance_without_subjective_override(self):
         history = freeze_contract(self.root, self.history, "answer")
-        path = self.root / "review.txt"
-        path.write_text("REVIEW h1\nstatus: applied\nevidence: none\nEND_REVIEW\n"
-                        "REVIEW h2\nstatus: applied\nevidence: test rejects EU blanks\nEND_REVIEW")
-        self.assertEqual(read_history_review(path, history, True)["counts"]["insufficient"], 1)
-        self.assertEqual(read_history_review(path, history, False)["counts"]["insufficient"], 2)
+        result = read_history_review({"rows": [
+            {"id": "a1", "basis": ["h1"], "status": "passed", "evidence": "test"},
+            {"id": "a2", "basis": ["h2"], "status": "failed", "evidence": "wrong output"}]}, history)
+        self.assertEqual(result["counts"]["applied"], 1)
+        self.assertEqual(result["counts"]["violated"], 1)
 
     def test_responder_cannot_invent_source_or_see_oracle_and_criteria(self):
         history = freeze_contract(self.root, self.history, "PRIVATE_ORACLE")
@@ -104,7 +107,7 @@ class HistoryTests(unittest.TestCase):
                 return {"status": "finished"}
             def events(self):
                 return [{"id": "finish%d" % len(self.messages), "kind": "ActionEvent",
-                         "tool_name": "finish", "action": {"message": "Question" if len(self.messages) == 1 else "Done"}}]
+                         "tool_name": "finish", "action": {"message": "HISTORY_QUESTION: What is the EU rule?" if len(self.messages) == 1 else "Done"}}]
         decisions = [{"status": "answer", "sources": ["correction"], "reply": "EU rejects blanks.",
                       "kind": "historical_reask"},
                      {"status": "no_question", "sources": [], "reply": "none", "kind": "none"}]
@@ -120,8 +123,8 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(workers[0].messages, ["Implement", "EU rejects blanks."])
         self.assertEqual(result["clarification_status"], "no_question")
         self.assertTrue(result["clarifications"][0]["delivered"])
-        self.assertFalse(result["clarifications"][1]["delivered"])
-        self.assertEqual(result["responder_cost"]["requests"], 2)
+        self.assertEqual(len(result["clarifications"]), 1)
+        self.assertEqual(result["responder_cost"]["requests"], 1)
 
     def test_independent_config_needs_no_private_checkpoint(self):
         config = {"image": "sdk", "execution_image": "runtime", "execution_backend": "local",
@@ -137,6 +140,32 @@ class HistoryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 configure(self.root, "missing", "unused", control_config=self.root / "config.json")
 
+    def test_finished_at_budget_limit_never_calls_responder(self):
+        history = freeze_contract(self.root, self.history, "answer")
+        class Budget:
+            def __init__(self, config, journal):
+                self.deadline = time.monotonic() - 1
+                self.data = {"attempts": 1, "prompt_tokens": 1, "completion_tokens": 1}
+        class Worker:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def close(self): pass
+            def turn(self, message): return {"status": "finished"}
+            def events(self):
+                return [{"kind": "ActionEvent", "tool_name": "finish", "action": {"message": "Done"}}]
+        with patch.dict("sys.modules", {
+                "simulator.openhands.budget": SimpleNamespace(Budget=Budget),
+                "simulator.openhands.container": SimpleNamespace(SDKContainer=Worker)}), \
+             patch("dialogue_benchmark.task_eval.history.answer_clarification") as responder, \
+             patch("dialogue_benchmark.task_eval.retention.save_trace"), \
+             patch("dialogue_benchmark.task_eval.retention.release_agent"):
+            result = run_agent(self.root / "limit", {"code": {}, "image": "test"}, "code", "Implement",
+                               history=history, max_requests=1)
+        responder.assert_not_called()
+        self.assertEqual(result["status"], "finished")
+        self.assertEqual(result["clarification_status"], "no_question")
+        self.assertEqual(result["clarifications"], [])
+
     def test_two_arms_share_history_responder_but_only_oracle_gets_answer(self):
         baseline, task = self.root / "base", self.root / "task"
         baseline.mkdir()
@@ -145,9 +174,11 @@ class HistoryTests(unittest.TestCase):
         spec.mkdir()
         (spec / "history-contract.txt").write_text(CONTRACT)
         history = freeze_contract(spec, self.history, "ORACLE_ONLY")
-        for name in ("task.md", "acceptance.md", "checkpoints.md"):
+        for name in ("task.md", "acceptance.md"):
             (spec / name).write_text("Implement the previously agreed tenant behavior")
-        save(spec / "checkpoints.json", {"status": "unavailable", "checkpoints": []})
+        save(spec / "acceptance.json", [
+            {"id": "a1", "requirement": "Preserve blanks", "basis": ["h1"], "tests": ["test::non_eu"]},
+            {"id": "a2", "requirement": "Reject EU blanks", "basis": ["h2"], "tests": ["test::eu"]}])
         receipt = freeze(spec, task / "frozen", baseline)
         receipt["validation"] = {"TESTS": "executable"}
         prompts_seen = []
@@ -156,8 +187,8 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual(kwargs["history"], history)
                 prompts_seen.append(message)
                 save(root / "trajectory.json", [])
-                return {"status": "finished", "metrics": {}, "clarification_status": "no_question",
-                        "clarifications": []}
+                return {"status": "finished", "metrics": {}, "clarification_status": "budget_exhausted",
+                        "clarifications": [{"question": "EU rule?", "kind": "historical_reask", "delivered": True}]}
             reference = kwargs["reference"]
             self.assertNotIn("ORACLE_ONLY", str(read(reference / "spec/history.json")))
             checks = root / "workspace/checks"
@@ -170,49 +201,69 @@ class HistoryTests(unittest.TestCase):
                 "REVIEW h2\nstatus: %s\nevidence: tests exercise EU values\nEND_REVIEW" % status)
             return {"status": "finished"}
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
-             patch("dialogue_benchmark.task_eval.run.run_checks", return_value={"status": "passed"}):
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=[
+                 {"status": "failed", "cases": [{"id": "test::non_eu", "status": "passed"}, {"id": "test::eu", "status": "failed"}]},
+                 {"status": "passed", "cases": [{"id": "test::non_eu", "status": "passed"}, {"id": "test::eu", "status": "passed"}]}]):
             result = evaluate({"qa": {}}, task, baseline, receipt, {"execution_image": "fake"}, {}, 0)
         self.assertNotIn("ORACLE_ONLY", prompts_seen[0])
         self.assertIn("ORACLE_ONLY", prompts_seen[1])
         self.assertEqual(result["without_memory"]["result"], "failed")
         self.assertEqual(result["with_memory"]["result"], "passed")
+        self.assertEqual(result["with_memory"]["history_question_count"], 1)
         self.assertEqual(result["with_memory"]["information_condition"], "oracle_history")
-        self.assertIsNone(result["with_memory"]["checkpoints"]["action_coverage"])
+        self.assertNotIn("checkpoints", result["with_memory"])
         from dialogue_benchmark.task_eval.report import write_report
         write_report(task, {"tasks": [{"task": "task-01", "status": "evaluated", "comparison": result}]})
         report = (task / "report.md").read_text()
-        self.assertIn("Cross-session re-asks", report)
+        self.assertIn("History questions", report)
         self.assertIn("oracle_history", report)
-        self.assertIn("Applied / violated", report)
+        self.assertIn("Frozen acceptance", report)
         self.assertIn("Aggregate execution costs", report)
 
 
 class HistoryConstructionTests(unittest.TestCase):
-    def test_informed_reference_admits_without_unassisted_checkpoint(self):
-        fixture = test_task_eval_flow.TaskPreflightTests()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        save(Path(fixture.item["generation_input"]), {"payload": {}, "ref_to_source": {"资料1": "e1"}})
-        fixture.item["public_records"] = [
-            {"id": "e1", "original_id": "old", "order": 1, "kind": "message", "text": "Preserve blank"},
-            {"id": "e2", "original_id": "correction", "order": 2, "kind": "message", "text": "EU rejects blank"}]
-        original = fixture.fake_agent
-        def agent(root, config, role, message, **kwargs):
-            result = original(root, config, role, message, **kwargs)
-            if root.name == "author":
-                (root / "workspace/checks/history-contract.txt").write_text(CONTRACT)
-            if root.name == "validator":
-                path = root / "workspace/checks/validation.txt"
-                path.write_text(path.read_text() + "HISTORY: supported\n")
-            if root.name == "reference-solver":
-                self.assertIn("Historical behavior", message)
-                self.assertIn("EU tenants", message)
-                self.assertNotIn("behavior:", message)
-            return result
-        fixture.fake_agent = agent
-        receipt, _ = fixture.execute([{"status": "failed"}, {"status": "passed"},
-                                      {"status": "failed"}, {"status": "passed"}])
-        self.assertIsNotNone(receipt)
-        self.assertEqual(receipt["comparison"], "without_memory_vs_oracle_history")
-        self.assertEqual(read(fixture.root / "frozen/checkpoints.json")["status"], "unavailable")
-        self.assertEqual(read(fixture.root / "frozen/history.json")["oracle_answer"], "- Historical behavior")
+    def test_oracle_and_replayed_mutation_are_both_admission_gates(self):
+        for coverage, mutation, accepted in (("complete", "caught", True),
+                                              ("missing", "caught", False),
+                                              ("complete", "unverified", False)):
+            with self.subTest(coverage=coverage, mutation=mutation):
+                fixture = test_task_eval_flow.TaskPreflightTests()
+                fixture.setUp()
+                self.addCleanup(fixture.doCleanups)
+                save(Path(fixture.item["generation_input"]), {"ref_to_source": {"资料1": "e1"}})
+                fixture.item["public_records"] = [
+                    {"id": "e1", "original_id": "old", "order": 1, "kind": "message", "text": "Preserve all blanks"},
+                    {"id": "e2", "original_id": "correction", "order": 2, "kind": "message", "text": "EU rejects blanks"}]
+                fixture.item["qa"]["answer_points"] = [{"text": "EU rejects blanks; other tenants preserve blanks."}]
+                original = fixture.fake_agent
+                def agent(root, *args, **kwargs):
+                    result = original(root, *args, **kwargs)
+                    checks = root / "workspace/checks"
+                    if root.name == "author":
+                        (checks / "history-contract.txt").write_text(CONTRACT)
+                        with (checks / "acceptance.md").open("a") as handle:
+                            handle.write("\n| a2 | Other blanks retained | h1 | test: test_acceptance::test_other |\n"
+                                         "| a3 | EU blanks rejected | h2 | test: test_acceptance::test_eu |\n")
+                    elif root.name == "validator":
+                        with (checks / "validation.txt").open("a") as handle:
+                            handle.write("HISTORY: supported\n")
+                        (checks / "oracle-review.txt").write_text("\n".join(
+                            f"REVIEW {identity}\ncoverage: {coverage}\nquote: EU rejects blanks; other tenants preserve blanks.\nEND_REVIEW"
+                            for identity in ("h1", "h2")))
+                    return result
+                def checks(candidate, *args, **kwargs):
+                    status = "failed" if candidate == fixture.baseline else "passed"
+                    return {"status": status, "cases": [{"id": "test_acceptance::test_" + name, "status": status}
+                                                         for name in ("feature", "other", "eu")]}
+                with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+                     patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
+                     patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+                     patch("dialogue_benchmark.task_eval.run.check_history_mutations", return_value={"status": mutation}) as replay:
+                    from dialogue_benchmark.task_eval.run import construct
+                    receipt = construct(fixture.item, fixture.root, fixture.baseline,
+                                        {"execution_image": "image"}, 0, {})
+                self.assertEqual(receipt is not None, accepted)
+                self.assertEqual(replay.call_count, int(coverage == "complete"))
+                if accepted:
+                    self.assertFalse((fixture.root / "frozen/checkpoints.json").exists())
+                    self.assertEqual(receipt["oracle_sufficiency"], "validated_against_active_rules")

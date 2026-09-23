@@ -8,10 +8,10 @@ from unittest.mock import patch
 from dialogue_benchmark.llm import _ask_stage
 from dialogue_benchmark.task_eval.artifacts import qa_inputs
 from dialogue_benchmark.task_eval.checks import pytest_result
-from dialogue_benchmark.task_eval.metrics import checkpoint_summary, measure
+from dialogue_benchmark.task_eval.metrics import compare_trials, measure
 from dialogue_benchmark.task_eval.runtime import configure, readable_reference, release_completed_execution, run_agent
 from dialogue_benchmark.task_eval.run import (admission, freeze, solver_input,
-                                              trial_status, unchanged, validated_spec)
+                                              unchanged, validated_spec)
 
 
 class TaskEvaluationTests(unittest.TestCase):
@@ -112,9 +112,9 @@ class TaskEvaluationTests(unittest.TestCase):
             baseline.mkdir()
             spec.mkdir()
             (baseline / "a.py").write_text("x = 1\n")
-            for name in ("task.md", "checkpoints.md", "acceptance.md"):
+            for name in ("task.md", "acceptance.md"):
                 (spec / name).write_text("1. Explicit action\n")
-            (spec / "checkpoints.json").write_text('{"checkpoints": []}')
+            (spec / "acceptance.json").write_text('[{"id": "a1"}]')
             (spec / "fixture.txt").write_text("Fixture used by the generated test")
             receipt = freeze(spec, root / "frozen", baseline)
             self.assertEqual((root / "frozen/fixture.txt").read_text(),
@@ -151,14 +151,6 @@ class TaskEvaluationTests(unittest.TestCase):
         self.assertFalse(admission(decision, {"status": "failed"}, {"status": "passed", "skipped": 1}))
         self.assertFalse(admission(decision, {"status": "error"}, {"status": "passed"}))
 
-    def test_execution_error_cannot_become_judge_fallback_pass(self):
-        done = {"status": "ConversationExecutionStatus.FINISHED"}
-        self.assertEqual(trial_status("RESULT: passed", {"status": "error"}, done, "partial"), "uncertain")
-        self.assertEqual(trial_status("RESULT: passed", {"status": "unavailable"}, done, "executable"), "uncertain")
-        self.assertEqual(trial_status("RESULT: passed", {"status": "passed"}, {"status": "error"}, "executable"), "uncertain")
-        self.assertEqual(trial_status("RESULT: passed", {"status": "unavailable"}, done, "unavailable"), "passed")
-        self.assertEqual(trial_status("RESULT: passed", {"status": "failed"}, done, "executable"), "failed")
-
     def test_validator_checks_are_preserved_without_replacing_author_tests(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -183,14 +175,12 @@ class TaskEvaluationTests(unittest.TestCase):
             path.write_text("<testsuite><testcase /></testsuite>")
             self.assertEqual(pytest_result(3, path)["status"], "error")
 
-    def test_skipped_checkpoints_are_not_correctness_failures(self):
-        result = checkpoint_summary([{"index": 1, "status": "skipped", "evidence": "Not seen"},
-                                     {"index": 2, "status": "alternative", "evidence": "Event a"}], 2)
-        self.assertTrue(result["complete"])
-        self.assertEqual(result["action_coverage"], 0)
-        self.assertNotIn("passed", result)
-        self.assertFalse(checkpoint_summary([{"index": 1, "status": "observed"},
-                                            {"index": 1, "status": "observed"}], 2)["complete"])
+    def test_only_two_successes_get_cost_differences(self):
+        pair = {"without_memory": {"result": "passed", "metrics": {"tool_calls": 10}},
+                "with_memory": {"result": "failed", "metrics": {"tool_calls": 1}}}
+        self.assertIsNone(compare_trials(pair)["cost_differences"]["tool_calls"])
+        pair["with_memory"]["result"] = "passed"
+        self.assertEqual(compare_trials(pair)["cost_differences"]["tool_calls"], -9)
 
     def test_actions_and_usage_are_not_double_counted(self):
         events = [{"kind": "ActionEvent", "tool_call_id": "c", "tool_name": "file_editor",

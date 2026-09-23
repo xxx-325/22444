@@ -1,9 +1,16 @@
 """Freeze public history and inspect its use independently of task correctness."""
 
 from pathlib import Path
+import re
 
 from ..llm import parse_text_response
 from .artifacts import read, save
+
+
+def historical_question(message):
+    """An explicit solver request, never a classifier call on a completion report."""
+    match = re.fullmatch(r"\s*HISTORY_QUESTION:\s*(\S[\s\S]*)", message)
+    return match.group(1).strip() if match else None
 
 
 def _refs(value):
@@ -45,17 +52,21 @@ def freeze_contract(spec, history, oracle):
                 or any(not isinstance(row.get(k), str) or not row[k].strip()
                        for k in ("statement", "scope", "behavior"))
                 or set(replaced) - known.keys()
+                or row.get("active") not in {"yes", "no"}
                 or row.get("repository") not in {"recoverable", "external", "uncertain"}):
             raise ValueError("Invalid historical contract or public source reference")
         order = max(sources[r]["order"] for r in refs)
         if any(order <= known[prior]["order"] for prior in replaced):
             raise ValueError("Historical replacement must cite a later public event")
         contract = {k: row[k] for k in ("id", "statement", "scope", "behavior", "repository")}
-        contract.update(sources=refs, supersedes=replaced, order=order)
+        contract.update(sources=refs, supersedes=replaced, order=order, active=row["active"] == "yes")
         known[cid] = contract
         contracts.append(contract)
     if not contracts:
         raise ValueError("No historical contract")
+    active = [c for c in contracts if c["active"]]
+    if not active or any(c["repository"] != "external" for c in active):
+        raise ValueError("Main historical tasks require active external rules; uncertain rules need review")
     result = {"cutoff_event_id": history["cutoff_event_id"], "contracts": contracts,
               "events": history["events"], "oracle_answer": oracle,
               "reference_information": "oracle plus scoped historical contract",
@@ -69,28 +80,40 @@ def historical_context(history):
     statements = {row["id"]: row["statement"] for row in history["contracts"]}
     return "\n".join("%s（适用范围：%s；替代记录：%s）" % (
         row["statement"], row["scope"], "；".join(statements[cid] for cid in row["supersedes"]) or "无")
-        for row in history["contracts"])
+        for row in history["contracts"] if row.get("active", True))
 
 
-def read_history_review(path, history, judge_complete):
+def read_history_review(acceptance, history):
+    """History is a projection of the same mandatory acceptance results."""
     states = {"applied", "violated", "not_applicable", "insufficient"}
-    reviews = []
-    if judge_complete and Path(path).is_file():
-        try:
-            reviews = parse_text_response(Path(path).read_text()).get("reviews", [])
-        except ValueError:
-            pass
     rows = []
     for contract in history["contracts"]:
-        matches = [r for r in reviews if r.get("id") == contract["id"]]
-        row = matches[0] if len(matches) == 1 else {}
-        status = row.get("status")
-        evidence = row.get("evidence", "").strip()
-        if status not in states or not evidence or evidence == "none":
-            status, evidence = "insufficient", "No complete observable review"
+        matches = [r for r in acceptance["rows"] if contract["id"] in r["basis"]]
+        status = ("not_applicable" if not contract.get("active", True) else
+                  "violated" if any(r["status"] == "failed" for r in matches) else
+                  "applied" if matches and all(r["status"] == "passed" for r in matches) else "insufficient")
+        evidence = "; ".join(r["id"] + ": " + r["evidence"] for r in matches) or "No applicable check established"
         rows.append({"id": contract["id"], "statement": contract["statement"],
                      "status": status, "evidence": evidence})
     return {"rows": rows, "counts": {s: sum(r["status"] == s for r in rows) for s in sorted(states)}}
+
+
+def oracle_coverage(path, history):
+    """Require an exact answer excerpt for each active rule, reviewed before trials."""
+    if not Path(path).is_file():
+        return False
+    rows = parse_text_response(Path(path).read_text()).get("reviews", [])
+    for rule in history["contracts"]:
+        if not rule["active"]:
+            continue
+        matched = [r for r in rows if r.get("id") == rule["id"]]
+        if len(matched) != 1:
+            return False
+        row = matched[0]
+        quote = row.get("quote", "")
+        if row.get("coverage") != "complete" or not quote.strip() or quote not in history["oracle_answer"]:
+            return False
+    return True
 
 
 def answer_clarification(message, history, exchanges, config, output):

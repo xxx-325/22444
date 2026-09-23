@@ -115,9 +115,6 @@ def main(argv=None):
         if args.design_probe:
             task_args += ["--design-probe"]
         status = run_tasks(task_args)
-        if status == 0:
-            phase("checkpoint_recovery")
-            status = run_tasks(task_args + ["--recover-checkpoints"])
         render(root)
         state["status"] = "completed" if status == 0 else "failed"
         phase("complete")

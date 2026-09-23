@@ -7,13 +7,12 @@ import shutil
 
 from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_inputs, read, save, write_diff
-from .checks import run_checks
-from .checkpoints import extract_checkpoints, match_checkpoints, write_checkpoints
-from .metrics import compare_checkpoints
+from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
+from .metrics import compare_trials
 from .runtime import configure, review_task, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline
-from .history import prepare_history, freeze_contract, historical_context, read_history_review
+from .history import prepare_history, freeze_contract, historical_context, read_history_review, oracle_coverage
 
 def solver_input(task, answer=None):
     message = prompts.SOLVER + "\n\n" + task
@@ -36,7 +35,7 @@ def freeze(spec, output, baseline):
     output = Path(output)
     # Freeze the same support files that preflight tests used, including fixtures.
     copy_tree(spec, output)
-    for name in ("task.md", "checkpoints.md", "checkpoints.json", "acceptance.md"):
+    for name in ("task.md", "acceptance.md", "acceptance.json"):
         if not (output / name).is_file() or not (output / name).read_text().strip():
             raise ValueError("Missing task artifact: " + name)
     return {"baseline_sha256": fingerprint(baseline), "spec_sha256": fingerprint(output)}
@@ -81,17 +80,6 @@ def validated_spec(spec, validator_checks, output):
 
 def agent_finished(outcome):
     return str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}
-
-
-def trial_status(verdict, checks, judge, test_mode):
-    if checks["status"] == "failed":
-        return "failed"
-    status = labels(verdict).get("RESULT", "uncertain")
-    if status not in {"passed", "failed", "uncertain"} or not agent_finished(judge):
-        return "uncertain"
-    incomplete = (checks["status"] == "error" or (test_mode == "executable"
-                  and (checks["status"] != "passed" or checks.get("skipped", 0))))
-    return "uncertain" if incomplete and status == "passed" else status
 
 
 def construct(item, root, baseline, config, revisions, agent_options, *, design_probe=False):
@@ -150,7 +138,16 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 feedback = "\n上一轮历史契约错误，请根据公开来源重写：" + str(error)
                 save(root / "construction.json", attempts)
                 continue
-        baseline_checks = run_checks(baseline, spec, run / "baseline-checks", config["execution_image"])
+        try:
+            items = acceptance_items(spec, history)
+            save(spec / "acceptance.json", items)
+        except ValueError as error:
+            record.update(accepted=False, reason="invalid_acceptance", detail=str(error))
+            feedback = "\n验收表需要修正：" + str(error)
+            save(root / "construction.json", attempts)
+            continue
+        baseline_checks = run_checks(baseline, spec, run / "baseline-checks", config["execution_image"],
+                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         implementation = run / "reference-solver"
         prepare(implementation, baseline)
         print(root.name, "reference implementation", attempt, flush=True)
@@ -159,7 +156,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                            solver_input((spec / "task.md").read_text(), reference_answer), **agent_options)
         candidate = implementation / "workspace/candidate"
         record["reference_version"] = export_change(baseline, candidate, implementation)
-        reference_checks = run_checks(candidate, spec, run / "reference-checks", config["execution_image"])
+        reference_checks = run_checks(candidate, spec, run / "reference-checks", config["execution_image"],
+                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         record.update(baseline_checks=baseline_checks, reference_checks=reference_checks,
                       reference_status=solved["status"])
         validation_reference = run / "validator-reference"
@@ -181,42 +179,53 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         if final_spec is not None:
             # Never freeze model-written extra tests without executing those exact files.
             baseline_checks = run_checks(baseline, final_spec, run / "final-baseline-checks",
-                                         config["execution_image"])
+                                         config["execution_image"],
+                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
             reference_checks = run_checks(candidate, final_spec, run / "final-reference-checks",
-                                          config["execution_image"])
+                                          config["execution_image"],
+                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
             record.update(final_baseline_checks=baseline_checks, final_reference_checks=reference_checks)
         else:
             record["reason"] = "missing_coverage_checks"
+        oracle_complete = not history or oracle_coverage(validator / "workspace/checks/oracle-review.txt", history)
+        if history and final_spec is not None and oracle_complete:
+            record["history_mutations"] = check_history_mutations(
+                candidate, final_spec, validator / "workspace/checks",
+                run / "history-mutations", config["execution_image"],
+                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+        reference_acceptance = (assess_acceptance(items, reference_checks,
+            validator / "workspace/checks/acceptance-review.txt",
+            {"/reference/implementation": candidate,
+             "/workspace/checks": validator / "workspace/checks",
+             "/workspace/experiments": validator / "workspace/experiments"})
+            if final_spec else {"status": "uncertain"})
+        record["reference_acceptance"] = reference_acceptance
+        record["oracle_complete"] = oracle_complete
+        if not oracle_complete:
+            record["reason"] = "oracle_answer_incomplete"
+        elif history and record.get("history_mutations", {}).get("status") != "caught":
+            record["reason"] = "historical_mutation_not_verified"
         record["validation_accepted"] = (agent_finished(solved) and agent_finished(validated)
                                          and final_spec is not None
-                                         and (not history or record["validation"].get("HISTORY") == "supported")
+                                         and reference_acceptance["status"] == "passed"
+                                         and oracle_complete
+                                         and (not history or (
+                                             record["validation"].get("HISTORY") == "supported"
+                                             and record["history_mutations"]["status"] == "caught"))
                                          and admission(record["validation"], baseline_checks, reference_checks))
         record["accepted"] = False
         save(root / "construction.json", attempts)
         if record["validation_accepted"]:
-            checkpoint_run = implementation
-            extracted = {"status": "unavailable", "source": "no_unassisted_design_run", "checkpoints": []}
             if history and design_probe:
-                checkpoint_run = run / "design-probe"
-                prepare(checkpoint_run, baseline)
-                probe = run_agent(checkpoint_run, config, "code",
-                                  solver_input((final_spec / "task.md").read_text()),
+                probe_root = run / "design-probe"
+                prepare(probe_root, baseline)
+                probe = run_agent(probe_root, config, "code",
+                                  solver_input((final_spec / "task.md").read_text()) + prompts.HISTORY_REQUEST,
                                   history=history, **agent_options)
-                probe_checks = run_checks(checkpoint_run / "workspace/candidate", final_spec,
-                                         run / "probe-checks", config["execution_image"])
-                record["design_probe"] = {"status": probe["status"], "checks": probe_checks,
-                                           "used_for_admission": False}
-                if agent_finished(probe):
-                    extracted = extract_checkpoints((final_spec / "task.md").read_text(),
-                        read(checkpoint_run / "trajectory.json"), config, run / "checkpoint-extraction",
-                        source="independent_design_probe")
-            elif not history:
-                extracted = extract_checkpoints((final_spec / "task.md").read_text(),
-                    read(implementation / "trajectory.json"), config, run / "checkpoint-extraction")
-            record["checkpoint_extraction"] = extracted
-            if extracted["status"] != "completed":
-                extracted = dict(extracted, checkpoints=[])
-            write_checkpoints(final_spec, extracted, str(checkpoint_run.relative_to(root)))
+                record["design_probe"] = {"status": probe["status"], "used_for_admission": False,
+                    "checks": run_checks(probe_root / "workspace/candidate", final_spec,
+                                         run / "probe-checks", config["execution_image"],
+                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))}
             record["accepted"] = True
             save(root / "construction.json", attempts)
             receipt = freeze(final_spec, root / "frozen", baseline)
@@ -226,7 +235,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             if history:
                 receipt.update(comparison="without_memory_vs_oracle_history",
                                reference_information=history["reference_information"],
-                               oracle_sufficiency="not_established_by_reference")
+                               oracle_sufficiency="validated_against_active_rules")
             save(root / "frozen.json", receipt)
             return receipt
         # New author conversation receives the previous artifacts and concrete verifier feedback.
@@ -243,7 +252,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
 def evaluate(item, root, baseline, receipt, config, agent_options, index):
     spec = root / "frozen"
     task = (spec / "task.md").read_text()
-    checkpoints = read(spec / "checkpoints.json")["checkpoints"]
+    items = read(spec / "acceptance.json")
     history = read(spec / "history.json") if (spec / "history.json").exists() else None
     result = {}
     order = ("without_memory", "with_memory") if index % 2 == 0 else ("with_memory", "without_memory")
@@ -254,12 +263,15 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
         prepare(trial, baseline)
         oracle = history["oracle_answer"] if history else answer_text(item["qa"])
         message = solver_input(task, oracle if condition == "with_memory" else None)
+        if history:
+            message += prompts.HISTORY_REQUEST
         print(root.name, "evaluation", condition, flush=True)
         solved = run_agent(trial, config, "code", message, **agent_options,
                            **({"history": history} if history else {}))
         candidate = trial / "workspace/candidate"
         changed = write_diff(baseline, candidate, trial / "changes.patch")
-        checks = run_checks(candidate, spec, trial / "checks", config["execution_image"])
+        checks = run_checks(candidate, spec, trial / "checks", config["execution_image"],
+                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         reference = trial / "judge-reference"
         copy_tree(spec, reference / "spec")
         if history:
@@ -268,34 +280,33 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
             for key in ("oracle_answer", "reference_information", "oracle_sufficiency"):
                 judge_history.pop(key, None)
             save(reference / "spec/history.json", judge_history)
-            shutil.copy2(trial / "trajectory.json", reference / "trajectory.json")
-            save(reference / "clarifications.json", solved.get("clarifications", []))
         save(reference / "checks.json", checks)
         judge = trial / "judge"
         prepare(judge, candidate)
-        judged = run_agent(judge, config, "judge", prompts.JUDGE + (
-                           prompts.HISTORY_JUDGE if history else ""), reference=reference, **agent_options)
+        if any(not row["tests"] for row in items):
+            judged = run_agent(judge, config, "judge", prompts.JUDGE,
+                               reference=reference, **agent_options)
+        else:
+            judged = {"status": "not_needed"}
         verdict_path = judge / "workspace/checks/verdict.txt"
         verdict = verdict_path.read_text() if verdict_path.exists() else ""
-        cp = match_checkpoints(checkpoints, read(trial / "trajectory.json"), config,
-                               trial / "checkpoint-review", trajectory_complete=agent_finished(solved))
-        status = trial_status(verdict, checks, judged, receipt["validation"]["TESTS"])
+        acceptance = assess_acceptance(items, checks, judge / "workspace/checks/acceptance-review.txt",
+            {"/workspace/candidate": candidate, "/workspace/checks": judge / "workspace/checks",
+             "/workspace/experiments": judge / "workspace/experiments"})
+        status = acceptance["status"]
         result[condition] = {"result": status, "solver_status": solved["status"],
                              "judge_status": judged["status"],
                              "metrics": solved["metrics"], "checks": checks,
-                             "checkpoints": cp, "changed_files": changed,
+                             "acceptance": acceptance, "changed_files": changed,
                              "judge_evidence": verdict, "trial": trial.name}
+        counterexample = judge / "workspace/checks/counterexample.md"
+        if counterexample.is_file():
+            result[condition]["counterexample_pending_shared_review"] = counterexample.read_text()
         if history:
-            application = read_history_review(judge / "workspace/checks/history-review.txt",
-                                              history, agent_finished(judged))
-            if application["counts"]["violated"]:
-                result[condition]["result"] = "failed"
-            elif application["counts"]["insufficient"] and status == "passed":
-                result[condition]["result"] = "uncertain"
-            if solved.get("clarification_status") in {"unavailable", "budget_exhausted"} and result[condition]["result"] == "passed":
-                result[condition]["result"] = "uncertain"
+            application = read_history_review(acceptance, history)
             exchanges = solved.get("clarifications", [])
             result[condition].update(history_application=application,
+                history_question_count=len(exchanges),
                 information_condition="oracle_history" if condition == "with_memory" else "without_memory",
                 clarifications=exchanges, responder_cost=solved.get("responder_cost"),
                 clarification_status=solved.get("clarification_status", "unavailable"),
@@ -304,97 +315,8 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
         if not unchanged(receipt, spec, baseline):
             raise ValueError("Frozen inputs changed during evaluation")
         save(root / "comparison.json", result)
-        save(root / "checkpoint-comparison.json", compare_checkpoints(result))
+        save(root / "paired-differences.json", compare_trials(result))
     return result
-
-
-def recover_checkpoint_failures(output, config, agent_options):
-    """Resume verified constructions that never entered either scored trial."""
-    output = Path(output)
-    manifest = read(output / "manifest.json")
-    baseline = Path(manifest["baseline"])
-    if baseline_version(baseline) != manifest["baseline_version"]:
-        raise ValueError("Pinned baseline changed before checkpoint recovery")
-    items = {item["qa"]["id"]: item for item in qa_inputs(manifest["qa_run"])}
-    for entry in manifest["tasks"]:
-        root = output / entry["task"]
-        if entry["status"] == "evaluated":
-            comparison = read(root / "comparison.json")
-            for trial in comparison.values():
-                error = trial.get("checkpoints", {}).get("error", {}).get("error_code")
-                path = root / trial["trial"]
-                recovery = path / "checkpoint-review-recovery"
-                if error not in {"request_budget", "credential_guard"} or recovery.exists():
-                    continue
-                receipt = read(root / "frozen.json")
-                if not unchanged(receipt, root / "frozen", baseline):
-                    raise ValueError("Frozen inputs changed before matching recovery")
-                trial["checkpoints"] = match_checkpoints(
-                    read(root / "frozen/checkpoints.json")["checkpoints"],
-                    read(path / "trajectory.json"), config, recovery,
-                    trajectory_complete=agent_finished({"status": trial["solver_status"]}))
-            save(root / "comparison.json", comparison)
-            cp = compare_checkpoints(comparison)
-            save(root / "checkpoint-comparison.json", cp)
-            entry.update(comparison=comparison, checkpoint_comparison=cp)
-            save(output / "manifest.json", manifest)
-            write_report(output, manifest)
-            continue
-        if entry["status"] != "not_admitted" or (root / "checkpoint-recovery").exists():
-            continue
-        attempts_path = root / "construction.json"
-        if not attempts_path.exists():
-            attempts_path = root / "construction-summary.json"
-        attempts = read(attempts_path)
-        record = attempts[-1]
-        if not record.get("validation_accepted") or record.get("reason") != "checkpoint_extraction_failed":
-            continue
-        try:
-            item = items[entry["qa_id"]]
-            if read(root / "author-reference/qa.json") != item["qa"]:
-                raise ValueError("Source QA changed before recovery")
-            run = root / ("construction-%02d" % record["attempt"])
-            implementation = run / "reference-solver"
-            candidate = implementation / "workspace/candidate"
-            if fingerprint(candidate) != record["reference_version"]["candidate_sha256"]:
-                raise ValueError("Validated reference implementation changed")
-            recovery = root / "checkpoint-recovery"
-            baseline_checks = run_checks(baseline, run / "validated-spec", recovery / "baseline-checks",
-                                         config["execution_image"])
-            reference_checks = run_checks(candidate, run / "validated-spec", recovery / "reference-checks",
-                                          config["execution_image"])
-            if not admission(record["validation"], baseline_checks, reference_checks):
-                raise ValueError("Saved construction no longer passes preflight")
-            extracted = extract_checkpoints((run / "validated-spec/task.md").read_text(),
-                                            read(implementation / "trajectory.json"), config, recovery)
-            record["checkpoint_recovery"] = extracted
-            save(root / "construction.json", attempts)
-            if extracted["status"] != "completed":
-                continue
-            spec = recovery / "spec"
-            copy_tree(run / "validated-spec", spec)
-            write_checkpoints(spec, extracted, str(implementation.relative_to(root)))
-            receipt = freeze(spec, root / "frozen", baseline)
-            receipt.update(qa_id=item["qa"]["id"], accepted_attempt=record["attempt"],
-                           validation=record["validation"], baseline_checks=baseline_checks,
-                           reference_checks=reference_checks)
-            save(root / "frozen.json", receipt)
-            record.update(accepted=True, reason="checkpoint_recovered")
-            save(root / "construction.json", attempts)
-            comparison = evaluate(item, root, baseline, receipt, config, agent_options,
-                                  int(root.name.split("-")[-1]) - 1)
-            entry.update(status="evaluated", comparison=comparison,
-                         checkpoint_comparison=compare_checkpoints(comparison))
-        except Exception as error:
-            entry["recovery_error"] = {"error_type": type(error).__name__, "detail": str(error)}
-            save(root / "checkpoint-recovery/error.json", entry["recovery_error"])
-        manifest["completed"] = sum(task["status"] == "evaluated" for task in manifest["tasks"])
-        manifest["shortfall"] = max(0, manifest["target"] - manifest["completed"])
-        if not manifest["shortfall"]:
-            manifest["stop_reason"] = "target_met"
-        save(output / "manifest.json", manifest)
-        write_report(output, manifest)
-    return 0
 
 
 def main(argv=None):
@@ -414,8 +336,6 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--agent-requests", type=int, default=80)
     parser.add_argument("--agent-tokens", type=int, default=1500000)
-    parser.add_argument("--recover-checkpoints", action="store_true",
-                        help="Resume saved accepted constructions blocked only by checkpoint extraction")
     args = parser.parse_args(argv)
     task_budget = args.task_budget if args.task_budget is not None else args.count * 2
     if min(args.count, args.workers, args.agent_requests, args.agent_tokens) < 1 or args.revisions < 0:
@@ -424,11 +344,6 @@ def main(argv=None):
         parser.error("Task budget must be positive")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    if args.recover_checkpoints:
-        config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file,
-                           **({"control_config": args.control_config} if args.control_config else {}))
-        return recover_checkpoint_failures(output, config, {
-            "max_requests": args.agent_requests, "max_tokens": args.agent_tokens})
     if (output / "manifest.json").exists() or (output / "baseline").exists():
         parser.error("Use a new output directory; previous experiments are retained")
     items = qa_inputs(args.qa_run)
@@ -477,7 +392,7 @@ def main(argv=None):
             comparison = evaluate(item, root, baseline, receipt, config, agent_options, index)
             return {"task": root.name, "status": "evaluated", "qa_id": item["qa"]["id"],
                     "type": item["qa"]["type"],
-                    "comparison": comparison, "checkpoint_comparison": compare_checkpoints(comparison)}
+                    "comparison": comparison, "paired_differences": compare_trials(comparison)}
         except Exception as error:
             failure = {"task": root.name, "status": "error", "error_type": type(error).__name__,
                        "detail": str(error)}

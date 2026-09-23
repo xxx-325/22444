@@ -44,7 +44,7 @@ class EpisodeRunnerTests(unittest.TestCase):
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                                        "--env-file", str(root / ".env"), "--output", str(root / "run"),
                                        "--resume-tasks"]), 0)
-            self.assertEqual(order, ["qa", "tasks", "recovery", "tasks", "recovery"])
+            self.assertEqual(order, ["qa", "tasks", "tasks"])
             self.assertEqual(render.call_count, 4)
             self.assertEqual(read(root / "run/pipeline.json")["status"], "completed")
             self.assertFalse((candidate / ".git").exists())

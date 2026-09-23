@@ -130,8 +130,8 @@ class RetentionTests(unittest.TestCase):
             self.assertFalse((qa / "stages/unneeded.json").exists())
             self.assertFalse((qa / "candidates.json").exists())
             self.assertTrue((qa / "qa-audit.json").exists())
-            self.assertFalse((task / "checkpoint-recovery/baseline-checks/workspace").exists())
-            self.assertTrue((task / "checkpoint-recovery/baseline-checks/receipt.xml").exists())
+            self.assertTrue((task / "checkpoint-recovery/baseline-checks/workspace").exists())
+            self.assertTrue((task / "checkpoint-recovery/baseline-checks/workspace/experiments/receipt.xml").exists())
             self.assertEqual(compact_run(root), receipt)
 
     def test_compaction_is_deferred_before_touching_unfinished_execution(self):

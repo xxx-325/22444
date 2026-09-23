@@ -36,7 +36,7 @@ class TaskPreflightTests(unittest.TestCase):
             checks = root / "workspace/checks"
             checks.mkdir()
             for name, text in (("task.md", "Preserve pending data after replacement"),
-                               ("acceptance.md", "Pending data remains readable"),
+                               ("acceptance.md", "| a1 | Pending data remains readable | task | test: test_acceptance::test_feature |"),
                                ("test_acceptance.py", "Original test")):
                 (checks / name).write_text(text)
         elif root.name == "reference-solver":
@@ -55,20 +55,12 @@ class TaskPreflightTests(unittest.TestCase):
         return {"status": "ConversationExecutionStatus.FINISHED"}
 
     def execute(self, results):
+        results = [dict(r, cases=[{"id": "test_acceptance::test_feature", "status": r["status"]}]) for r in results]
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent), \
              patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
-             patch("dialogue_benchmark.task_eval.run.extract_checkpoints", side_effect=self.extract), \
              patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=results) as checks:
             receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0, {})
         return receipt, checks
-
-    def extract(self, task, trajectory, config, output):
-        self.assertEqual(trajectory, [{"id": "reference-action"}])
-        self.assertFalse((self.root / "trial-1").exists())
-        self.assertFalse((self.root / "construction-00/author/workspace/checks/checkpoints.md").exists())
-        return {"status": "completed", "source": "accepted_reference_trajectory",
-                "checkpoints": [{"index": 1, "text": "Inspect teardown",
-                                 "reference_evidence": [{"action_id": "reference-action"}]}]}
 
     def test_extra_checks_are_run_before_freeze_and_used_for_receipt(self):
         receipt, checks = self.execute([{"status": "failed"}, {"status": "passed"},
@@ -78,10 +70,8 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertTrue((final_spec / "test_interactions.py").exists())
         self.assertTrue((self.root / "frozen/test_interactions.py").exists())
         self.assertEqual(receipt["reference_checks"]["tests"], 2)
-        checkpoints = read(self.root / "frozen/checkpoints.json")
-        self.assertEqual(checkpoints["reference_run"], "construction-00/reference-solver")
-        self.assertEqual(checkpoints["source"], "accepted_reference_trajectory")
-        self.assertEqual(checkpoints["checkpoints"][0]["text"], "Inspect teardown")
+        self.assertFalse((self.root / "frozen/checkpoints.json").exists())
+        self.assertEqual(read(self.root / "frozen/acceptance.json")[0]["id"], "a1")
 
     def test_reference_failing_new_combination_is_not_frozen(self):
         receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},
@@ -109,17 +99,6 @@ class TaskPreflightTests(unittest.TestCase):
                                    {"status": "failed"}, {"status": "passed"}])
         self.assertIsNone(receipt)
         self.assertNotIn("checkpoint_extraction", read(self.root / "construction.json")[0])
-
-    def test_extraction_failure_preserves_validation_and_does_not_reauthor(self):
-        with patch.object(self, "extract", return_value={"status": "failed", "error": {"code": "timeout"}}):
-            receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},
-                                       {"status": "failed"}, {"status": "passed"}])
-        self.assertIsNotNone(receipt)
-        records = read(self.root / "construction.json")
-        self.assertEqual(len(records), 1)
-        self.assertTrue(records[0]["validation_accepted"])
-        self.assertTrue(records[0]["accepted"])
-        self.assertEqual(read(self.root / "frozen/checkpoints.json")["status"], "failed")
 
     def test_leaking_task_is_rejected_before_reference_solver(self):
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent) as agent, \
@@ -166,6 +145,8 @@ class TaskPreflightTests(unittest.TestCase):
             result = run_checks(self.baseline, spec, output, "image")
         command = run.call_args.args[0]
         self.assertIn("-t", command)
+        self.assertIn("--rootdir=/workspace/checks", command)
+        self.assertFalse(any("PYTHONPATH=" in part for part in command))
         self.assertIn("/workspace/checks/test_interactions.py", command)
         self.assertIn("--junitxml=/workspace/experiments/receipt.xml", command)
         self.assertEqual(result["status"], "error")

@@ -4,145 +4,88 @@ from pathlib import Path
 from html import escape
 import json
 
-from .metrics import compare_checkpoints
+from .metrics import compare_trials
 
 
 def _cell(value):
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def _coverage(checkpoints):
-    counts = checkpoints.get("counts", {})
-    if not counts:
-        return "unavailable", "—"
-    rate = checkpoints.get("action_coverage")
-    value = "%s/%s (%s)" % (counts["observed"], checkpoints["total"],
-                             "%.0f%%" % (rate * 100) if rate is not None else "unresolved")
-    return value, "/".join(str(counts[key]) for key in ("alternative", "skipped", "uncertain"))
-
-
-def _evidence(row):
-    sources = ", ".join(source["action_id"] for source in row.get("sources", []))
-    return _cell(row.get("evidence", "Not recorded") + ("; actions: " + sources if sources else ""))
-
-
 def write_report(output, manifest):
     output = Path(output)
     tasks = manifest.get("tasks", [])
-    lines = ["# Repository task pilot", "",
-             "Model-authored requirements and tests, with frozen automated judging. "
-             "The memory condition receives the historical answer directly."]
-    lines += ["", "| Task | Memory purpose | QA | Status |", "|---|---|---|---|"]
-    for task in tasks:
-        lines.append("| %s | %s | %s | %s |" % (
-            task["task"], task.get("type", "unavailable"),
-            task.get("qa_id", "unavailable"), task["status"]))
-    history_tasks = [task for task in tasks if any(
-        "history_application" in trial for trial in task.get("comparison", {}).values())]
-    if history_tasks:
-        lines += ["", "## Historical constraints and repeated information", "",
-                  "The two conditions are without memory and oracle historical answers. "
-                  "Both can ask the same frozen-history responder. No retrieval system is evaluated.", "",
-                  "| Task | Condition | Applied / violated / not applicable / insufficient | Cross-session re-asks | Same-session repeats | Update confirmations |",
-                  "|---|---|---|---|---|---|"]
-        history_details = []
-        for task in history_tasks:
-            for condition, trial in task.get("comparison", {}).items():
-                counts = trial.get("history_application", {}).get("counts", {})
-                interactions = trial.get("interaction_counts", {})
-                lines.append("| %s | %s | %s | %s | %s | %s |" % (
-                    task["task"], trial.get("information_condition", condition),
-                    "/".join(str(counts.get(k, "unavailable")) for k in (
-                        "applied", "violated", "not_applicable", "insufficient")),
-                    *(interactions.get(k, "unavailable") for k in (
-                        "historical_reask", "same_session_repeat", "update_confirmation"))))
-                for row in trial.get("history_application", {}).get("rows", []):
-                    history_details.append("- %s / %s / %s: %s — %s" % (
-                        task["task"], condition, row["id"], row["status"], _cell(row["evidence"])))
-        lines += [""] + history_details
-        lines += ["", "An applied constraint records observable compliance, not proof of memory causation. "
-                  "Valid updates need not follow superseded rules. Responder errors and missing reviews remain unavailable."]
-    lines += ["", "## Aggregate execution costs", "",
-              "| Condition | Trials recorded | Passed / failed / uncertain | Solver tokens | Responder tokens | Tool calls | File views | Shell reads/searches |",
-              "|---|---|---|---|---|---|---|---|"]
-    for condition in ("without_memory", "with_memory"):
-        trials = [t["comparison"][condition] for t in tasks if condition in t.get("comparison", {})]
-        if not trials:
-            continue
-        def total(key):
-            values = [t.get("metrics", {}).get(key) for t in trials]
-            return sum(values) if all(isinstance(v, (int, float)) for v in values) else "unavailable"
-        responder = [t.get("responder_cost") for t in trials]
-        responder_tokens = (sum(r["tokens"] for r in responder) if all(
-            r and r.get("usage_complete") for r in responder) else "unavailable")
-        tokens = str(total("total_tokens"))
-        if not all(t.get("metrics", {}).get("usage_complete") for t in trials):
-            tokens += " (incomplete)"
-        lines.append("| %s | %d | %s | %s | %s | %s | %s | %s |" % (
-            "oracle_history" if condition == "with_memory" else condition, len(trials),
-            "/".join(str(sum(t.get("result") == s for t in trials)) for s in ("passed", "failed", "uncertain")),
-            tokens, responder_tokens, total("tool_calls"), total("file_view_calls"), total("shell_read_or_search_calls")))
-    for note in manifest.get("notes", []):
-        lines += ["", note]
-    lines += ["", "| Task | Condition | Judge result | Tests passed/total | Exploration observed/total | Alternative/skipped/uncertain | Tool calls | Provider tokens |",
-              "|---|---|---|---|---|---|---|---|"]
+    lines = ["# Repository task comparison", "",
+             "QA answers supply historical information. Both groups may ask for frozen history.",
+             "", "| Task | Condition | Result | History questions | Development tools | File views | Reads/searches | Solver tokens |",
+             "|---|---|---|---|---|---|---|---|"]
     for task in tasks:
         for condition, trial in task.get("comparison", {}).items():
-            metrics, checks = trial.get("metrics", {}), trial.get("checks", {})
-            tokens = str(metrics.get("total_tokens", "unavailable"))
-            if not metrics.get("usage_complete"):
-                tokens += " (incomplete)"
-            coverage, counts = _coverage(trial.get("checkpoints", {}))
-            lines.append("| %s | %s | %s | %s/%s | %s | %s | %s | %s |" % (
-                task["task"], condition, trial.get("result"),
-                checks.get("passed", "?"), checks.get("tests", "?"),
-                coverage, counts, metrics.get("tool_calls", "?"), tokens))
-        if not task.get("comparison"):
-            lines.append("| %s | — | %s | — | — | — | — | — |" % (task["task"], task["status"]))
+            m = trial.get("metrics", {})
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                task["task"], trial.get("information_condition", condition), trial["result"],
+                trial.get("history_question_count", "not saved"), m.get("tool_calls", "not saved"),
+                m.get("file_view_calls", "not saved"), m.get("shell_read_or_search_calls", "not saved"),
+                m.get("total_tokens", "not saved")))
+    lines += ["", "## Aggregate execution costs", "",
+              "| Condition | Trials | Passed / failed / uncertain | Pass rate | History questions | Development tools | File views | Reads/searches | Solver tokens | Responder tokens |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
+    rates = {}
+    for condition in ("without_memory", "with_memory"):
+        trials = [t["comparison"][condition] for t in tasks if condition in t.get("comparison", {})]
+        def total(key):
+            values = [t.get("metrics", {}).get(key) for t in trials]
+            return sum(values) if trials and all(isinstance(v, (int, float)) for v in values) else "not saved"
+        passed = sum(t["result"] == "passed" for t in trials)
+        rates[condition] = passed / len(trials) if trials else None
+        questions = [t.get("history_question_count") for t in trials]
+        responder = [t.get("responder_cost") for t in trials]
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            condition, len(trials),
+            "/".join(str(sum(t["result"] == v for t in trials)) for v in ("passed", "failed", "uncertain")),
+            "%.1f%%" % (100 * rates[condition]) if trials else "—",
+            sum(questions) if trials and all(isinstance(v, int) for v in questions) else "not saved",
+            total("tool_calls"), total("file_view_calls"), total("shell_read_or_search_calls"),
+            str(total("total_tokens")) + ("" if all(t.get("metrics", {}).get("usage_complete") for t in trials) else " (incomplete)"),
+            sum(r["tokens"] for r in responder) if trials and all(r and r.get("usage_complete") for r in responder) else "not saved"))
+    if all(v is not None for v in rates.values()):
+        lines += ["", "Pass-rate difference (with − without): %.1f percentage points." %
+                  (100 * (rates["with_memory"] - rates["without_memory"]))]
+    lines += ["", "## Paired differences", "",
+              "Differences are with memory minus without memory. Cost differences require both to pass.",
+              "", "| Task | Both passed | History questions | Development tools | File views | Reads/searches | Tokens |",
+              "|---|---|---|---|---|---|---|"]
     for task in tasks:
-        comparison = task.get("comparison", {})
-        if not comparison:
-            continue
-        delta = compare_checkpoints(comparison)
-        lines += ["", "## %s: checkpoint comparison" % task["task"], ""]
-        if delta["eligible"]:
-            lines += ["Both tasks passed. Exploration coverage reduction: %.1f percentage points." % (
-                100 * delta["coverage_reduction"]), "",
-                "Observed without memory, skipped with memory: %s. "
-                "Replaced by an alternative exploration: %s. "
-                "Additional reference actions observed with memory: %s." % (
-                    delta["skipped_in_memory"], delta["alternative_in_memory"], delta["additional_in_memory"])]
-        else:
-            lines.append("Efficiency comparison unavailable: %s." % delta["reason"])
-        left = {row["index"]: row for row in comparison.get("without_memory", {}).get("checkpoints", {}).get("rows", [])}
-        right = {row["index"]: row for row in comparison.get("with_memory", {}).get("checkpoints", {}).get("rows", [])}
-        lines += ["", "| # | Exploration checkpoint | Without memory | With memory |",
-                  "|---|---|---|---|"]
-        for index in sorted(left.keys() | right.keys()):
-            a, b = left.get(index, {}), right.get(index, {})
-            lines.append("| %s | %s | %s | %s |" % (
-                index, _cell(a.get("checkpoint", b.get("checkpoint", "Not recorded"))),
-                a.get("status", "Not recorded"), b.get("status", "Not recorded")))
-        lines += ["", "<details><summary>Solver trajectory evidence</summary>", "",
-                  "| # | Without memory evidence | With memory evidence |", "|---|---|---|"]
-        for index in sorted(left.keys() | right.keys()):
-            lines.append("| %s | %s | %s |" % (index, _evidence(left.get(index, {})), _evidence(right.get(index, {}))))
-        lines += ["", "</details>"]
-    lines += ["", "Checkpoints come from an independent no-memory construction run or an explicitly requested design probe, "
-              "and are frozen before paired trials. Historical references are not no-memory exploration baselines. "
-              "Missing checkpoints do not prevent correctness evaluation. "
-              "Implementation, final tests, and environment setup do not enter exploration coverage. "
-              "Equivalent tools obtaining the same information count as observed. "
-              "An uncertain match does not count as a skipped action. "
-              "Efficiency comparisons require both tasks to pass and both checkpoint reviews to be resolved. "
-              "Alternative routes and total tool/token costs remain visible alongside coverage.", "",
-              "Full file-read counts are unavailable: explicit views and recognized shell "
-              "read/search outputs are counted separately. Their token counts are estimates. "
-              "Absent provider reasoning is recorded as unavailable, not zero. "
-              "Elapsed time is not compared.", "",
-              "Each task directory retains the generated requirement, frozen criteria, "
-              "test receipts, trial changes, and judge evidence. Failed construction requirements "
-              "and reasons remain in the construction summary."]
+        pair = compare_trials(task.get("comparison", {}))
+        delta = pair["cost_differences"]
+        lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
+            task["task"], pair["both_passed"], pair["history_question_difference"],
+            *(delta[k] for k in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"))))
+    successful = [compare_trials(t.get("comparison", {})) for t in tasks
+                  if compare_trials(t.get("comparison", {}))["both_passed"]]
+    lines += ["", "Both-passed pairs: %d." % len(successful)]
+    for metric in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"):
+        values = [p["cost_differences"][metric] for p in successful]
+        delta = sum(values) if values and all(v is not None for v in values) else "not available"
+        lines.append("- %s: total paired difference %s" % (metric, delta))
+    lines += ["", "## Frozen acceptance and historical rules", ""]
+    for task in tasks:
+        for condition, trial in task.get("comparison", {}).items():
+            lines += ["", "### %s / %s" % (task["task"], condition), "",
+                      "| Requirement | Basis | Result | Evidence |", "|---|---|---|---|"]
+            for row in trial.get("acceptance", {}).get("rows", []):
+                lines.append("| %s | %s | %s | %s |" % tuple(_cell(v) for v in (
+                    row["requirement"], ", ".join(row["basis"]), row["status"], row["evidence"])))
+            for row in trial.get("history_application", {}).get("rows", []):
+                lines.append("- %s: %s — %s" % (row["id"], row["status"], _cell(row["evidence"])))
+            if not trial.get("acceptance"):
+                lines.append("Per-item acceptance was not saved in this older run.")
+            if trial.get("counterexample_pending_shared_review"):
+                lines += ["", "Counterexample pending shared verification:",
+                          _cell(trial["counterexample_pending_shared_review"])]
+    lines += ["", "Tool counts exclude think and finish; failed development calls count. "
+              "Reads/searches are call details, not an additional score. Old traces remain unchanged.",
+              "", "Every trial, including failures and uncertain results, is listed. No route score is computed."]
+    lines += manifest.get("notes", [])
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     write_html(output, manifest)
 
@@ -198,7 +141,7 @@ def write_html(output, manifest):
                     link(trial_root / "version.json", "Replay verification"),
                     link(trial_root / "trajectory.json", "Tool trajectory"),
                     link(trial_root / "checks/result.json", "Tests")])),
-                safe(json.dumps({"metrics": metrics, "checkpoints": trial.get("checkpoints"),
+                safe(json.dumps({"metrics": metrics, "acceptance": trial.get("acceptance"),
                                  "history_application": trial.get("history_application"),
                                  "interactions": trial.get("interaction_counts"),
                                  "clarifications": trial.get("clarifications"),

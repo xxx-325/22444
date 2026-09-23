@@ -267,7 +267,7 @@ def compact_run(root):
             for child in workspace.iterdir():
                 if child.name == "candidate" and keep_code:
                     continue
-                if child.name == "checks":
+                if child.name in {"checks", "experiments"}:
                     continue
                 drop(child)
 
@@ -330,7 +330,7 @@ def compact_run(root):
                 for folder in (spec, attempt / "validator/workspace/checks"):
                     if folder.is_dir():
                         for path in folder.rglob("*"):
-                            if path.is_file() and path.suffix in {".md", ".txt", ".py"}:
+                            if path.is_file() and path.suffix in {".md", ".txt", ".py", ".patch", ".sh", ".json"}:
                                 item["artifacts"][str(path.relative_to(attempt))] = path.read_text()
                 for path in attempt.glob("*checks/execution.json"):
                     item["artifacts"][str(path.relative_to(attempt))] = read(path)
@@ -381,9 +381,6 @@ def compact_run(root):
             agent_evidence(trial_root / "judge")
             drop(trial_root / "judge-reference")
             checks = trial_root / "checks"
-            for path in preserve_test_receipt(checks):
-                drop(path)
-        for checks in task_root.glob("checkpoint-recovery/*checks"):
             for path in preserve_test_receipt(checks):
                 drop(path)
         for path in task_root.glob("*before-*"):

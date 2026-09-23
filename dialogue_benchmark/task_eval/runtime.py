@@ -62,7 +62,7 @@ def configure(simulator_path, checkpoint, env_file, *, control_config=None):
         if set(original) - {"image", "execution_image", "execution_backend", "code", "judge"}:
             raise ValueError("Unsupported control config field")
         for role in ("code", "judge"):
-            if set(original[role]) - keys:
+            if set(original[role]) - keys - {"max_output_tokens"}:
                 raise ValueError("Unsupported model config field; use key_env for credentials")
     config = {k: original[k] for k in ("image", "execution_image", "execution_backend")}
     for role in ("code", "judge"):
@@ -75,6 +75,7 @@ def configure(simulator_path, checkpoint, env_file, *, control_config=None):
             os.environ[key_env] = os.environ["BENCHMARK_API_KEY"]
         if not os.environ.get(key_env):
             raise ValueError("Missing model credential: " + key_env)
+    config["judge"]["candidate_pythonpath"] = config["code"].get("candidate_pythonpath")
     return config
 
 
@@ -145,17 +146,24 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
         worker.start()
         outcome = worker.turn(message)
         while history and str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}:
+            from .history import answer_clarification, historical_question
+            last = historical_question(public_reply(worker.events()))
+            if last is None:
+                outcome["clarification_status"] = "no_question"
+                break
+            entry = {"question": last, "delivered": False, "kind": "historical_reask"}
+            exchanges.append(entry)
             if (budget.data["attempts"] + responder_cost["requests"] >= max_requests
                     or budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens
                     or time.monotonic() >= budget.deadline):
                 outcome["clarification_status"] = "budget_exhausted"
+                entry["status"] = "budget_exhausted"
+                save(root / "clarifications.json", exchanges)
                 break
-            from .history import answer_clarification
-            last = public_reply(worker.events())
-            review_dir = root / "clarification" / str(len(exchanges) + 1)
+            review_dir = root / "clarification" / str(len(exchanges))
             responder_cost["requests"] += 1
             try:
-                decision = answer_clarification(last, history, exchanges, config, review_dir)
+                decision = answer_clarification(last, history, exchanges[:-1], config, review_dir)
             except Exception as error:
                 decision = {"status": "unavailable", "kind": "none", "sources": [],
                             "reply": "none", "error": type(error).__name__}
@@ -168,8 +176,7 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                 responder_cost["tokens"] += sum(
                     u.get("total_tokens", u.get("prompt_tokens", 0) + u.get("completion_tokens", 0))
                     for u in usage)
-            entry = dict(decision, question=last, delivered=False)
-            exchanges.append(entry)
+            entry.update(decision)
             can_continue = (budget.data["attempts"] + responder_cost["requests"] < max_requests
                             and budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] < max_tokens
                             and time.monotonic() < budget.deadline)
