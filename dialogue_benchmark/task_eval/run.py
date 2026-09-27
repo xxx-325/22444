@@ -206,6 +206,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 refs = {ref for c in (draft_history or {}).get("contracts", []) for ref in c["sources"]}
                 evidence = {"memory_use": protected["memory-use.md"], "acceptance": draft_items,
                             "qa_source": item.get("qa_source", "graph"),
+                            "repository_exploration": selection.get("repository_exploration", ""),
                             "repository_queries": [q for q in selection.get("evidence", {}).get("queries", [])
                                                    if q["query"]["target"] == "repo"],
                             "contracts": (draft_history or {}).get("contracts", []),

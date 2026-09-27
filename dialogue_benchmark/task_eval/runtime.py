@@ -34,19 +34,19 @@ def _review_history_targets(task, answer, config, output, evidence, budget):
     from .prompts import HISTORY_QUALIFY
     targets = evidence.get("history_targets", [])
     target_ids = [row.get("id") for row in targets]
-    payload = {"public_task": task, "historical_answer": answer,
-               "history_targets": targets,
-               "repository_queries": evidence.get("repository_queries", []),
-               "contracts": evidence.get("contracts", []),
-               "sources": evidence.get("sources", [])}
+    public_repository = list(evidence.get("repository_queries", []))
+    if evidence.get("repository_exploration"):
+        public_repository.append({"id": "repository_exploration",
+                                  "result": evidence["repository_exploration"]})
+    payload = {"public_task": task, "public_repository": public_repository,
+               "private_history_targets": targets, "injected_answer": answer}
     try:
         allowed_history_sources = sorted({source for target in targets for source in target.get("sources", [])})
-        allowed_public_sources = sorted({query.get("id") for query in evidence.get("repository_queries", [])})
+        allowed_public_sources = sorted({query.get("id") for query in public_repository})
         protocol = (HISTORY_QUALIFY
                     + "\n本题固定目标 ID 只能使用：" + ",".join(target_ids)
                     + "。历史来源只能使用：" + ",".join(allowed_history_sources or ["none"])
-                    + "。仓库查询来源只能使用：" + ",".join(allowed_public_sources or ["none"])
-                    + "。不要使用示例中的 e53、query1 等占位符，除非它们确实出现在上面的允许列表。\n")
+                    + "。公开来源只能使用：" + ",".join(["task", *allowed_public_sources]) + "。\n")
         response = (budget.call if budget else ask_model)(protocol, payload, config, output)
         history_rows = response.get("history_reviews", [])
         task_row = response.get("task_review")
@@ -74,7 +74,7 @@ def _review_history_targets(task, answer, config, output, evidence, budget):
             public_refs = _comma_refs(row.get("public_sources"))
             if set(refs) - known_source_ids or set(refs) - target_sources.get(row["id"], set()):
                 errors.append(row["id"] + ":unknown_history_source")
-            allowed_public = {"task"} | {query.get("id") for query in evidence.get("repository_queries", [])}
+            allowed_public = {"task", *allowed_public_sources}
             if set(public_refs) - allowed_public:
                 errors.append(row["id"] + ":unknown_public_source")
             # ``partial`` may describe a small amount of information visible

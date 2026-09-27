@@ -119,26 +119,23 @@ END_ACCEPT
 不要输出 history-contract、JSON、Markdown 表格、FILE 头或其他文字。
 """
 
-HISTORY_QUALIFY = """只核对给定的固定历史目标，不自行新增 memory_gap，也不重新写历史真值。
-输入有几个目标，就必须按原顺序逐个输出几行；不能合并、遗漏或改写目标 ID。
-每个目标只输出一行，格式中的占位词必须替换成下列字面值之一：
-H h1 | yes | partial | sufficient | e53 | query1 | 原样引用
-applicable 只能是 yes、no、uncertain（不要写 applicable）；
-public 只能是 full、partial、none、uncertain（不要写 public）；
-answer 只能是 sufficient、insufficient、not_applicable、uncertain。
-historical_source 只能填给定目标的 source ID（例如 e53），public_source 只能填 task 或 query 编号
-（例如 query1）；没有来源或引用写 none。answer_quote 必须是 historical_answer 的原文，不能改写。
-最后输出一行：TASK | clean（或 leaked/uncertain）。
-public 只表示题面或实际仓库是否已提供该目标；实现是否完成不影响它。
-public=full 时必须引用 task 或 query；public=partial 可以引用 task/query，也可以在没有可引用查询时写 none；完全没有公开部分才写 none。
-answer 只表示实际注入答案是否补足题面和仓库尚未提供的必要部分。
-若公开需求只要求通用可配置接口，具体历史取值由调用者提供，历史目标并不适用，applicable 填 no。
-若题面与任一固定历史目标的行为冲突，最后写 TASK | uncertain，不能按只有部分规则未公开来判 clean。
-answer=sufficient 时，最后一列必须逐字复制 historical_answer 中的一段文字；不能从 history/source 改写或引用，不能因为来源中有同义句就填 sufficient。
-如果某个目标的规则没有出现在 historical_answer 中，必须填 answer=insufficient、answer_quote=none；不能用历史来源替答案补齐。
-公开需求故意不重复具体历史映射时，只要该映射会改变新增功能的可观察行为，historical_answer 对这条映射就是必要且 sufficient；不要要求题面先写出答案才承认缺口。
-例如题面只说“保持字段状态一致”，答案明确说明 null 与 UNSET 的具体方向时，answer 应填 sufficient，并引用答案中的原句。
-不要输出 JSON、REVIEW、END_REVIEW、解释或其他字段。
+HISTORY_QUALIFY = """检查新需求是否需要给定的历史信息。输入分为三种：
+public_task 和 public_repository：两组都能获得的需求与仓库信息。
+private_history_targets：已经核实的历史规则，只供你核对；无记忆组看不到。
+injected_answer：仅有记忆组收到的答案。不要把这两种私有材料算成公开信息。
+
+对每条固定规则依次判断：
+applicable：新功能必须用这条规则吗？yes/no/uncertain。仅实现可配置接口、由调用者传规则时选 no。
+public：仅看公开信息，具体规则已明确多少？full/partial/none/uncertain。
+“沿用以前的约定”只指明对象，不提供具体规则；同一通用函数支持多个选项，也没有说明客户选哪个。
+full 必须引用 task 或 public_repository 中的真实来源；不能引用私有规则或答案。
+answer：injected_answer 是否补齐仍缺的必要信息？sufficient/insufficient/uncertain；规则不适用或已完全公开用 not_applicable。
+sufficient 必须从 injected_answer 原样摘录支持文字；不能用 private_history_targets 替答案补缺项。
+
+每条规则一行，按此列顺序输出：
+H 规则ID | applicable的值 | public的值 | answer的值 | 该规则的来源ID | 公开来源ID或none | 答案原句或none
+最后一行 TASK | clean；若公开需求与历史规则矛盾，写 TASK | uncertain。
+不要输出解释或 JSON。
 """
 
 DRAFT_TASK = """根据已选候选和已提供证据，一次组织草案。没有工具，不能另行调查或补造事实。

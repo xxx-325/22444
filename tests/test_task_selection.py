@@ -409,6 +409,33 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["status"], "uncertain")
         self.assertEqual(result["issue"], "historical_answer_incomplete")
 
+    def test_history_review_separates_private_rules_from_public_evidence(self):
+        from dialogue_benchmark.task_eval.runtime import review_task
+        evidence = {"history_targets": [{"id": "h1", "sources": ["event1"]}],
+                    "repository_exploration": "api.py exposes configurable null handling.",
+                    "contracts": [{"statement": "Private rule"}],
+                    "sources": [{"id": "event1", "text": "Private raw history"}]}
+        response = {"history_reviews": [
+            {"id": "h1", "applicable": "yes", "public": "partial", "answer": "sufficient",
+             "historical_sources": "event1", "public_sources": "repository_exploration",
+             "answer_quote": "Exact rule"},
+        ], "task_review": {"id": "task", "leakage": "clean", "issue": "none"}}
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response) as ask:
+            result = review_task("Use the previous agreement", "Exact rule", {}, self.root / "separated",
+                                 evidence=evidence)
+        self.assertEqual(result["status"], "clean")
+        payload = ask.call_args.args[1]
+        self.assertEqual(set(payload), {"public_task", "public_repository",
+                                       "private_history_targets", "injected_answer"})
+        self.assertEqual(payload["public_repository"], [{"id": "repository_exploration",
+                                                       "result": evidence["repository_exploration"]}])
+        response["history_reviews"][0].update(public="full", public_sources="none")
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response):
+            result = review_task("Use the previous agreement", "Exact rule", {}, self.root / "missing-public",
+                                 evidence=evidence)
+        self.assertEqual(result["status"], "uncertain")
+        self.assertIn("public_evidence_missing", result["issue"])
+
 
 if __name__ == "__main__":
     unittest.main()
