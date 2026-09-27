@@ -108,7 +108,7 @@ python -m dialogue_benchmark.task_eval.run \
 历史任务再用一次有限审阅，依据题面、契约、变更文件和已执行结果，逐项核对测试覆盖及额外断言是否有依据。缺检查或新增无依据要求时返回修正。纯自动检查任务由一次模型请求输出历史错误变体的源码，宿主生成可重放补丁并执行冻结测试。含固定人工检查项时，由 OpenHands 制作变体并提供检查证据。这些步骤共享预检预算；完整对话档案保存在资格草案与冻结任务中。
 预检中断后，可在新的任务输出目录使用 `--reuse-preparation /path/to/task-01/construction-00 --count 1` 复用已完成的测试作者产物。程序核对 QA、来源、基线和已审核需求，再重跑资格审核、参考实现与预检；原文件不变，复用的作者用量单独标明。
 
-如需按已保存的审阅意见修正测试，可同时传入 `--preparation-feedback /path/to/test-review.md`，由测试作者修正，保持已审核需求不变。反馈只描述测试缺陷，不包含两组作答的比较结果。
+如需按已保存的审阅意见修正测试，可同时传入 `--preparation-feedback /path/to/test-review.md`，一次模型请求接收完整原文件并返回修正后的测试，保持已审核需求不变。宿主重新执行测试与预检后才能冻结。反馈只描述测试缺陷，不包含两组作答的比较结果。
 测试收集或执行错误先交回测试作者修正，再启动参考实现。公开功能与历史规则分开测试；兼容检查只比较需求明确要求保持的行为。
 
 `examples/batchsync_seed.py --repository runs/suite/seed --receipt runs/suite/seed.json` 创建只依赖标准库的小项目，包含字段投影、按字节分批和回执分类的三个连续参考提交。每个版本先运行离线测试再提交，可交给 dialogue 模拟器生成真实交互；脚本本身不生成消息或客户约定。完整流程入口 `run_episode.py` 可使用 `--qa-source external --external-events /path/to/external-events.json`，并自动对固定的最终仓库执行答案可恢复性检查后再派生需求。

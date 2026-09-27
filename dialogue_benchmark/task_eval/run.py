@@ -9,7 +9,7 @@ from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_inputs, read, save, write_diff
 from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
 from .metrics import compare_trials
-from .runtime import configure, review_task, review_checks, write_history_mutation, run_agent
+from .runtime import configure, review_task, review_checks, repair_tests, write_history_mutation, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline, source_version
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
@@ -309,6 +309,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             remaining = budget.remaining()
             if reused and attempt == 0 and not preparation_feedback:
                 authored = reused[1]
+            elif preparation_feedback:
+                authored = repair_tests(spec, config, author, budget, feedback)
             else:
                 prepare(author, baseline)
                 test_reference = prepare_test_reference(spec, reference, run / "test-reference")

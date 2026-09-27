@@ -93,6 +93,8 @@ class RetentionTests(unittest.TestCase):
             bad.parent.mkdir(parents=True)
             bad.write_text("Earlier requirement")
             (bad.parent / "test_acceptance.py").write_text("assert incorrect_assumption")
+            save(task / "construction-00/author/result.json", {"method": "model_file_generation"})
+            save(task / "construction-00/author/input.json", {"feedback": "Original repair feedback"})
             save(root / "tasks/manifest.json", {"tasks": [{"task": "task-01", "status": "evaluated",
                 "comparison": {"without_memory": {"trial": "trial-1"}, "with_memory": {"trial": "trial-2"}}}]})
             accepted = task / "construction-01"
@@ -122,6 +124,7 @@ class RetentionTests(unittest.TestCase):
             self.assertEqual(load(task / "trial-1/trajectory.json")[0]["id"], "a1")
             self.assertIn("Earlier requirement", (task / "construction-summary.json").read_text())
             self.assertIn("incorrect_assumption", (task / "construction-summary.json").read_text())
+            self.assertIn("Original repair feedback", (task / "construction-summary.json").read_text())
             self.assertFalse((task / "construction.json").exists())
             self.assertFalse((task / "author-reference/history.json").exists())
             self.assertTrue((task / "frozen/history.json").exists())

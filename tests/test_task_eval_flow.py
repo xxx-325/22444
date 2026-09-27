@@ -102,17 +102,15 @@ class TaskPreflightTests(unittest.TestCase):
         self.root = self.base / "repair/task"
         feedback = self.base / "review.md"
         feedback.write_text("Remove an unsupported exception-class assertion.")
-        original_agent = self.fake_agent
-        def repair(root, config, role, message, **kwargs):
-            result = original_agent(root, config, role, message, **kwargs)
-            if root.name == "author":
-                self.assertIn(feedback.read_text(), message)
-                (root / "workspace/checks/test_acceptance.py").write_text("Repaired test")
-            return result
-        with patch.object(self, "fake_agent", side_effect=repair):
+        def repair(spec, config, output, budget, message):
+            self.assertIn(feedback.read_text(), message)
+            (spec / "test_acceptance.py").write_text("Repaired test")
+            return {"status": "finished", "method": "model_file_generation"}
+        with patch("dialogue_benchmark.task_eval.run.repair_tests", side_effect=repair) as repair_call:
             receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},
                                        {"status": "failed"}, {"status": "passed"}],
                                       reuse_preparation=prior, preparation_feedback=feedback)
+        repair_call.assert_called_once()
         self.assertIsNotNone(receipt)
         self.assertEqual((self.root / "frozen/test_acceptance.py").read_text(), "Repaired test")
         self.assertEqual((prior / "author/workspace/checks/test_acceptance.py").read_bytes(), original_test)

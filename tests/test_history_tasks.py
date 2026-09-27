@@ -10,7 +10,7 @@ from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
     answer_clarification, freeze_contract, freeze_targets, historical_context, prepare_history,
     read_history_review, oracle_coverage, validate_contract_targets, review_history, review_sources)
-from dialogue_benchmark.task_eval.runtime import run_agent, configure, review_checks, write_history_mutation
+from dialogue_benchmark.task_eval.runtime import run_agent, configure, repair_tests, review_checks, write_history_mutation
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
 import test_task_eval_flow
@@ -433,6 +433,24 @@ class HistoryConstructionTests(unittest.TestCase):
 
 
 class CheckReviewTests(unittest.TestCase):
+    def test_finite_repair_cannot_edit_task_or_frozen_regressions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = root / "spec"
+            spec.mkdir()
+            (spec / "task.md").write_text("Preserve order")
+            (spec / "acceptance.md").write_text("Original references")
+            (spec / "test_feature.py").write_text("def test_feature(): pass")
+            files = [{"name": "acceptance.md", "content": "Updated references"},
+                     {"name": "test_feature.py", "content": "def test_feature(): assert True"}]
+            result = repair_tests(spec, {}, root / "call", SimpleNamespace(call=lambda *a: {"files": files}), "Fix an assertion")
+            self.assertEqual(result["status"], "finished")
+            self.assertEqual((spec / "task.md").read_text(), "Preserve order")
+            files.append({"name": "task.md", "content": "Weaker requirement"})
+            result = repair_tests(spec, {}, root / "invalid", SimpleNamespace(call=lambda *a: {"files": files}), "Fix an assertion")
+            self.assertEqual(result["status"], "error")
+            self.assertEqual((spec / "task.md").read_text(), "Preserve order")
+
     def test_model_source_mutation_exports_replayable_patch_without_changing_reference(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

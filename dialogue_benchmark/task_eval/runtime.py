@@ -108,6 +108,40 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
         result = {"status": "finished"}
     except Exception as error:
         result = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}
+    return file_generation_result(output, result)
+
+
+def repair_tests(spec, config, output, budget, feedback):
+    """Repair known test defects from complete saved files in one model request."""
+    import ast
+    from .selection import _parse_files
+    from .prompts import TEST_REPAIR
+
+    spec, output = Path(spec), Path(output)
+    try:
+        names = {"acceptance.md", *(path.name for path in spec.glob("test_*.py"))}
+        if len(names) < 2:
+            raise ValueError("Test repair needs existing acceptance tests")
+        fixed = {name: (spec / name).read_text() for name in
+                 ("task.md", "history-contract.txt") if (spec / name).is_file()}
+        existing = {name: (spec / name).read_text() for name in names}
+        response = budget.call(TEST_REPAIR, {"requirements": fixed, "files": existing,
+                              "feedback": feedback}, config, output)
+        files = _parse_files(response, names, names)
+        for name, content in files.items():
+            if name.endswith(".py"):
+                ast.parse(content, filename=name)
+        for name, content in files.items():
+            (spec / name).write_text(content, encoding="utf-8")
+        result = {"status": "finished"}
+    except Exception as error:
+        result = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}
+    return file_generation_result(output, result)
+
+
+def file_generation_result(output, result):
+    """Keep direct file-generation usage separate from OpenHands trajectories."""
+    output = Path(output)
     usage = read(output / "usage.json") if (output / "usage.json").exists() else []
     prompt_tokens = sum(row.get("prompt_tokens", 0) for row in usage)
     completion_tokens = sum(row.get("completion_tokens", 0) for row in usage)
