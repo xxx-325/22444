@@ -55,7 +55,7 @@ table{width:100%%;border-collapse:collapse;font-size:14px}th,td{text-align:left;
 <a href="qa/qa-audit.json">审核记录</a> · <a href="qa/stages/">最终 QA 的实际生成输入</a></section>
 <section><h2>新需求与两组代码</h2><p>模型提出新需求、生成验收标准并验证参考实现；随后分别运行无记忆和注入历史答案两组。</p>
 <p>%s</p><a href="tasks/report.html">打开需求、测试、代码与轨迹对比</a> ·
-<a href="tasks/report.md">Checkpoint 对照表</a> · <a href="tasks/manifest.json">任务状态</a></section>
+<a href="tasks/report.md">完成情况与操作统计</a> · <a href="tasks/manifest.json">任务状态</a></section>
 <section><h2>固定基线</h2><p>对话结束后的代码，独立保存在本次运行中。</p><code>%s</code><p>
 <a href="baseline/">基线代码</a> · <a href="baseline.json">版本凭据</a> · <a href="input/conversion.json">输入转换记录</a></p>
 <p>每份结果代码都附带基于此提交的补丁和恢复校验记录。各需求互不串接。</p></section></html>''' % (

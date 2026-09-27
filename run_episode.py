@@ -113,6 +113,15 @@ def main(argv=None):
             if status:
                 raise RuntimeError("QA generation did not complete; see qa/error.json")
         render(root)
+        if not read(root / "qa/qa-public.json")["questions"]:
+            task_manifest = {"target": args.task_count, "tasks": [],
+                             "stop_reason": "no_eligible_qa"}
+            save(root / "tasks/manifest.json", task_manifest)
+            write_report(root / "tasks", task_manifest)
+            state.update(status="completed", stop_reason="no_eligible_qa")
+            phase("complete")
+            render(root)
+            return 0
         phase("repository_tasks")
         task_args = [
             "--simulator-path", str(args.simulator_path), "--source-run", str(source_run),

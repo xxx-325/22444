@@ -2073,8 +2073,8 @@ def main(argv=None):
                             "Human review required; difficulty is provisional"],
         }
         save(args.output, "manifest.json", manifest)
-        print("Completed: %s; %d QA candidates" %
-              (args.output, len(result.get("questions", []))))
+        print("Completed: %s; %d published QA" %
+              (args.output, len(public["questions"])))
         return 0
     except (ValueError, KeyError, TypeError, OSError) as error:
         if created:

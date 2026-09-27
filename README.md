@@ -112,6 +112,8 @@ or search ordinary code facts. It extracts facts from the referenced dialogue,
 generates and reviews QA, and still runs the optional final-repository probe so
 questions whose complete answer is already recoverable are separated from the
 external set. The default `--qa-source graph` path is unchanged.
+Review uses the declared event and its supplied context; it does not require a
+file or symbol anchor. Source closure and request-size checks still apply.
 
 The input file may be a unified JSON document or a supported native rollout.
 OpenHands public `session.jsonl` exports preserve paired tools and successful
@@ -197,6 +199,8 @@ simulator; the builder itself creates no messages or customer agreements.
 For the full pipeline, pass `--qa-source external --external-events /path/to/external-events.json`
 to `run_episode.py`. This also probes the pinned final repository for answer
 recoverability before deriving tasks.
+If no QA remains eligible, the pipeline saves an empty task report with
+`no_eligible_qa` and finishes without starting development agents.
 
 The dialogue-end code is pinned as an independent local Git baseline, with no
 upstream remote. `--baseline` can reuse an already pinned clean repository.

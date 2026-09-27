@@ -21,8 +21,12 @@ class EpisodeRunnerTests(unittest.TestCase):
             events = source / "external-events.json"
             save(events, {"version": 1, "events": []})
             config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            def generated(args):
+                output = Path(args[args.index("--output") + 1])
+                save(output / "qa-public.json", {"questions": [{"id": "q1"}]})
+                return 0
             with patch("run_episode.configure", return_value=config), \
-                 patch("run_episode.generate_qa", return_value=0) as qa, \
+                 patch("run_episode.generate_qa", side_effect=generated) as qa, \
                  patch("run_episode.run_tasks", return_value=0), \
                  patch("run_episode.render"), patch("run_episode.compact_run"):
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
@@ -50,7 +54,7 @@ class EpisodeRunnerTests(unittest.TestCase):
                 output = Path(args[args.index("--output") + 1])
                 save(output / "manifest.json", {
                     "input_sha256": hashlib.sha256(Path(args[0]).read_bytes()).hexdigest()})
-                save(output / "qa-public.json", {"questions": []})
+                save(output / "qa-public.json", {"questions": [{"id": "q1"}]})
                 return 0
             def tasks(args):
                 order.append("recovery" if "--recover-checkpoints" in args else "tasks")
@@ -71,3 +75,27 @@ class EpisodeRunnerTests(unittest.TestCase):
             self.assertEqual(render.call_count, 4)
             self.assertEqual(read(root / "run/pipeline.json")["status"], "completed")
             self.assertFalse((candidate / ".git").exists())
+
+    def test_no_eligible_qa_saves_an_empty_task_report_without_starting_agents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            candidate = source / "workspace/candidate"
+            candidate.mkdir(parents=True)
+            (candidate / "a.py").write_text("value = True\n")
+            (source / "session.jsonl").write_text(json.dumps({"kind": "user", "content": "rule"}) + "\n")
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            def generated(args):
+                output = Path(args[args.index("--output") + 1])
+                save(output / "qa-public.json", {"questions": []})
+                return 0
+            with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.generate_qa", side_effect=generated), \
+                 patch("run_episode.run_tasks") as tasks, patch("run_episode.render"):
+                status = main(["--source-run", str(source), "--simulator-path", str(root),
+                               "--env-file", str(root / ".env"), "--output", str(root / "run")])
+            self.assertEqual(status, 0)
+            tasks.assert_not_called()
+            self.assertEqual(read(root / "run/tasks/manifest.json")["stop_reason"], "no_eligible_qa")
+            self.assertTrue((root / "run/tasks/report.md").is_file())
+            self.assertEqual(read(root / "run/pipeline.json")["status"], "completed")

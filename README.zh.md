@@ -75,6 +75,7 @@ dialogue 生成侧可以同时保存一个轻量的 `external-events.json`。其
 程序仍会从引用的 dialogue 提取事实、生成并审核 QA；如果提供最终仓库，
 仍会运行只读可恢复性探针，把仓库已经能完整回答的题单独标记。默认的
 `--qa-source graph` 流程不变。
+审核使用已声明的事件及其上下文，不要求文件或符号锚点；仍检查来源闭合与输入预算。
 
 输入可以是统一 JSON 或支持的原始 rollout。记录可以包含可见消息、成对的工具调用/结果、代码观察和成功补丁。事实和 QA 阶段只把输入中的路径作为证据处理，不按路径读取磁盘；只有可选的最终仓库探针会读取显式提供的仓库快照。
 
@@ -103,6 +104,7 @@ python -m dialogue_benchmark.task_eval.run \
 测试收集或执行错误先交回测试作者修正，再启动参考实现。公开功能与历史规则分开测试；兼容检查只比较需求明确要求保持的行为。
 
 `examples/batchsync_seed.py --repository runs/suite/seed --receipt runs/suite/seed.json` 创建只依赖标准库的小项目，包含字段投影、按字节分批和回执分类的三个连续参考提交。每个版本先运行离线测试再提交，可交给 dialogue 模拟器生成真实交互；脚本本身不生成消息或客户约定。完整流程入口 `run_episode.py` 可使用 `--qa-source external --external-events /path/to/external-events.json`，并自动对固定的最终仓库执行答案可恢复性检查后再派生需求。
+如果没有符合条件的 QA，流程保存空任务报告，记录 `no_eligible_qa`，直接结束，不启动开发 Agent。
 
 公开草案保留选题阶段确定的项目目标，并使用实际仓库资料。测试作者未完成时停止本次构造并记录原因；若改变已确认草案，另列具体文件，不自动重新构造。
 
