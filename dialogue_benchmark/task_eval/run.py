@@ -137,7 +137,38 @@ def agent_finished(outcome):
     return str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}
 
 
-def construct(item, root, baseline, config, revisions, agent_options, *, design_probe=False, selection_only=False):
+def load_preparation(attempt, item, baseline, public_history):
+    """Reuse model-authored criteria only for the same QA, evidence and baseline."""
+    attempt = Path(attempt).resolve()
+    task = attempt.parent
+    authored = read(attempt / "author/result.json")
+    spec = attempt / "author/workspace/checks"
+    if (not agent_finished(authored)
+            or read(task / "author-reference/qa.json") != item["qa"]
+            or read(task / "author-reference/qa-input.json") != read(item["generation_input"])
+            or read(task.parent / "manifest.json")["baseline_sha256"] != fingerprint(baseline)):
+        raise ValueError("Prepared task does not match completed author, QA, evidence or baseline")
+    protected = ["task.md", "memory-use.md"]
+    history = read(spec / "history.json") if (spec / "history.json").exists() else None
+    if public_history:
+        if not history or any(history[key] != public_history[key] for key in ("events", "cutoff_event_id")):
+            raise ValueError("Prepared historical sources differ")
+        protected.append("history-contract.txt")
+    elif history:
+        raise ValueError("Prepared history is not available to this QA")
+    if any((spec / name).read_bytes() != (attempt / "qualified-draft" / name).read_bytes()
+           for name in protected):
+        raise ValueError("Prepared task changed after qualification")
+    def requirements(directory):
+        return [{key: row[key] for key in ("id", "requirement", "basis")}
+                for row in acceptance_items(directory, history)]
+    if requirements(spec) != requirements(attempt / "qualified-draft"):
+        raise ValueError("Prepared acceptance requirements changed")
+    return read(task / "selection/result.json"), authored, spec
+
+
+def construct(item, root, baseline, config, revisions, agent_options, *, design_probe=False,
+              selection_only=False, reuse_preparation=None):
     feedback = ""
     reference = root / "author-reference"
     reference.mkdir(parents=True)
@@ -163,11 +194,12 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         save(reference / "history-focus.json", public_history["initial_events"])
     attempts = []
     budget = SelectionBudget(root, agent_options)
+    reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
     exploration_text = ""
     # Malformed/offline selection fixtures may not contain a question.  There
     # is nothing meaningful for a repository explorer to anchor on, and
     # selection-only mode explicitly promises not to start OpenHands.
-    if not selection_only and item.get("qa", {}).get("question"):
+    if not reused and not selection_only and item.get("qa", {}).get("question"):
         try:
             exploration_text, exploration = explore_repository(
                 root, baseline, item, config, budget.remaining(), public_history)
@@ -182,9 +214,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 "status": "error", "error_type": type(error).__name__,
                 "detail": str(error), "report": "",
             })
-    selection = select_task(item["qa"], public_history, baseline, config,
-                            root / "selection", budget,
-                            exploration=exploration_text)
+    selection = (reused[0] if reused else select_task(item["qa"], public_history, baseline, config,
+                 root / "selection", budget, exploration=exploration_text))
+    if reused:
+        save(root / "selection/result.json", selection)
     selection["qa_source"] = item.get("qa_source", "graph")
     if selection["status"] != "candidate":
         save(root / "construction.json", [{"attempt": 0, "accepted": False, "status": selection["status"],
@@ -250,7 +283,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 return decision
 
         try:
-            write_draft(draft_selection, config, run / "draft", spec, budget, feedback=feedback)
+            if reused and attempt == 0:
+                copy_tree(reused[2], spec)
+            else:
+                write_draft(draft_selection, config, run / "draft", spec, budget, feedback=feedback)
             task_review = qualify()
             if task_review["status"] != "clean":
                 attempts.append(dict(attempt=attempt, accepted=False, reason="task_" + task_review["status"],
@@ -262,20 +298,26 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                      accepted=False, task_review=task_review)])
                 return {"selection_only": True, "status": "qualified"}
             remaining = budget.remaining()
-            prepare(author, baseline)
-            test_reference = prepare_test_reference(spec, reference, run / "test-reference")
-            authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS + feedback,
-                                 system=prompts.PREPARATION_SYSTEM, reference=test_reference, **remaining)
-            metrics = authored.get("metrics", {})
-            budget.record([dict(request_count=metrics.get("attempted_requests", 0),
-                                **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
-                                   if metrics.get("usage_complete") else {}))])
+            if reused and attempt == 0:
+                authored = reused[1]
+            else:
+                prepare(author, baseline)
+                test_reference = prepare_test_reference(spec, reference, run / "test-reference")
+                authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS + feedback,
+                                     system=prompts.PREPARATION_SYSTEM, reference=test_reference, **remaining)
+                metrics = authored.get("metrics", {})
+                budget.record([dict(request_count=metrics.get("attempted_requests", 0),
+                                    **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
+                                       if metrics.get("usage_complete") else {}))])
+            budget.record([])
         except Exception as error:
             attempts.append(dict(attempt=attempt, accepted=False, status="pending", reason=str(error)))
             break
         record = {"attempt": attempt, "author_status": authored["status"],
                   "author_metrics": authored.get("metrics", {}),
                   "construction_budget": read(root / "selection-budget.json")}
+        if reused and attempt == 0:
+            record["author_reused_from"] = str(Path(reuse_preparation).resolve())
         if authored.get("error_code") or authored.get("error_type"):
             record["author_error"] = {k: authored[k] for k in ("error_code", "error_type", "detail") if k in authored}
         attempts.append(record)
@@ -539,6 +581,8 @@ def main(argv=None):
                         help="Run a separate no-memory design probe; never an admission gate")
     parser.add_argument("--selection-only", action="store_true",
                         help="Stop after controlled selection, draft and qualification; no OpenHands execution")
+    parser.add_argument("--reuse-preparation", type=Path,
+                        help="Reuse one completed construction-NN author; requalify and rerun preflight in a new output")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
@@ -561,6 +605,11 @@ def main(argv=None):
     items = qa_inputs(args.qa_run)
     if not items:
         parser.error("No approved QA with saved generation inputs")
+    if args.reuse_preparation:
+        source_qa = read(args.reuse_preparation.parent / "author-reference/qa.json")
+        items = [item for item in items if item["qa"] == source_qa]
+        if len(items) != 1 or args.count != 1:
+            parser.error("Reusing preparation requires its exact QA and --count 1")
     config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file,
                        **({"control_config": args.control_config} if args.control_config else {}))
     baseline = args.baseline.resolve() if args.baseline else output / "baseline"
@@ -599,7 +648,8 @@ def main(argv=None):
         try:
             receipt = construct(item, root, baseline, config, args.revisions, agent_options,
                                 **({"design_probe": True} if args.design_probe else {}),
-                                selection_only=args.selection_only)
+                                selection_only=args.selection_only,
+                                **({"reuse_preparation": args.reuse_preparation} if args.reuse_preparation else {}))
             if receipt is None:
                 records = read(root / "construction.json") if (root / "construction.json").exists() else [{}]
                 return {"task": root.name, "status": records[-1].get("status", "not_admitted"), "qa_id": item["qa"]["id"],

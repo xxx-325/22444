@@ -36,7 +36,7 @@ def acceptance_items(spec, history=None):
             raise ValueError("Invalid acceptance item: " + identity)
         tests = []
         if not check.startswith("inspect:"):
-            for part in check.split(";"):
+            for part in re.split(r";|,\s*(?=(?:test|command):)", check):
                 part = part.strip()
                 if part.startswith("test:"):
                     tests.extend(t.strip().strip("`") for t in part[5:].split(","))

@@ -190,6 +190,11 @@ The validator sees all visible messages and cited tool evidence; the original
 complete archive remains in the qualified draft and frozen task.
 An interrupted validator retains its error and usage and stops construction;
 it does not trigger a new task draft without a completed review.
+Use `--reuse-preparation /path/to/task-01/construction-00 --count 1` in a new
+task-run output to reuse a completed test author after a preflight interruption.
+The runner verifies the QA, source evidence, baseline and qualified requirements,
+then reruns qualification, reference implementation and validation. Original
+artifacts remain unchanged and reused author usage is identified separately.
 Collection and execution errors return to the test author before starting a
 reference solver. Tests separate public functionality from historical rules;
 compatibility assertions compare only the behavior required by the task.

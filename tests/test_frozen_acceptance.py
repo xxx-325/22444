@@ -112,6 +112,19 @@ class FrozenAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing frozen command"):
             acceptance_items(self.root)
 
+    def test_comma_between_tests_and_command_keeps_both_checks(self):
+        (self.root / "commands").mkdir()
+        (self.root / "commands/export.sh").write_text("exit 0\n")
+        (self.root / "acceptance.md").write_text(
+            "| a1 | Export | task | test: test_export::test_batch, test_export::test_null, command: export |\n")
+        items = acceptance_items(self.root)
+        self.assertEqual(items[0]["tests"],
+                         ["test_export::test_batch", "test_export::test_null", "command::export"])
+        cases = [{"id": identity, "status": "passed"} for identity in items[0]["tests"]]
+        self.assertEqual(assess_acceptance(items, {"status": "passed", "cases": cases})["status"], "passed")
+        cases[-1]["status"] = "failed"
+        self.assertEqual(assess_acceptance(items, {"status": "failed", "cases": cases})["status"], "failed")
+
     def test_answer_quote_cannot_change_a_high_overlap_rule(self):
         answer = "- Maple 的 note 字段为 null 时必须省略。\n- 其他字段保留显式 null。"
         self.assertTrue(answer_quote_supported(

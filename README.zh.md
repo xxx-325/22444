@@ -106,6 +106,7 @@ python -m dialogue_benchmark.task_eval.run \
 历史审核先读取 `history-review.md` 中的引用原文与公开对话，完整事件记录保留在 `history.json`。验收者未完成时保存错误和用量并停止构造，不在缺少审核结论时重新出题。
 测试作者只接收固定验收与历史条款；原始来源保留给资格审核和独立预检。
 预检接收全部公开消息和被引用的工具证据；完整原始档案仍保存在资格草案与冻结任务中。
+预检中断后，可在新的任务输出目录使用 `--reuse-preparation /path/to/task-01/construction-00 --count 1` 复用已完成的测试作者产物。程序核对 QA、来源、基线和已审核需求，再重跑资格审核、参考实现与预检；原文件不变，复用的作者用量单独标明。
 测试收集或执行错误先交回测试作者修正，再启动参考实现。公开功能与历史规则分开测试；兼容检查只比较需求明确要求保持的行为。
 
 `examples/batchsync_seed.py --repository runs/suite/seed --receipt runs/suite/seed.json` 创建只依赖标准库的小项目，包含字段投影、按字节分批和回执分类的三个连续参考提交。每个版本先运行离线测试再提交，可交给 dialogue 模拟器生成真实交互；脚本本身不生成消息或客户约定。完整流程入口 `run_episode.py` 可使用 `--qa-source external --external-events /path/to/external-events.json`，并自动对固定的最终仓库执行答案可恢复性检查后再派生需求。

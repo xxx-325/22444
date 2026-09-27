@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from dialogue_benchmark.task_eval.artifacts import read, save
+from dialogue_benchmark.task_eval.artifacts import read, save, fingerprint
 from dialogue_benchmark.task_eval.checks import run_checks
 from dialogue_benchmark.task_eval.run import construct, prepare_test_reference
 from dialogue_benchmark.task_eval.runtime import review_task
@@ -67,13 +67,42 @@ class TaskPreflightTests(unittest.TestCase):
             return {"status": self.validator_status}
         return {"status": "ConversationExecutionStatus.FINISHED"}
 
-    def execute(self, results):
+    def execute(self, results, **options):
         results = [dict(r, cases=[{"id": "test_acceptance::test_feature", "status": r["status"]}]) for r in results]
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent), \
              patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
              patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=results) as checks:
-            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0, {})
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0, {}, **options)
         return receipt, checks
+
+    def test_reuse_preparation_revalidates_without_regenerating_tests(self):
+        self.validator_status = "ConversationExecutionStatus.STUCK"
+        self.execute([{"status": "failed"}, {"status": "passed"}])
+        original = self.root
+        prior = original / "construction-00"
+        save(prior / "author/result.json", {"status": "finished", "metrics": {"total_tokens": 100}})
+        save(original / "selection/result.json", {"status": "candidate"})
+        save(original.parent / "manifest.json", {"baseline_sha256": fingerprint(self.baseline)})
+        original_test = (prior / "author/workspace/checks/test_acceptance.py").read_bytes()
+        self.root = self.base / "retry/task"
+        self.validator_status = "ConversationExecutionStatus.FINISHED"
+        with patch("dialogue_benchmark.task_eval.run.write_draft") as draft, \
+             patch("dialogue_benchmark.task_eval.run.select_task") as select:
+            receipt, checks = self.execute([{"status": "failed"}, {"status": "passed"},
+                                            {"status": "failed"}, {"status": "passed"}],
+                                           reuse_preparation=prior)
+        self.assertIsNotNone(receipt)
+        draft.assert_not_called()
+        select.assert_not_called()
+        self.assertEqual(checks.call_count, 4)
+        self.assertEqual((self.root / "frozen/test_acceptance.py").read_bytes(), original_test)
+        record = read(self.root / "construction.json")[0]
+        self.assertEqual(record["author_reused_from"], str(prior.resolve()))
+        self.assertEqual(record["construction_budget"]["total_tokens"], 0)
+        self.root = self.base / "changed/task"
+        self.item["qa"]["id"] = "different-question"
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            construct(self.item, self.root, self.baseline, {}, 0, {}, reuse_preparation=prior)
 
     def test_extra_checks_are_run_before_freeze_and_used_for_receipt(self):
         receipt, checks = self.execute([{"status": "failed"}, {"status": "passed"},
