@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval.checks import run_checks
-from dialogue_benchmark.task_eval.run import construct
+from dialogue_benchmark.task_eval.run import construct, prepare_test_reference
 from dialogue_benchmark.task_eval.runtime import review_task
 from dialogue_benchmark.task_eval.versions import pin_baseline
 
@@ -85,6 +85,27 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(receipt["reference_checks"]["tests"], 2)
         self.assertFalse((self.root / "frozen/checkpoints.json").exists())
         self.assertEqual(read(self.root / "frozen/acceptance.json")[0]["id"], "a1")
+
+    def test_test_author_gets_criteria_and_previous_tests_without_raw_history(self):
+        spec = self.base / "checks"
+        spec.mkdir()
+        reference = self.base / "reference"
+        previous = reference / "previous-00"
+        previous.mkdir(parents=True)
+        for directory in (spec, previous):
+            save(directory / "history.json", {"events": ["raw dialogue"]})
+            (directory / "history-review.md").write_text("Raw dialogue")
+            (directory / "history-contract.txt").write_text("Confirmed rule")
+            (directory / "test_acceptance.py").write_text("Previous test")
+        save(reference / "qa-input.json", {"payload": "Raw generation evidence"})
+        output = prepare_test_reference(spec, reference, self.base / "test-reference")
+        self.assertEqual(sorted(p.name for p in output.iterdir()), ["previous-00"])
+        self.assertTrue((previous / "history.json").is_file())
+        for directory in (spec, output / "previous-00"):
+            self.assertFalse((directory / "history.json").exists())
+            self.assertFalse((directory / "history-review.md").exists())
+            self.assertEqual((directory / "history-contract.txt").read_text(), "Confirmed rule")
+            self.assertEqual((directory / "test_acceptance.py").read_text(), "Previous test")
 
     def test_reference_failing_new_combination_is_not_frozen(self):
         receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},

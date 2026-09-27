@@ -104,6 +104,7 @@ python -m dialogue_benchmark.task_eval.run \
 
 配置的模型读取历史 QA、生成该 QA 时实际收到的材料，以及对话结束后的只读仓库，提出新需求、测试和验收标准。独立 Code Agent 实现需求，验收者检查基线、参考实现和测试质量。默认最多修正五次，保留每次失败记录。
 历史审核先读取 `history-review.md` 中的引用原文与公开对话，完整事件记录保留在 `history.json`。验收者未完成时保存错误和用量并停止构造，不在缺少审核结论时重新出题。
+测试作者只接收固定验收与历史条款；原始来源保留给资格审核和独立预检。
 测试收集或执行错误先交回测试作者修正，再启动参考实现。公开功能与历史规则分开测试；兼容检查只比较需求明确要求保持的行为。
 
 `examples/batchsync_seed.py --repository runs/suite/seed --receipt runs/suite/seed.json` 创建只依赖标准库的小项目，包含字段投影、按字节分批和回执分类的三个连续参考提交。每个版本先运行离线测试再提交，可交给 dialogue 模拟器生成真实交互；脚本本身不生成消息或客户约定。完整流程入口 `run_episode.py` 可使用 `--qa-source external --external-events /path/to/external-events.json`，并自动对固定的最终仓库执行答案可恢复性检查后再派生需求。

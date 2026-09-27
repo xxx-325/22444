@@ -465,6 +465,7 @@ def write_public_task(selection, config, output, spec, budget, feedback=""):
     # The selector sees the answer and may repeat it in its agreement fields.
     # Only its public goal and actual repository evidence reach this writer.
     payload = {"public_goal": public["public_goal"],
+               "historical_question": selection.get("historical_question", ""),
                "repository_overview": selection.get("repository_overview", {}),
                "repository_exploration": selection.get("repository_exploration", ""),
                "repository_evidence": selection.get("public_repository_evidence", []),

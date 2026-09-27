@@ -33,6 +33,20 @@ def prepare(root, baseline):
     copy_tree(baseline, Path(root) / "workspace/candidate")
 
 
+def prepare_test_reference(spec, reference, output):
+    """Expose fixed criteria and previous tests, keeping raw history for review."""
+    output.mkdir(parents=True)
+    for previous in reference.glob("previous-*"):
+        if previous.is_dir():
+            copy_tree(previous, output / previous.name)
+    # qualify() already retained these exact files in qualified-draft. They
+    # are regenerated from public_history for the independent validator.
+    for directory in (spec, *output.glob("previous-*")):
+        for name in ("history.json", "history-review.md"):
+            (directory / name).unlink(missing_ok=True)
+    return output
+
+
 def explore_repository(root, baseline, item, config, options, public_history=None):
     """Use a read-only OpenHands worker to map a QA to a natural code area.
 
@@ -185,6 +199,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         spec = author / "workspace/checks"
         gate_state = {}
         draft_selection = dict(selection)
+        draft_selection["historical_question"] = item["qa"].get("question", "")
         if public_history:
             draft_selection.update(public_history=public_history,
                                    historical_answer=answer_text(item["qa"]),
@@ -248,8 +263,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 return {"selection_only": True, "status": "qualified"}
             remaining = budget.remaining()
             prepare(author, baseline)
+            test_reference = prepare_test_reference(spec, reference, run / "test-reference")
             authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS + feedback,
-                                 system=prompts.PREPARATION_SYSTEM, reference=reference, **remaining)
+                                 system=prompts.PREPARATION_SYSTEM, reference=test_reference, **remaining)
             metrics = authored.get("metrics", {})
             budget.record([dict(request_count=metrics.get("attempted_requests", 0),
                                 **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
