@@ -268,50 +268,37 @@ HISTORY_REQUEST = """\n如果需要用户重新提供以前交代的规则，以
 HISTORY_QUESTION: 具体想确认的历史问题
 系统会回答后继续同一会话。正常完成报告不要使用这个标记。两组都可追问。\n"""
 
-VALIDATOR = """你是独立验收者。/workspace/candidate 是未修改基线；
-/reference/implementation 是独立 Code Agent 实现。/reference/spec 是本轮候选需求、
-验收说明和测试。不要修改需求或已有验收标准。
-检查新需求确实尚未满足，以及参考实现是否真正完成。需要时在 /workspace/experiments
-制作验证副本，先检查本需求的行为，再运行相关回归测试。保持仓库默认测试筛选，
-不要主动启用压力、性能或长时间测试；测试不完整时亲自检查缺口并给证据。
-对同一对象上可以同时发生的条件做组合验证：沿用正常行为，叠加替换、保留引用、
-异常退出等需求中已有条件。测试各条件分别通过，不能代替组合检查。
-将这些条件、预期结果和对应测试写到 /workspace/checks/coverage.md。
-先将遗漏的组合检查写为 /workspace/checks/test_interactions.py，再实际运行。
-补充文件必须自包含，不依赖临时实验文件；需要的辅助函数和数据也写在该文件内。
-新增测试只能检查 task.md 已要求或明确引用的冻结历史契约，不能限定内部实现。无新增用例也写 coverage.md。
-测试失败先区分测试自身错误与实现错误；确认参考实现违反需求时，保存用例、
-coverage.md 和 revise 报告后结束，未完成项写 uncertain，不再继续其他检查。
-无法自动测试的条件在 coverage.md 写出可重复执行的 Judge 检查步骤和期望结果；
-这些文件会随需求一起冻结。只在临时实验里测过、未保存的检查不算覆盖。
-检查错误实现要实际执行，不能凭代码相似判断。已发现的错误逃过检查时，
-补入测试或固定检查步骤。参考实现失败则 revise。
-至少保存一个“新功能基本完成，但遗漏或错用有效 external 历史规则”的错误变体。
-在 /workspace/checks/m1.patch 保存相对参考实现的 git diff 补丁，
-补丁路径必须是 a/项目相对路径 和 b/项目相对路径，不含 /reference 等容器前缀。
-在 mutations.txt 写 REVIEW m1、acceptance: a2、END_REVIEW（各占一行）。
-a2 是违反的历史验收项。补丁不可破坏新功能基本行为，程序会应用并重跑。
-没有历史规则时不要求此类变体。不要改变原始基线和参考实现。
-对 inspect: 项按冻结步骤检查参考实现，输出 acceptance-review.txt：
-REVIEW a1
-status: passed 或 failed 或 uncertain
-evidence: /reference/implementation/文件:起始行-结束行，或 /workspace/checks/证据文件:起始行-结束行
-END_REVIEW
-每项只写一个真实证据位置，无证据写 none。
-将结果写到 /workspace/checks/validation.txt，格式：
+VALIDATOR = """审核候选需求、测试和参考实现，完成后保存审核文件并结束。
+输入：/reference/spec 是固定题面、验收表和测试；/reference/implementation 是参考实现；
+/workspace/candidate 是基线。/reference/checks.json 已保存宿主执行的基线与参考测试结果，可直接采用。
+输出都放 /workspace/checks。实验修改只放 /workspace/experiments 的副本。
+
+按顺序完成：
+1. 阅读上述输入，确认基线缺少新功能，参考实现满足题面与引用的历史规则。
+   测试必须依据公开功能或冻结历史，不得增加要求、限定内部实现或改变原验收。
+2. 在 coverage.md 对应验收项说明覆盖和具体缺口。缺组合用例时写自包含的
+   test_interactions.py 并实际运行；用例与数据一并保存。已有测试覆盖充分则直接说明。
+   测试自身错误与实现错误分开记录。有具体错误时保存 revise 报告并结束。
+3. 有 external 历史规则时，制作一个“基本功能仍能用、但违反该历史规则”的实现副本。
+   实际验证后，保存相对参考实现的 Git 补丁 m1.patch，路径为 a/项目相对路径、b/项目相对路径。
+   mutations.txt 写三行：REVIEW m1、acceptance: 实际违反的 a 编号、END_REVIEW。
+   程序还会应用补丁重跑，要求 task 行通过、指定历史行失败。
+4. 仅对验收表中的 inspect 项按既定步骤检查参考实现，写 acceptance-review.txt：
+   REVIEW a1
+   status: passed 或 failed 或 uncertain
+   evidence: /reference/implementation/文件:行号 或 /workspace/checks/证据文件:行号
+   END_REVIEW
+   无充分证据用 uncertain 和 none；自动测试项不需要复写这一文件。
+5. 按附加历史审核要求保存 oracle-review.txt（有历史时），然后写 validation.txt：
 BASELINE: unmet 或 met 或 uncertain
 REFERENCE: pass 或 fail 或 uncertain
 TESTS: executable 或 partial 或 unavailable
 MUTATIONS: caught 或 missed 或 unavailable
 COVERAGE: complete 或 gaps 或 uncertain
 VERDICT: accept 或 revise 或 skip
-后面用简短段落给出真实执行命令、结果和需要修正的具体问题。
-只有新需求未满足且参考实现已验证可行，才 accept。不能执行测试不等于不可判断；
-明确依据候选标准检查代码并指出证据。所有已发现缺口均补入将冻结的检查后才写
-COVERAGE: complete；仍有缺口时写 gaps 并 revise。证据不足则 uncertain/revise。
-这是一次有限的验收，不要反复分段打印 checks.json 或重复 grep 同一路径。
-若自动测试已给出清晰的基线/参考结果，直接保存 coverage.md、acceptance-review.txt、mutations.txt 和 validation.txt；
-对 inspect 项可用一次短命令或源码行号作为证据。不要等待网络、运行完整文档构建或轮询状态。
+后面简述执行证据或需修正的问题。缺口全部有保存的检查、参考实现满足且基线未满足时才 accept。
+新检查通过后进入下一项；相同代码和输入已有结果时直接使用，不重复运行同一探测。
+仅运行本需求及相关离线回归。完成上述文件后结束，不继续寻找新需求。
 """
 
 JUDGE = """你是独立验收者。只读代码在 /workspace/candidate；
@@ -350,28 +337,18 @@ external 规则中未由题面和仓库提供的必要信息必须由实际 ans 
 acceptance.md 的行为只来自新需求和这里明确引用的历史契约。
 """
 
-HISTORY_VALIDATOR = """\n本轮 /reference/spec/history.json 保存截止点、公开原文及历史契约。
-题面明确引用的旧约定可以作为验收要求。逐条检查 statement/scope/supersedes
-是否被 sources 原文支持、是否遗漏后续相关纠正；检查实际 oracle_answer 是否被原文支持。
-不能把同文件或先后顺序当因果，也不能把建议当已确认约定。
-核查每项规则的范围与 repository 判断，实际查看仓库，不能将隐藏的外部规则改标 recoverable。
-至少一条有效 external 规则确实未被仓库和题面完整提供；否则 revise。
-核对 oracle_answer 是否完整覆盖每项有效 external 规则中题面和仓库未提供的内容，包括例外和后续纠正。
+HISTORY_VALIDATOR = """\n历史审核：读取 /reference/spec/history.json。
+按公开原文核对规则、范围和后续纠正；核对 oracle_answer 是否包含题面及仓库未提供的必要信息。
+建议不等于已确认事实；通用配置能力不等于客户的具体选择。验收只适用于明确引用该规则的行。
+不得将规则扩大到旧入口或别的对象。历史验收的调用也不能主动传入待考查的规则作为参数。
 在 /workspace/checks/oracle-review.txt 对每项有效 external 规则写：
 REVIEW h1
 coverage: complete 或 provided 或 missing 或 stale 或 uncertain
 quote: complete 时为 oracle_answer 中覆盖剩余缺口的原文；provided 时为题面完整给出该规则的原文
 END_REVIEW
-只有题面完整给出规则才用 provided；仅给部分条件仍需 complete 并核对剩余缺口。
-至少一项必须 complete 且确有缺口；全部 provided 不合格。仓库可恢复却标 external 应修正契约。
-缺失就 revise 并说明需修正 QA 答案或缩小需求，不把验收说明补进 ans。
-核对行为是真实新需求，不重做构造期已经完成的扩展。
-严格以冻结的 task.md 和 acceptance.md 为验收范围。历史契约的行为只能检查
-acceptance.md 中明确以该 h id 为 Basis 的行；不得把历史答案中的一般表述扩大到
-未引用该 h id 的旧入口、其他格式或额外调用方。若 task.md 明确要求现有入口保持兼容，
-历史检查不得改变这一兼容边界。
-在 validation.txt 另写 HISTORY: supported 或 unsupported 或 uncertain；
-不支持或遗漏有效更新就 revise。保持冻结契约不变，不临时发明历史或新增要求。
+至少一条须有真实信息缺口并由答案补足；答案缺失/失效则 revise，不从验收说明替它补答案。
+在 validation.txt 加 HISTORY: supported 或 unsupported 或 uncertain。
+历史无来源、范围被扩大、没有真实新功能或全部规则已公开，都应说明问题并 revise。
 """
 CLARIFY = """只判断开发者最后的公开回复是否有尚待回答的历史/外部信息问题。
 只从 supplied_history 回答实际问到的内容，遵守对象、条件和替代关系。
