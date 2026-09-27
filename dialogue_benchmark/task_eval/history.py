@@ -288,10 +288,15 @@ def answer_clarification(message, history, exchanges, config, output):
                "supplied_history": {"contracts": [{k: row[k] for k in (
                    "id", "statement", "scope", "sources", "supersedes")} for row in history["contracts"]],
                    "events": [e for e in history["events"] if e["id"] in refs]}}
-    response = ask_model(CLARIFY, payload, config, output)
+    prompt = CLARIFY + "\n本次可引用的公开事件来源：" + ",".join(sorted(refs)) + "。\n"
+    response = ask_model(prompt, payload, config, output)
     rows = response.get("reviews", [])
     row = rows[0] if len(rows) == 1 else {}
-    sources = _refs(row.get("sources"))
+    # A frozen rule is an exact alias for its public sources, not a new source.
+    # Keep the model's raw response on disk while resolving citations here.
+    aliases = {rule["id"]: rule["sources"] for rule in history["contracts"]}
+    sources = list(dict.fromkeys(source for ref in _refs(row.get("sources"))
+                                for source in ([ref] if ref in refs else aliases.get(ref, [ref]))))
     status = row.get("status")
     delivered = {source for exchange in exchanges if exchange.get("delivered")
                  for source in exchange.get("sources", [])}

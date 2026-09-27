@@ -193,6 +193,24 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(len(result["clarifications"]), 1)
         self.assertEqual(result["responder_cost"]["requests"], 1)
 
+    def test_responder_resolves_frozen_rule_citations_to_public_events(self):
+        history = freeze_contract(self.root, self.history, "PRIVATE_ORACLE")
+        decision = {"status": "answer", "sources": "h2,correction", "reply": "EU rejects blanks.",
+                    "kind": "historical_reask"}
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value={"reviews": [decision]}) as ask:
+            result = answer_clarification("What is the EU rule?", history, [], {}, self.root / "reply")
+            self.assertEqual(result["sources"], ["correction"])
+            self.assertEqual(result["reply"], decision["reply"])
+            self.assertIn("correction,old", ask.call_args.args[0])
+            decision.update(kind="same_session_repeat", sources="h2")
+            repeat = answer_clarification("Repeat that rule", history,
+                [{"delivered": True, "sources": ["correction"]}], {}, self.root / "repeat")
+            self.assertEqual(repeat["sources"], ["correction"])
+            for invalid in ("h3", "h2,unknown", "h"):
+                decision.update(kind="historical_reask", sources=invalid)
+                with self.subTest(source=invalid), self.assertRaises(ValueError):
+                    answer_clarification("Question", history, [], {}, self.root / "invalid")
+
     def test_independent_config_needs_no_private_checkpoint(self):
         config = {"image": "sdk", "execution_image": "runtime", "execution_backend": "local",
                   "code": {"model": "code", "key_env": "TEST_KEY"},
