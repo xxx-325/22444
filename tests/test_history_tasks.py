@@ -435,8 +435,9 @@ class CheckReviewTests(unittest.TestCase):
             for name in ("task.md", "history-contract.txt"):
                 (spec / name).write_text("Apply the known receiver limit")
             save(spec / "acceptance.json", [{"id": "a2", "basis": ["h1"]}])
-            files = [{"name": "mutations.txt", "content": "REVIEW m1\nacceptance: a2\nEND_REVIEW"},
-                     {"name": "entry.py", "content": "limit = 500\n"}]
+            files = [{"name": "mutations.txt", "content": "REVIEW m1\nacceptance: a2\nfile: entry.py\nEND_REVIEW"},
+                     {"name": "before.txt", "content": "limit = 384"},
+                     {"name": "after.txt", "content": "limit = 500"}]
             result = write_history_mutation(spec, candidate, ["entry.py"], {}, root / "review",
                 SimpleNamespace(call=lambda *args: {"files": files}))
             self.assertEqual(result["status"], "finished")
@@ -444,7 +445,12 @@ class CheckReviewTests(unittest.TestCase):
             self.assertEqual((candidate / "entry.py").read_text(), "limit = 384\n")
             self.assertTrue(read(root / "review/version/version.json")["replay_verified"])
             self.assertIn("+limit = 500", (root / "review/workspace/checks/m1.patch").read_text())
-            files[1]["name"] = "../outside.py"
+            files[2]["content"] = files[1]["content"]
+            result = write_history_mutation(spec, candidate, ["entry.py"], {}, root / "unchanged",
+                SimpleNamespace(call=lambda *args: {"files": files}))
+            self.assertEqual(result["status"], "error")
+            files[2]["content"] = "limit = 500"
+            files[0]["content"] = files[0]["content"].replace("entry.py", "../outside.py")
             result = write_history_mutation(spec, candidate, ["entry.py"], {}, root / "invalid",
                 SimpleNamespace(call=lambda *args: {"files": files}))
             self.assertEqual(result["status"], "error")

@@ -73,6 +73,7 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
     from .prompts import MUTATION_FILES
     from .selection import _parse_files
     from .versions import export_change, pin_baseline
+    from ..llm import parse_text_response
 
     spec, candidate, output = Path(spec), Path(candidate), Path(output)
     try:
@@ -86,10 +87,13 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
             "task": (spec / "task.md").read_text(),
             "contract": (spec / "history-contract.txt").read_text(),
             "acceptance": read(spec / "acceptance.json"), "reference_sources": sources}, config, output)
-        names = {row.get("name") for row in response.get("files", [])}
-        if "mutations.txt" not in names or not (names & sources.keys()):
-            raise ValueError("Mutation must identify a historical acceptance row and change its implementation")
-        files = _parse_files(response, {"mutations.txt", *sources}, names)
+        names = {"mutations.txt", "before.txt", "after.txt"}
+        files = _parse_files(response, names, names)
+        rows = parse_text_response(files["mutations.txt"]).get("reviews", [])
+        name = rows[0].get("file") if len(rows) == 1 and rows[0].get("id") == "m1" else None
+        before, after = files["before.txt"], files["after.txt"]
+        if name not in sources or before == after or sources[name].count(before) != 1:
+            raise ValueError("Mutation must change one exact, unique implementation fragment")
         checks = output / "workspace/checks"
         checks.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="qa-mutation-") as directory:
@@ -97,9 +101,7 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
             copy_tree(candidate, base)
             pin_baseline(base)
             copy_tree(candidate, mutant)
-            for name, content in files.items():
-                if name != "mutations.txt":
-                    (mutant / name).write_text(content, encoding="utf-8")
+            (mutant / name).write_text(sources[name].replace(before, after, 1), encoding="utf-8")
             export_change(base, mutant, output / "version")
             shutil.copy2(output / "version/changes.patch", checks / "m1.patch")
         (checks / "mutations.txt").write_text(files["mutations.txt"], encoding="utf-8")

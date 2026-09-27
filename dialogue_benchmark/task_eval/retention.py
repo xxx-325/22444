@@ -339,6 +339,11 @@ def compact_run(root):
                                 item["artifacts"][str(path.relative_to(attempt))] = path.read_text()
                 for path in attempt.glob("*checks/execution.json"):
                     item["artifacts"][str(path.relative_to(attempt))] = read(path)
+                mutation_author = attempt / "validator"
+                if (mutation_author / "result.json").exists() and read(
+                        mutation_author / "result.json").get("method") == "model_file_generation":
+                    for path in mutation_author.glob("*.json"):
+                        item["artifacts"][str(path.relative_to(attempt))] = read(path)
             elif (task_root / "author-reference/history.json").exists():
                 item["history_selection"] = {k: v for k, v in read(
                     task_root / "author-reference/history.json").items() if k != "events"}

@@ -173,6 +173,10 @@ review runs only after the public task is fixed; only then does OpenHands
 construct tests. Selection, drafting, review, and test authoring share cumulative
 budgets, without a per-response output cap.
 The test author cannot change qualified requirements or historical rules.
+Test repairs reuse the qualified draft. Compatibility tests apply to the named
+old APIs; new APIs are checked by their stated behavior. Regression commands use
+baseline tests copied into the frozen specification, so solver-authored tests do
+not change the scored regression set.
 The public draft preserves the selected project's goal and uses actual repository
 observations and fixes a callable interface or command before tests are authored.
 An unfinished test author stops with its own reason; changed draft

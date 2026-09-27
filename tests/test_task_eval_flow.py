@@ -155,10 +155,12 @@ class TaskPreflightTests(unittest.TestCase):
         checks.extend(dict(status=status, cases=[dict(id="test_acceptance::test_feature", status=status)])
                       for status in ("failed", "passed", "failed", "passed"))
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent) as agent, \
+             patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=self.fake_draft) as draft, \
              patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
              patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks):
             receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 1, {})
         self.assertIsNotNone(receipt)
+        self.assertEqual(draft.call_count, 1)
         calls = agent.call_args_list
         self.assertEqual([call.args[0].name for call in calls],
                          ["author", "author", "reference-solver", "validator"])

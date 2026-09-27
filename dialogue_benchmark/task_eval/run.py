@@ -193,6 +193,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         save(reference / "history.json", public_history)
         save(reference / "history-focus.json", public_history["initial_events"])
     attempts = []
+    fixed_draft = None
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
     exploration_text = ""
@@ -283,7 +284,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 return decision
 
         try:
-            if reused and attempt == 0:
+            if fixed_draft:
+                copy_tree(fixed_draft, spec)
+            elif reused and attempt == 0:
                 copy_tree(reused[2], spec)
             else:
                 write_draft(draft_selection, config, run / "draft", spec, budget, feedback=feedback)
@@ -293,6 +296,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                      status="pending" if task_review["status"] == "uncertain" else "stop",
                                      task_review=task_review))
                 break
+            fixed_draft = run / "qualified-draft"
             if selection_only:
                 save(root / "construction.json", [dict(attempt=attempt, status="qualified",
                      accepted=False, task_review=task_review)])
