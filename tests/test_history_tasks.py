@@ -9,7 +9,7 @@ from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
     answer_clarification, freeze_contract, freeze_targets, historical_context, prepare_history,
-    read_history_review, oracle_coverage, validate_contract_targets, review_history)
+    read_history_review, oracle_coverage, validate_contract_targets, review_history, review_sources)
 from dialogue_benchmark.task_eval.runtime import run_agent, configure
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
@@ -98,6 +98,32 @@ class HistoryTests(unittest.TestCase):
         result = prepare_history(records, self.root / "input.json", qa_source_ids={"e1#fragment-2"})
         self.assertEqual(result["qa_source_ids"], ["original-event"])
         self.assertEqual(result["initial_events"][0]["id"], "original-event")
+
+    def test_finite_source_review_uses_updates_and_checks_real_answer_quotes(self):
+        history = freeze_contract(self.root, self.history, "EU rejects blanks; other tenants preserve blanks.")
+        for support, quote, complete in (
+                ("supported", history["oracle_answer"], True),
+                ("supported", "An answer never injected", False),
+                ("unsupported", history["oracle_answer"], True)):
+            with self.subTest(support=support, quote=quote):
+                rows = [dict(id=cid, support=support, coverage="complete", quote=quote, issue="none")
+                        for cid in ("h1", "h2")]
+                with patch.object(SimpleNamespace(), "call", create=True, return_value={"reviews": rows}) as call:
+                    result = review_sources(history, {}, self.root / "source-review", SimpleNamespace(call=call))
+                call.assert_called_once()
+                self.assertEqual(call.call_args.args[1]["events"], history["events"])
+                self.assertEqual(result["support"], support)
+                self.assertEqual(result["oracle_complete"], complete)
+
+    def test_source_review_missing_duplicate_or_failed_response_cannot_pass(self):
+        history = freeze_contract(self.root, self.history, "EU rejects blanks; other tenants preserve blanks.")
+        row = dict(id="h1", support="supported", coverage="complete", quote=history["oracle_answer"])
+        for rows in ([], [row], [row, row], [dict(row, support="yes"), dict(row, id="h2")]):
+            with self.subTest(rows=rows):
+                result = review_sources(history, {}, self.root / "source-review",
+                                        SimpleNamespace(call=lambda *args: {"reviews": rows}))
+                self.assertEqual(result["support"], "uncertain")
+                self.assertFalse(result["oracle_complete"])
 
     def test_mixed_contract_checks_oracle_only_for_external_rule(self):
         (self.root / "history-contract.txt").write_text(CONTRACT.replace(
@@ -360,11 +386,10 @@ class HistoryConstructionTests(unittest.TestCase):
                             handle.write("\n| a2 | Other blanks retained | h1 | test: test_acceptance::test_other |\n"
                                          "| a3 | EU blanks rejected | h2 | test: test_acceptance::test_eu |\n")
                     elif root.name == "validator":
-                        with (checks / "validation.txt").open("a") as handle:
-                            handle.write("HISTORY: supported\n")
-                        (checks / "oracle-review.txt").write_text("\n".join(
-                            f"REVIEW {identity}\ncoverage: {coverage}\nquote: EU rejects blanks; other tenants preserve blanks.\nEND_REVIEW"
-                            for identity in ("h1", "h2")))
+                        reference = kwargs["reference"] / "spec"
+                        self.assertFalse((reference / "history.json").exists())
+                        self.assertFalse((reference / "history-review.md").exists())
+                        self.assertTrue((reference / "history-contract.txt").is_file())
                     return result
                 def checks(candidate, *args, **kwargs):
                     status = "failed" if candidate == fixture.baseline else "passed"
@@ -373,6 +398,8 @@ class HistoryConstructionTests(unittest.TestCase):
                 with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
                      patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
                      patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
+                     patch("dialogue_benchmark.task_eval.run.review_sources", return_value={
+                         "support": "supported", "oracle_complete": coverage == "complete"}), \
                      patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
                      patch("dialogue_benchmark.task_eval.run.check_history_mutations", return_value={"status": mutation}) as replay:
                     from dialogue_benchmark.task_eval.run import construct

@@ -313,6 +313,36 @@ def oracle_coverage(path, history):
     return missing_information > 0
 
 
+def review_sources(history, config, output, budget):
+    """Review source meaning and answer coverage once, without an agent loop."""
+    from .prompts import HISTORY_SOURCE_REVIEW
+
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    active = {rule["id"]: rule for rule in history["contracts"] if rule["active"]}
+    try:
+        response = budget.call(HISTORY_SOURCE_REVIEW, review_history(history), config, output)
+        rows = response.get("reviews", [])
+        if len(rows) != len(active) or {row.get("id") for row in rows} != set(active):
+            raise ValueError("Historical source review must cover each active rule exactly once")
+        if any(row.get("support") not in {"supported", "unsupported", "uncertain"}
+               or row.get("coverage") not in {"complete", "provided", "missing", "stale", "uncertain", "not_applicable"}
+               for row in rows):
+            raise ValueError("Invalid historical source review decision")
+        oracle = output / "oracle-review.txt"
+        oracle.write_text("\n".join(
+            "REVIEW %s\ncoverage: %s\nquote: %s\nEND_REVIEW" % (
+                row["id"], row["coverage"], row.get("quote", "none")) for row in rows), encoding="utf-8")
+        support = ("unsupported" if any(row["support"] == "unsupported" for row in rows) else
+                   "supported" if all(row["support"] == "supported" for row in rows) else "uncertain")
+        result = {"support": support, "oracle_complete": oracle_coverage(oracle, history), "rows": rows}
+    except Exception as error:
+        result = {"support": "uncertain", "oracle_complete": False,
+                  "error_type": type(error).__name__, "detail": str(error)}
+    save(output / "result.json", result)
+    return result
+
+
 def answer_clarification(message, history, exchanges, config, output):
     from .runtime import ask_model
     from .prompts import CLARIFY

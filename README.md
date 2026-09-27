@@ -182,11 +182,14 @@ and usage without starting OpenHands or paired execution.
 An independent Code Agent implements the requirement; a validator checks the
 baseline, reference implementation, and test quality. Failed attempts remain
 available for inspection, with up to five revisions by default.
-Historical review starts from exact cited evidence and visible dialogue in
-`history-review.md`; the complete event archive remains in `history.json`.
+One model request reviews the exact cited evidence, visible dialogue, frozen
+rules and injected answer. Its decisions and quoted answer coverage are saved
+under `history-review/`; unsupported history or incomplete answers stop admission.
 The test author receives the fixed criteria and historical contract; source
 archives stay with qualification and independent validation.
-The validator sees all visible messages and cited tool evidence; the original
+The OpenHands validator receives the contract, tests and reference implementation
+to check coverage and produce a historical-error mutation. It does not reread
+the dialogue. Source review and this validator share a preflight budget; the
 complete archive remains in the qualified draft and frozen task.
 An interrupted validator retains its error and usage and stops construction;
 it does not trigger a new task draft without a completed review.
@@ -230,7 +233,7 @@ then run `git apply --index /path/to/changes.patch` in that clone.
 A requirement must solve a real new problem, with a historical rule that changes
 observable behavior. At least one required rule must need external history;
 repository-recoverable compatibility requirements can also apply and are checked.
-Uncertain availability needs review. Before trials, the validator checks the exact
+Uncertain availability needs review. Before trials, source review checks the exact
 injected answer against necessary information still missing from the public task
 and repository, including scoped corrections and exceptions. At least one such
 gap must remain. Already supplied information need not be repeated in the answer.
@@ -361,9 +364,9 @@ selecting a root does not make nearby facts causal evidence.
 
 For these packages, task construction freezes source-backed historical statements,
 their applicable scopes and explicit replacement links in `history.json`. A later
-rule overrides only its stated scope. The independent validator checks the public
-sources and updates, the exact QA answer supplied in the oracle condition, and
-the new task's observable acceptance behavior. New tasks must not redo already
+rule overrides only its stated scope. Source review checks the public sources,
+updates and exact QA answer supplied in the oracle condition. The OpenHands
+validator checks observable acceptance behavior. New tasks must not redo already
 completed construction work. The informed reference proves feasibility; answer sufficiency is separately
 checked before freezing. `--design-probe` optionally
 runs an independent no-memory construction probe; its success is not an admission

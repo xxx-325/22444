@@ -286,7 +286,7 @@ VALIDATOR = """审核候选需求、测试和参考实现，完成后保存审�
    evidence: /reference/implementation/文件:行号 或 /workspace/checks/证据文件:行号
    END_REVIEW
    无充分证据用 uncertain 和 none；自动测试项不需要复写这一文件。
-5. 按附加历史审核要求保存 oracle-review.txt（有历史时），然后写 validation.txt：
+5. 写 validation.txt：
 BASELINE: unmet 或 met 或 uncertain
 REFERENCE: pass 或 fail 或 uncertain
 TESTS: executable 或 partial 或 unavailable
@@ -335,21 +335,20 @@ external 规则中未由题面和仓库提供的必要信息必须由实际 ans 
 acceptance.md 的行为只来自新需求和这里明确引用的历史契约。
 """
 
-HISTORY_VALIDATOR = """\n历史审核：先读 /reference/spec/history-review.md。
-它列出实际注入的答案、规则、引用原文和全部公开消息，顺序与原文一致。
-需要核对某次工具操作时，按来源 ID 查询 history.json 中那一条；不必逐条阅读无关工具日志。
-新入口和接口来自 task.md，不要求历史对话曾提出或实现它。
-按公开原文核对规则、范围和后续纠正；核对 oracle_answer 是否包含题面及仓库未提供的必要信息。
-建议不等于已确认事实；通用配置能力不等于客户的具体选择。验收只适用于明确引用该规则的行。
-不得将规则扩大到旧入口或别的对象。历史验收的调用也不能主动传入待考查的规则作为参数。
-在 /workspace/checks/oracle-review.txt 对每项有效 external 规则写：
+HISTORY_SOURCE_REVIEW = """核对已提供的公开历史与实际注入答案。全部需核对的原文已在输入中。
+对每条 active 规则判断两件事：
+1. 公开原文是否支持这条事实、适用范围及截止时的有效性，包括后来的纠正。
+2. external 规则中题面未提供的必要信息，是否已由 oracle_answer 准确覆盖。
+新接口来自 public_task，不要求历史曾实现它；建议不等于确认事实。
+recoverable 规则的 coverage 填 not_applicable。external 规则全部已在题面提供才填 provided。
+只返回每条 active 规则的一个文本块：
 REVIEW h1
-coverage: complete 或 provided 或 missing 或 stale 或 uncertain
+support: supported 或 unsupported 或 uncertain
+coverage: complete 或 provided 或 missing 或 stale 或 uncertain 或 not_applicable
 quote: complete 时为 oracle_answer 中覆盖剩余缺口的原文；provided 时为题面完整给出该规则的原文
+issue: none 或一个具体问题
 END_REVIEW
-至少一条须有真实信息缺口并由答案补足；答案缺失/失效则 revise，不从验收说明替它补答案。
-在 validation.txt 加 HISTORY: supported 或 unsupported 或 uncertain。
-历史无来源、范围被扩大、没有真实新功能或全部规则已公开，都应说明问题并 revise。
+其他 coverage 的 quote 填 none。不要从验收行为中补充历史事实或答案。
 """
 CLARIFY = """只判断开发者最后的公开回复是否有尚待回答的历史/外部信息问题。
 只从 supplied_history 回答实际问到的内容，遵守对象、条件和替代关系。

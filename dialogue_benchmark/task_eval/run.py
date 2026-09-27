@@ -13,7 +13,7 @@ from .runtime import configure, review_task, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
-                      oracle_coverage, write_contract_from_targets, review_history)
+                      write_contract_from_targets, review_sources)
 from .selection import SelectionBudget, select_task, write_draft
 
 def solver_input(task, answer=None):
@@ -396,25 +396,40 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         record.update(baseline_checks=baseline_checks, reference_checks=reference_checks,
                       reference_status=solved["status"])
+        preflight_budget = SelectionBudget(run / "preflight", agent_options)
+        source_review = None
+        if history:
+            source_review = review_sources(history, config, run / "history-review", preflight_budget)
+            record["history_source_review"] = source_review
+            if source_review["support"] != "supported" or not source_review["oracle_complete"]:
+                record.update(accepted=False, reason="history_source_or_answer_not_verified")
+                save(root / "construction.json", attempts)
+                break
         validation_reference = run / "validator-reference"
         copy_tree(spec, validation_reference / "spec")
-        if history:
-            save(validation_reference / "spec/history.json", review_history(history))
+        for name in ("history.json", "history-review.md"):
+            (validation_reference / "spec" / name).unlink(missing_ok=True)
         copy_tree(candidate, validation_reference / "implementation")
         save(validation_reference / "checks.json", record)
         validator = run / "validator"
         prepare(validator, baseline)
         print(root.name, "preflight validation", attempt, flush=True)
-        validated = run_agent(validator, config, "judge", prompts.VALIDATOR + (
-                              prompts.HISTORY_VALIDATOR if history else ""),
+        validated = run_agent(validator, config, "judge", prompts.VALIDATOR,
                               system=prompts.PREPARATION_SYSTEM,
-                              reference=validation_reference, **agent_options)
+                              reference=validation_reference, **preflight_budget.remaining())
         verdict_file = validator / "workspace/checks/validation.txt"
         feedback = verdict_file.read_text() if verdict_file.exists() else "验收者未完成验证，请核查需求和测试。"
         record["validation"] = labels(feedback)
+        if source_review:
+            record["validation"]["HISTORY"] = source_review["support"]
         record["validation_evidence"] = feedback
         record["validator_status"] = validated["status"]
         record["validator_metrics"] = validated.get("metrics", {})
+        metrics = record["validator_metrics"]
+        preflight_budget.record([dict(request_count=metrics.get("attempted_requests", 0),
+            **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
+               if metrics.get("usage_complete") else {}))])
+        record["preflight_budget"] = read(run / "preflight/selection-budget.json")
         if not agent_finished(validated):
             record.update(accepted=False, reason="validator_incomplete",
                           validator_error={k: validated[k] for k in
@@ -433,7 +448,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record.update(final_baseline_checks=baseline_checks, final_reference_checks=reference_checks)
         else:
             record["reason"] = "missing_coverage_checks"
-        oracle_complete = not history or oracle_coverage(validator / "workspace/checks/oracle-review.txt", history)
+        oracle_complete = not history or source_review["oracle_complete"]
         if history and final_spec is not None and oracle_complete:
             record["history_mutations"] = check_history_mutations(
                 candidate, final_spec, validator / "workspace/checks",
@@ -451,8 +466,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record["reason"] = "validator_incomplete"
         elif final_spec is None:
             record["reason"] = "missing_coverage_checks"
-        elif history and not (validator / "workspace/checks/oracle-review.txt").is_file():
-            record["reason"] = "oracle_review_missing"
         elif not oracle_complete:
             record["reason"] = "oracle_answer_incomplete"
         elif history and record.get("history_mutations", {}).get("status") != "caught":
