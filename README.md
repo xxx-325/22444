@@ -114,6 +114,9 @@ questions whose complete answer is already recoverable are separated from the
 external set. The default `--qa-source graph` path is unchanged.
 Review uses the declared event and its supplied context; it does not require a
 file or symbol anchor. Source closure and request-size checks still apply.
+Questions name the receiving system and intended work while leaving the historical
+limit or rule for the answer. The repository probe gets a final decision after its
+last allowed read; that decision cannot issue another query.
 
 The input file may be a unified JSON document or a supported native rollout.
 OpenHands public `session.jsonl` exports preserve paired tools and successful

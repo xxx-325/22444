@@ -81,6 +81,48 @@ class RepositoryProbeTests(unittest.TestCase):
             self.assertEqual(result["status"], "uncertain")
             self.assertIn("invalid_probe_query", result["reason"])
 
+    def test_last_query_result_is_available_to_the_final_decision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("def send(rows, *, limit): pass\n")
+            output = Path(directory) / "probe"
+            FakeProbeClient.responses = [
+                "PROBE: need_evidence\nREASON: inspect configuration\n"
+                "QUERY: read|repo|api.py|-|0\nEVIDENCE: none\nEND_PROBE",
+                "PROBE: history_required\nREASON: the caller supplies the external limit\n"
+                "QUERY: none\nEVIDENCE: query1\nEND_PROBE",
+            ]
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate({"question": "Which customer limit applies?"}, root,
+                                         "https://example.invalid", "m", "KEY", output,
+                                         max_steps=1)
+            self.assertEqual(result["status"], "history_required")
+            self.assertEqual(result["query_count"], 1)
+            final_input = json.loads((output / "step-002/input.json").read_text())["payload"]
+            self.assertEqual(final_input["remaining_queries"], 0)
+            self.assertEqual(final_input["observations"][0]["result"]["lines"][0]["text"],
+                             "def send(rows, *, limit): pass")
+
+    def test_final_decision_cannot_execute_an_extra_query(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("def send(rows, *, limit): pass\n")
+            FakeProbeClient.responses = [
+                "PROBE: need_evidence\nREASON: inspect\n"
+                "QUERY: read|repo|api.py|-|0\nEVIDENCE: none\nEND_PROBE",
+                "PROBE: need_evidence\nREASON: search further\n"
+                "QUERY: lookup|repo|.|limit|0\nEVIDENCE: query1\nEND_PROBE",
+            ]
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate({"question": "Which customer limit applies?"}, root,
+                                         "https://example.invalid", "m", "KEY",
+                                         Path(directory) / "probe", max_steps=1)
+            self.assertEqual(result["status"], "uncertain")
+            self.assertEqual(result["reason"], "probe_steps_exhausted")
+            self.assertEqual(result["query_count"], 1)
+
     def test_terminal_probe_with_followup_query_is_retried_as_evidence_step(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"

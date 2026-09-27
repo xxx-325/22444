@@ -1247,6 +1247,8 @@ serve the assigned historical-memory purpose: TARGET_DEFINITION
 If supplied, the focus fixes the concrete object and decision. Choose aligned only
 when the answer uses the required recorded history to resolve that decision.
 Choose drifted for a different goal, a bare current-code fact, or general knowledge.
+Also choose drifted when the question already supplies the historical rule or result
+being asked for, so the answer only repeats it or applies it without needing history.
 Choose mixed for multiple independent goals; uncertain if you cannot decide.
 Do not judge individual claim truth, atomicity, completeness, or difficulty here.
 Return exactly:
