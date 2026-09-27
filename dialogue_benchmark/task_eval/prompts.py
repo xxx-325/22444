@@ -12,6 +12,7 @@ def task_direction(qa_type):
 
 SELECT_TASK = """围绕这条 QA 选择一个自然的新开发需求。
 新功能要有实际用途，且答案中的某条历史信息会改变它的可观察行为。仅主题相关不够。
+新入口必须实际应用历史约定；若调用者还得把这条约定作为参数传进来，就没有测试到记忆的作用。
 只使用 QA 的问题和答案确定记忆主题。history_sources 是原文索引，必要时查询；
 answer_source=true 的条目是 QA 答案实际引用的来源；核对历史规则时优先读取这些条目。
 原文中其他话题不能替代 QA 的主题。历史约定已确定，不等于应用它的新功能已经实现。
@@ -69,6 +70,7 @@ repository_overview、repository_exploration、repository_evidence 都是当前�
 出题时确定入口，不能留成“CLI 或 API 均可”，否则测试者和实现者会选择不同入口。
 agreement_object 与 agreement_scope 表示要沿用的历史约定对象和范围；在需求中自然指明沿用它，
 不重述或猜测该约定的具体取值和例外。仓库当前行为不能替代该外部约定。
+新入口负责应用该对象的约定；不要添加参数让调用者再填写这个约定的映射或取值。
 仅约束新增能力及明确要求修改的行为；不要同时要求同一路径保持旧行为和改变旧行为。
 不额外增加功能、内部实现步骤、来源编号或“为了测试记忆”。
 严格只输出：
@@ -115,6 +117,7 @@ ACCEPT a2 | h1 | 历史行为要求 | inspect: 具体输入、动作和预期结
 END_ACCEPT
 每行只写一个可观察要求；所有行的 ID 都用 a1、a2、a3 这样的格式；新功能至少一行 task，
 每个适用历史目标单独一行，并把对应的 h id 写在第二列。不要把 h1 直接写成行 ID。
+历史行为应由新入口确定；验收输入不能先把对应历史规则当成配置参数传给实现。
 不要输出 history-contract、JSON、Markdown 表格、FILE 头或其他文字。
 """
 
@@ -131,6 +134,7 @@ historical_source 只能填给定目标的 source ID（例如 e53），public_so
 public 只表示题面或实际仓库是否已提供该目标；实现是否完成不影响它。
 public=full 时必须引用 task 或 query；public=partial 可以引用 task/query，也可以在没有可引用查询时写 none；完全没有公开部分才写 none。
 answer 只表示实际注入答案是否补足题面和仓库尚未提供的必要部分。
+若公开需求只要求通用可配置接口，具体历史取值由调用者提供，历史目标并不适用，applicable 填 no。
 answer=sufficient 时，最后一列必须逐字复制 historical_answer 中的一段文字；不能从 history/source 改写或引用，不能因为来源中有同义句就填 sufficient。
 如果某个目标的规则没有出现在 historical_answer 中，必须填 answer=insufficient、answer_quote=none；不能用历史来源替答案补齐。
 公开需求故意不重复具体历史映射时，只要该映射会改变新增功能的可观察行为，historical_answer 对这条映射就是必要且 sufficient；不要要求题面先写出答案才承认缺口。
