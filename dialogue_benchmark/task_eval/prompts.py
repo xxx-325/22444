@@ -329,6 +329,20 @@ END_REVIEW
 只有自动测试项时不写 acceptance-review.txt。完成文件后结束。
 """
 
+MUTATION_FILES = """给参考实现制造一处“功能可用、但忘记历史规则”的错误。
+只改 reference_sources 中一个或几个实现文件；保持所有公开功能要求，仅违反一项 external 历史要求。
+输出改后文件的完整内容（不是 diff）和 mutations.txt。程序会生成补丁并执行冻结测试核验。
+不改测试、不删掉新功能，不输出解释。
+FILE mutations.txt
+REVIEW m1
+acceptance: 被违反的历史验收行编号
+END_REVIEW
+END_FILE
+FILE reference_sources 中的实际路径
+改后的完整文件内容
+END_FILE
+"""
+
 JUDGE = """你是独立验收者。只读代码在 /workspace/candidate；
 冻结验收表在 /reference/spec/acceptance.md，程序执行结果在 /reference/checks.json。
 只检查验收表中 inspect: 项，严格执行已冻结的动作、输入和预期结果。

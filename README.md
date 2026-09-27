@@ -190,9 +190,10 @@ archives stay with qualification and independent validation.
 For historical tasks, a second finite review checks each acceptance row and any
 additional tests against the task, contract, changed source files and executed
 results. Missing coverage or unsupported requirements return for correction.
-OpenHands then produces a historical-error mutation and any required inspection
-evidence. The host replays the patch and determines whether tests reject it.
-These reviews and the mutation agent share a preflight budget; the complete
+For tasks covered by executable checks, one model request supplies changed source
+files for a historical-error variant. The host exports a replayable patch and
+executes the frozen checks. Tasks with inspection items use OpenHands to produce
+the variant and inspection evidence. These steps share a preflight budget; the complete
 dialogue archive remains in the qualified draft and frozen task.
 An interrupted validator retains its error and usage and stops construction;
 it does not trigger a new task draft without a completed review.

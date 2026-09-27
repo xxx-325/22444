@@ -61,6 +61,58 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
     return result
 
 
+def write_history_mutation(spec, candidate, changed_files, config, output, budget):
+    """Generate a source variant, export its exact patch, and leave replay to the host."""
+    import shutil
+    import tempfile
+    from .prompts import MUTATION_FILES
+    from .selection import _parse_files
+    from .versions import export_change, pin_baseline
+
+    spec, candidate, output = Path(spec), Path(candidate), Path(output)
+    try:
+        sources = {name: (candidate / name).read_text() for name in changed_files
+                   if (candidate / name).is_file() and Path(name).suffix not in {".md", ".rst", ".txt"}
+                   and not any(part in {"tests", "test", "docs"} or part.startswith("test_")
+                               for part in Path(name).parts)}
+        if not sources:
+            raise ValueError("No changed implementation source available for historical mutation")
+        response = budget.call(MUTATION_FILES, {
+            "task": (spec / "task.md").read_text(),
+            "contract": (spec / "history-contract.txt").read_text(),
+            "acceptance": read(spec / "acceptance.json"), "reference_sources": sources}, config, output)
+        names = {row.get("name") for row in response.get("files", [])}
+        if "mutations.txt" not in names or not (names & sources.keys()):
+            raise ValueError("Mutation must identify a historical acceptance row and change its implementation")
+        files = _parse_files(response, {"mutations.txt", *sources}, names)
+        checks = output / "workspace/checks"
+        checks.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="qa-mutation-") as directory:
+            base, mutant = Path(directory) / "base", Path(directory) / "mutant"
+            copy_tree(candidate, base)
+            pin_baseline(base)
+            copy_tree(candidate, mutant)
+            for name, content in files.items():
+                if name != "mutations.txt":
+                    (mutant / name).write_text(content, encoding="utf-8")
+            export_change(base, mutant, output / "version")
+            shutil.copy2(output / "version/changes.patch", checks / "m1.patch")
+        (checks / "mutations.txt").write_text(files["mutations.txt"], encoding="utf-8")
+        result = {"status": "finished"}
+    except Exception as error:
+        result = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}
+    usage = read(output / "usage.json") if (output / "usage.json").exists() else []
+    prompt_tokens = sum(row.get("prompt_tokens", 0) for row in usage)
+    completion_tokens = sum(row.get("completion_tokens", 0) for row in usage)
+    result.update(method="model_file_generation", metrics={
+        "attempted_requests": sum(row.get("request_count", 1) for row in usage),
+        "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "usage_complete": bool(usage) and all("prompt_tokens" in row and "completion_tokens" in row for row in usage)})
+    save(output / "result.json", result)
+    return result
+
+
 def _review_history_targets(task, answer, config, output, evidence, budget):
     """Check only frozen H rows; derive the overall qualification in Python."""
     from ..llm import stage_error

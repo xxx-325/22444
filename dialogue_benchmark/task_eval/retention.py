@@ -246,6 +246,9 @@ def compact_run(root):
             deletions.add(path)
 
     def agent_evidence(agent, keep_code=False):
+        receipt = agent / "result.json"
+        if receipt.is_file() and read(receipt).get("method") == "model_file_generation":
+            return
         save_trace(agent)
         if (agent / "trajectory.json").exists():
             # The complete SDK event remains in trace; the browsing projection

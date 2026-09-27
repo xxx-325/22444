@@ -10,7 +10,7 @@ from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
     answer_clarification, freeze_contract, freeze_targets, historical_context, prepare_history,
     read_history_review, oracle_coverage, validate_contract_targets, review_history, review_sources)
-from dialogue_benchmark.task_eval.runtime import run_agent, configure, review_checks
+from dialogue_benchmark.task_eval.runtime import run_agent, configure, review_checks, write_history_mutation
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
 import test_task_eval_flow
@@ -400,12 +400,17 @@ class HistoryConstructionTests(unittest.TestCase):
                     output.mkdir(parents=True)
                     (output / "coverage.md").write_text("Each acceptance row is covered.")
                     return {"status": "complete" if checks_coverage == "complete" else "revise", "rows": []}
+                def mutation_files(spec, candidate, changed, config, output, budget):
+                    (output / "workspace").mkdir(parents=True)
+                    return agent(output, config, "judge", "Generate mutation files",
+                                 reference=output.parent / "validator-reference")
                 with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
                      patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
                      patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
                      patch("dialogue_benchmark.task_eval.run.review_sources", return_value={
                          "support": "supported", "oracle_complete": coverage == "complete"}), \
                      patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage_review), \
+                     patch("dialogue_benchmark.task_eval.run.write_history_mutation", side_effect=mutation_files), \
                      patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
                      patch("dialogue_benchmark.task_eval.run.check_history_mutations", return_value={"status": mutation}) as replay:
                     from dialogue_benchmark.task_eval.run import construct
@@ -420,6 +425,31 @@ class HistoryConstructionTests(unittest.TestCase):
 
 
 class CheckReviewTests(unittest.TestCase):
+    def test_model_source_mutation_exports_replayable_patch_without_changing_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec, candidate = root / "spec", root / "candidate"
+            spec.mkdir()
+            candidate.mkdir()
+            (candidate / "entry.py").write_text("limit = 384\n")
+            for name in ("task.md", "history-contract.txt"):
+                (spec / name).write_text("Apply the known receiver limit")
+            save(spec / "acceptance.json", [{"id": "a2", "basis": ["h1"]}])
+            files = [{"name": "mutations.txt", "content": "REVIEW m1\nacceptance: a2\nEND_REVIEW"},
+                     {"name": "entry.py", "content": "limit = 500\n"}]
+            result = write_history_mutation(spec, candidate, ["entry.py"], {}, root / "review",
+                SimpleNamespace(call=lambda *args: {"files": files}))
+            self.assertEqual(result["status"], "finished")
+            self.assertEqual(result["method"], "model_file_generation")
+            self.assertEqual((candidate / "entry.py").read_text(), "limit = 384\n")
+            self.assertTrue(read(root / "review/version/version.json")["replay_verified"])
+            self.assertIn("+limit = 500", (root / "review/workspace/checks/m1.patch").read_text())
+            files[1]["name"] = "../outside.py"
+            result = write_history_mutation(spec, candidate, ["entry.py"], {}, root / "invalid",
+                SimpleNamespace(call=lambda *args: {"files": files}))
+            self.assertEqual(result["status"], "error")
+            self.assertFalse((root / "outside.py").exists())
+
     def test_review_uses_saved_tests_and_changed_sources_and_requires_all_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

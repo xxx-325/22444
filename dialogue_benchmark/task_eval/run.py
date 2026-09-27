@@ -9,7 +9,7 @@ from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_inputs, read, save, write_diff
 from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
 from .metrics import compare_trials
-from .runtime import configure, review_task, review_checks, run_agent
+from .runtime import configure, review_task, review_checks, write_history_mutation, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
@@ -425,11 +425,15 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         copy_tree(candidate, validation_reference / "implementation")
         save(validation_reference / "checks.json", record)
         validator = run / "validator"
-        prepare(validator, baseline)
         print(root.name, "preflight validation", attempt, flush=True)
-        validated = run_agent(validator, config, "judge", prompts.HISTORY_MUTATION if history else prompts.VALIDATOR,
-                              system=prompts.PREPARATION_SYSTEM,
-                              reference=validation_reference, **preflight_budget.remaining())
+        if history and not any(item["check"].startswith("inspect:") for item in items):
+            validated = write_history_mutation(spec, candidate, record["reference_version"]["changed_files"],
+                                                config, validator, preflight_budget)
+        else:
+            prepare(validator, baseline)
+            validated = run_agent(validator, config, "judge", prompts.HISTORY_MUTATION if history else prompts.VALIDATOR,
+                                  system=prompts.PREPARATION_SYSTEM,
+                                  reference=validation_reference, **preflight_budget.remaining())
         verdict_file = validator / "workspace/checks/validation.txt"
         feedback = verdict_file.read_text() if verdict_file.exists() else "验收者未完成验证，请核查需求和测试。"
         record["validation"] = labels(feedback)
@@ -445,9 +449,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             feedback = (run / "checks-review/coverage.md").read_text()
         record["validation_evidence"] = feedback
         record["validator_status"] = validated["status"]
+        record["validator_method"] = validated.get("method", "openhands")
         record["validator_metrics"] = validated.get("metrics", {})
         metrics = record["validator_metrics"]
-        preflight_budget.record([dict(request_count=metrics.get("attempted_requests", 0),
+        preflight_budget.record([] if validated.get("method") == "model_file_generation" else
+            [dict(request_count=metrics.get("attempted_requests", 0),
             **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
                if metrics.get("usage_complete") else {}))])
         record["preflight_budget"] = read(run / "preflight/selection-budget.json")
