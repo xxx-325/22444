@@ -119,6 +119,12 @@ class FrozenAcceptanceTests(unittest.TestCase):
         self.assertFalse(answer_quote_supported("Maple 的 note 字段为 null 时不能省略。", answer))
         self.assertFalse(answer_quote_supported("其他字段不保留显式 null。", answer))
 
+    def test_answer_quote_accepts_escaped_bullets_without_changing_claims(self):
+        answer = "- 按实际字节计量。\n- 客户上限为 384。"
+        self.assertTrue(answer_quote_supported(r"按实际字节计量。\n- 客户上限为 384。", answer))
+        self.assertTrue(answer_quote_supported(r"按实际字节计量。\r\n- 客户上限为 384。", answer))
+        self.assertFalse(answer_quote_supported(r"按实际字节计量。\n- 客户上限为 512。", answer))
+
     def test_completion_does_not_trigger_historical_responder(self):
         self.assertIsNone(historical_question("Done. All tests pass. Previous requirements preserved."))
         self.assertEqual(historical_question("HISTORY_QUESTION: Which CRM keeps null?"), "Which CRM keeps null?")

@@ -185,8 +185,9 @@ class SelectionTests(unittest.TestCase):
 
     def test_split_draft_keeps_public_request_free_of_history_answer(self):
         selection = {
-            "public": {"public_goal": "Add batch export", "agreement_object": "Maple export",
-                       "agreement_scope": "new Maple exports"},
+            "public": {"public_goal": "Add Maple batch export",
+                       "agreement_object": "Maple must omit null note",
+                       "agreement_scope": "new exports must omit null note"},
             "public_repository_evidence": [{"id": "query1", "result": {"matches": []}}],
             "history_targets": {"targets": [{"id": "h1", "statement": "omit null note",
                                                "scope": "Maple", "behavior": "omit", "sources": ["event1"],
@@ -211,8 +212,9 @@ class SelectionTests(unittest.TestCase):
         self.assertNotIn("historical_answer", public_payload)
         self.assertNotIn("history_targets", public_payload)
         self.assertNotIn("omit null note", str(public_payload))
-        self.assertEqual(public_payload["public_goal"], "Add batch export")
-        self.assertEqual(public_payload["agreement_object"], "Maple export")
+        self.assertEqual(public_payload["public_goal"], "Add Maple batch export")
+        self.assertNotIn("agreement_object", public_payload)
+        self.assertNotIn("agreement_scope", public_payload)
         self.assertEqual(public_payload["repository_evidence"], selection["public_repository_evidence"])
         private_payload = calls[1][1]
         self.assertIn("Omit note=null", private_payload["historical_answer"])

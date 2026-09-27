@@ -460,15 +460,11 @@ def write_public_task(selection, config, output, spec, budget, feedback=""):
     """Generate only the public task from a whitelisted selection envelope."""
     from .prompts import PUBLIC_TASK_SIMPLE
     public = selection.get("public") or {}
-    if not all(isinstance(public.get(key), str) and public[key].strip()
-               for key in ("public_goal", "agreement_object", "agreement_scope")):
+    if not isinstance(public.get("public_goal"), str) or not public["public_goal"].strip():
         raise ValueError("public_task_input_missing")
-    # Preserve the selected project and goal. Current repository contents
-    # are public in both trials; only historical sources and the answer stay
-    # private. Qualification checks the resulting task for answer leakage.
+    # The selector sees the answer and may repeat it in its agreement fields.
+    # Only its public goal and actual repository evidence reach this writer.
     payload = {"public_goal": public["public_goal"],
-               "agreement_object": public["agreement_object"],
-               "agreement_scope": public["agreement_scope"],
                "repository_overview": selection.get("repository_overview", {}),
                "repository_exploration": selection.get("repository_exploration", ""),
                "repository_evidence": selection.get("public_repository_evidence", []),

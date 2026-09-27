@@ -28,6 +28,11 @@ def answer_quote_supported(quote, answer):
         return False
     if quote in answer:
         return True
+    # A one-line protocol can encode an answer's bullet separator as literal
+    # backslash-n. Normalize only that separator, not arbitrary string escapes.
+    quote = re.sub(r"(?:\\r\\n|\\n)\s*(?=[-*]\s)", "\n", quote)
+    quote = "\n".join(re.sub(r"^[-*]\s*", "", line.strip())
+                      for line in quote.splitlines())
     lines = [re.sub(r"^[-*]\s*", "", line).strip()
              for line in answer.splitlines() if line.strip()]
     parts = [part.strip(" \t\r\n;；。.!！?") for part in re.split(r"[;；。.!！?]", quote)

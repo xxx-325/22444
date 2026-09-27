@@ -63,12 +63,12 @@ public_input 中的历史对象和适用场景可以被提及，但其中没有�
 不要写 memory-use、验收标准、答案、历史条款、来源编号或“为了测试记忆”。
 """
 
-PUBLIC_TASK_SIMPLE = """根据 public_input 写一项简短、自然的新开发需求，包含四部分：
+PUBLIC_TASK_SIMPLE = """根据给定的新用途和当前仓库，写一项简短、自然的新开发需求，包含四部分：
 1. public_goal 中的新用途。
 2. 一个确定的调用入口：模块与函数签名，或完整命令；说明输入和返回形式。
-3. 自然要求该入口沿用 agreement_object 在 agreement_scope 下已确认的约定。
+3. 要求该入口沿用新用途所指客户或系统之前已确认的约定。
 4. 哪些既有入口仍保持原行为。
-用输入中各项的实际内容写正文，不把 public_goal、agreement_object、agreement_scope 这些字段名写进需求。
+用实际项目和对象名称写正文，不把 public_goal 这样的字段名写进需求。
 仓库资料用于了解项目及已有接口，不代表新入口应采用的客户规则。
 具体字段处理、参数取值和状态映射由历史约定决定，本次不要猜测或补写；也不要让调用者再传这些规则。
 只说明交付行为，不指定必须调用哪个内部函数或复用哪段算法，不添加其他功能。
@@ -130,6 +130,7 @@ applicable：新功能必须用这条规则吗？yes/no/uncertain。仅实现可
 public：仅看公开信息，具体规则已明确多少？full/partial/none/uncertain。
 “沿用以前的约定”只指明对象，不提供具体规则；同一通用函数支持多个选项，也没有说明客户选哪个。
 full 必须引用 task 或 public_repository 中的真实来源；不能引用私有规则或答案。
+公开信息已给出全部必要取值与适用条件时选 full，不要求它重复历史的叙述或理由。
 answer：injected_answer 是否补齐仍缺的必要信息？sufficient/insufficient/uncertain；规则不适用或已完全公开用 not_applicable。
 sufficient 必须从 injected_answer 原样摘录支持文字；不能用 private_history_targets 替答案补缺项。
 
