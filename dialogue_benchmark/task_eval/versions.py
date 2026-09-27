@@ -38,6 +38,18 @@ def baseline_version(root):
             "content_sha256": fingerprint(root)}
 
 
+def source_version(root, package):
+    """Record the executing source, including uncommitted package edits."""
+    root = Path(root).resolve()
+    receipt = {"path": str(root), "package": package,
+               "package_sha256": fingerprint(root / package) if (root / package).is_dir() else None,
+               "commit": None, "package_status": None}
+    if (root / ".git").exists():
+        receipt.update(commit=git(root, "rev-parse", "HEAD").decode().strip(),
+                       package_status=git(root, "status", "--porcelain", "--", package).decode().splitlines())
+    return receipt
+
+
 def export_change(base, candidate, output):
     """Export binary/mode-aware Git patch and verify replay in a disposable clone."""
     base, candidate, output = Path(base).resolve(), Path(candidate).resolve(), Path(output)

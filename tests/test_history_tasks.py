@@ -308,6 +308,8 @@ class HistoryTests(unittest.TestCase):
         history = freeze_contract(spec, self.history, "ORACLE_ONLY")
         for name in ("task.md", "acceptance.md"):
             (spec / name).write_text("Implement the previously agreed tenant behavior")
+        for name in ("history-review.md", "memory-use.md"):
+            (spec / name).write_text("The injected answer was ORACLE_ONLY")
         save(spec / "acceptance.json", [
             {"id": "a1", "requirement": "Preserve blanks", "basis": ["h1"], "tests": ["test::non_eu"]},
             {"id": "a2", "requirement": "Reject EU blanks", "basis": ["h2"], "tests": ["test::eu"]}])
@@ -339,6 +341,12 @@ class HistoryTests(unittest.TestCase):
             result = evaluate({"qa": {}}, task, baseline, receipt, {"execution_image": "fake"}, {}, 0)
         self.assertNotIn("ORACLE_ONLY", prompts_seen[0])
         self.assertIn("ORACLE_ONLY", prompts_seen[1])
+        for trial in ("trial-1", "trial-2"):
+            projected = task / trial / "judge-reference/spec"
+            self.assertFalse((projected / "history-review.md").exists())
+            self.assertFalse((projected / "memory-use.md").exists())
+            self.assertNotIn("ORACLE_ONLY", str(read(projected / "history.json")))
+        self.assertTrue((task / "frozen/history-review.md").exists())
         self.assertEqual(result["without_memory"]["result"], "failed")
         self.assertEqual(result["with_memory"]["result"], "passed")
         self.assertEqual(result["with_memory"]["history_question_count"], 1)

@@ -239,7 +239,8 @@ def check_history_mutations(candidate, spec, validator_checks, output, image, *,
         if not re.fullmatch(r"m\d+", name):
             continue
         patch = validator_checks / (name + ".patch")
-        targets = [r for r in items if r["id"] == row.get("acceptance") and external.intersection(r["basis"])]
+        targets = [r for r in items if r["id"] == row.get("acceptance")
+                   and "task" not in r["basis"] and external.intersection(r["basis"])]
         if not patch.is_file() or not patch.stat().st_size or len(targets) != 1:
             continue
         root = output / name
@@ -256,7 +257,7 @@ def check_history_mutations(candidate, spec, validator_checks, output, image, *,
             checks = run_checks(root / "candidate", spec, root / "checks", image,
                                 candidate_pythonpath=candidate_pythonpath)
             assessment = assess_acceptance(items, checks)
-            functional = [r for r in assessment["rows"] if r["basis"] == ["task"]]
+            functional = [r for r in assessment["rows"] if "task" in r["basis"]]
             target = next(r for r in assessment["rows"] if r["id"] == row["acceptance"])
             receipt.update(checks=checks, acceptance=assessment,
                            caught=bool(functional) and all(r["status"] == "passed" for r in functional)

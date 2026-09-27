@@ -120,6 +120,8 @@ python -m dialogue_benchmark.task_eval.run \
 
 对话结束后的代码保存为没有上游 remote 的独立 Git 基线；`--baseline` 可复用已固定的干净仓库。各 Agent 获得不含 Git 历史和其他答案的代码副本。参考实现和正式两组都保存完整代码、支持二进制的 Git 补丁及 `version.json`，记录基线提交与结果 tree。程序在临时副本中验证补丁可恢复文件新增、删除、内容和执行权限。复用时克隆基线，切到凭据中的基线提交，在该副本执行 `git apply --index /path/to/changes.patch`。
 
+运行清单同时记录评测器、模拟器的 Git 提交、源码包哈希和执行预算，未提交的源码变化也可追溯。
+
 `report.html` 集中展示源 QA、实际出题输入、构造尝试、冻结测试、完整代码、补丁与两组结果。按 `input/`、`baseline/`、`qa/`、`tasks/` 组织完整运行后，执行 `python render_run.py runs/episode` 生成统一 HTML 入口和独立 QA 审阅页面。任务报告随每个任务完成更新。
 
 `run_episode.py --source-run /path/to/completed-session --simulator-path /path/to/agent-session-simulator --env-file /path/to/provider.env --output runs/episode` 可依次执行完整流程，使用模拟器配置的模型。默认每轨目标 40 道通过题、目标 12 个完成两组评测的任务，最多探索 24 个需求；QA 并发 10，仓库任务并发 3。重叠子图先按来源合并再抽 facts；静态代码关系保留给后续 QA 组合，不重复塞入 facts 请求。

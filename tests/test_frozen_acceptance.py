@@ -171,6 +171,15 @@ class FrozenAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["status"], "caught")
         self.assertIn("keep_other_nulls = True", (candidate / "export.py").read_text())
         self.assertTrue((self.root / "mutations/m1/result.json").exists())
+        # A mixed public/history row cannot establish a specifically historical failure.
+        mixed = [dict(row) for row in self.items]
+        mixed[1]["basis"] = ["task", "h1"]
+        save(spec / "acceptance.json", mixed)
+        with patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks) as runner:
+            result = check_history_mutations(candidate, spec, validator, self.root / "mixed", "image")
+        self.assertEqual(result["status"], "unverified")
+        runner.assert_not_called()
+        save(spec / "acceptance.json", self.items)
         (validator / "m1.patch").write_text(
             "diff --git a/export.py b/export.py\n--- a/export.py\n+++ b/export.py\n"
             "@@ -1,2 +1,2 @@\n-feature = True\n-keep_other_nulls = True\n+feature = False\n+keep_other_nulls = False\n")

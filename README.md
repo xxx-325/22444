@@ -237,6 +237,8 @@ reference and trial retains its full code, a binary-capable Git patch, and a
 application is checked in a disposable clone, including deletions and file modes.
 To restore a result, clone the baseline, check out the receipt's base commit,
 then run `git apply --index /path/to/changes.patch` in that clone.
+The run manifest also records evaluator and simulator commits, package content
+hashes and execution budgets, so uncommitted source changes remain traceable.
 
 A requirement must solve a real new problem, with a historical rule that changes
 observable behavior. At least one required rule must need external history;

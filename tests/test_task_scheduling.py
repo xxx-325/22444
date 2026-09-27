@@ -24,6 +24,10 @@ class TaskSchedulingTests(unittest.TestCase):
                       "--qa-run", str(root), "--env-file", str(root / ".env"),
                       "--baseline", str(baseline), "--output", str(root / "output"), "--count", "1"])
             self.assertEqual(read(root / "output/baseline.json")["source"], str(baseline.resolve()))
+            manifest = read(root / "output/manifest.json")
+            self.assertTrue(manifest["evaluator_version"]["package_sha256"])
+            self.assertEqual(manifest["execution"]["agent_requests"], 80)
+            self.assertEqual(manifest["execution"]["agent_seconds"], 1200)
 
     def test_failed_requirement_does_not_consume_completed_target(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -11,7 +11,7 @@ from .checks import run_checks, acceptance_items, assess_acceptance, check_histo
 from .metrics import compare_trials
 from .runtime import configure, review_task, review_checks, write_history_mutation, run_agent
 from .report import write_report
-from .versions import baseline_version, export_change, pin_baseline
+from .versions import baseline_version, export_change, pin_baseline, source_version
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
                       write_contract_from_targets, review_sources)
 from .selection import SelectionBudget, select_task, write_draft
@@ -576,6 +576,8 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
         copy_tree(spec, reference / "spec")
         if history:
             # The judge sees criteria and observable actions, never condition labels or injected answers.
+            for name in ("history-review.md", "memory-use.md"):
+                (reference / "spec" / name).unlink(missing_ok=True)
             judge_history = read(reference / "spec/history.json")
             for key in ("oracle_answer", "reference_information", "oracle_sufficiency"):
                 judge_history.pop(key, None)
@@ -683,6 +685,12 @@ def main(argv=None):
             selected.append(item)
     manifest = {"source_run": str(args.source_run.resolve()), "qa_run": str(args.qa_run.resolve()),
                 "baseline_sha256": fingerprint(baseline), "config": config,
+                "evaluator_version": source_version(Path(__file__).resolve().parents[2], "dialogue_benchmark"),
+                "simulator_version": source_version(args.simulator_path, "simulator"),
+                "execution": {"workers": args.workers, "revisions": args.revisions,
+                              "agent_requests": args.agent_requests, "agent_tokens": args.agent_tokens,
+                              "agent_seconds": 1200, "design_probe": args.design_probe,
+                              "reuse_preparation": str(args.reuse_preparation.resolve()) if args.reuse_preparation else None},
                 "comparison": "Historical answer injection; no memory retriever",
                 "baseline_version": version, "baseline": str(baseline),
                 "target": args.count, "task_budget": task_budget,
