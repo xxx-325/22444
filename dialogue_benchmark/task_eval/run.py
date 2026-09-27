@@ -168,7 +168,7 @@ def load_preparation(attempt, item, baseline, public_history):
 
 
 def construct(item, root, baseline, config, revisions, agent_options, *, design_probe=False,
-              selection_only=False, reuse_preparation=None):
+              selection_only=False, reuse_preparation=None, preparation_feedback=None):
     feedback = ""
     reference = root / "author-reference"
     reference.mkdir(parents=True)
@@ -196,6 +196,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     fixed_draft = None
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
+    if preparation_feedback:
+        if not reused:
+            raise ValueError("Preparation feedback requires an existing qualified task")
+        feedback = "\n以下是已保存测试的审阅问题。保持需求与历史规则不变，修正测试后结束：\n" + Path(preparation_feedback).read_text()
+        (reference / "test-repair-feedback.md").write_text(feedback, encoding="utf-8")
     exploration_text = ""
     # Malformed/offline selection fixtures may not contain a question.  There
     # is nothing meaningful for a repository explorer to anchor on, and
@@ -302,7 +307,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                      accepted=False, task_review=task_review)])
                 return {"selection_only": True, "status": "qualified"}
             remaining = budget.remaining()
-            if reused and attempt == 0:
+            if reused and attempt == 0 and not preparation_feedback:
                 authored = reused[1]
             else:
                 prepare(author, baseline)
@@ -321,7 +326,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                   "author_metrics": authored.get("metrics", {}),
                   "construction_budget": read(root / "selection-budget.json")}
         if reused and attempt == 0:
-            record["author_reused_from"] = str(Path(reuse_preparation).resolve())
+            record["preparation_reused_from"] = str(Path(reuse_preparation).resolve())
+            if not preparation_feedback:
+                record["author_reused_from"] = str(Path(reuse_preparation).resolve())
+            else:
+                record["test_repair_feedback"] = "author-reference/test-repair-feedback.md"
         if authored.get("error_code") or authored.get("error_type"):
             record["author_error"] = {k: authored[k] for k in ("error_code", "error_type", "detail") if k in authored}
         attempts.append(record)
@@ -633,6 +642,8 @@ def main(argv=None):
                         help="Stop after controlled selection, draft and qualification; no OpenHands execution")
     parser.add_argument("--reuse-preparation", type=Path,
                         help="Reuse one completed construction-NN author; requalify and rerun preflight in a new output")
+    parser.add_argument("--preparation-feedback", type=Path,
+                        help="Repair reused tests from saved review feedback before rerunning preflight")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
@@ -648,6 +659,8 @@ def main(argv=None):
         parser.error("Counts and budgets must be positive; revisions must be nonnegative")
     if task_budget < 1:
         parser.error("Task budget must be positive")
+    if args.preparation_feedback and not args.reuse_preparation:
+        parser.error("--preparation-feedback requires --reuse-preparation")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if (output / "manifest.json").exists() or (output / "baseline").exists():
@@ -690,7 +703,8 @@ def main(argv=None):
                 "execution": {"workers": args.workers, "revisions": args.revisions,
                               "agent_requests": args.agent_requests, "agent_tokens": args.agent_tokens,
                               "agent_seconds": 1200, "design_probe": args.design_probe,
-                              "reuse_preparation": str(args.reuse_preparation.resolve()) if args.reuse_preparation else None},
+                              "reuse_preparation": str(args.reuse_preparation.resolve()) if args.reuse_preparation else None,
+                              "preparation_feedback": str(args.preparation_feedback.resolve()) if args.preparation_feedback else None},
                 "comparison": "Historical answer injection; no memory retriever",
                 "baseline_version": version, "baseline": str(baseline),
                 "target": args.count, "task_budget": task_budget,
@@ -705,7 +719,8 @@ def main(argv=None):
             receipt = construct(item, root, baseline, config, args.revisions, agent_options,
                                 **({"design_probe": True} if args.design_probe else {}),
                                 selection_only=args.selection_only,
-                                **({"reuse_preparation": args.reuse_preparation} if args.reuse_preparation else {}))
+                                **({"reuse_preparation": args.reuse_preparation} if args.reuse_preparation else {}),
+                                **({"preparation_feedback": args.preparation_feedback} if args.preparation_feedback else {}))
             if receipt is None:
                 records = read(root / "construction.json") if (root / "construction.json").exists() else [{}]
                 return {"task": root.name, "status": records[-1].get("status", "not_admitted"), "qa_id": item["qa"]["id"],

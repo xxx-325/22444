@@ -206,6 +206,9 @@ task-run output to reuse a completed test author after a preflight interruption.
 The runner verifies the QA, source evidence, baseline and qualified requirements,
 then reruns qualification, reference implementation and validation. Original
 artifacts remain unchanged and reused author usage is identified separately.
+Add `--preparation-feedback /path/to/test-review.md` to have the test author
+repair those tests from saved review findings while preserving the qualified task.
+This feedback should describe test defects, without solver comparison outcomes.
 Collection and execution errors return to the test author before starting a
 reference solver. Tests separate public functionality from historical rules;
 compatibility assertions compare only the behavior required by the task.

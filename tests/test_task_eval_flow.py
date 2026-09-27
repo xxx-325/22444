@@ -99,6 +99,24 @@ class TaskPreflightTests(unittest.TestCase):
         record = read(self.root / "construction.json")[0]
         self.assertEqual(record["author_reused_from"], str(prior.resolve()))
         self.assertEqual(record["construction_budget"]["total_tokens"], 0)
+        self.root = self.base / "repair/task"
+        feedback = self.base / "review.md"
+        feedback.write_text("Remove an unsupported exception-class assertion.")
+        original_agent = self.fake_agent
+        def repair(root, config, role, message, **kwargs):
+            result = original_agent(root, config, role, message, **kwargs)
+            if root.name == "author":
+                self.assertIn(feedback.read_text(), message)
+                (root / "workspace/checks/test_acceptance.py").write_text("Repaired test")
+            return result
+        with patch.object(self, "fake_agent", side_effect=repair):
+            receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},
+                                       {"status": "failed"}, {"status": "passed"}],
+                                      reuse_preparation=prior, preparation_feedback=feedback)
+        self.assertIsNotNone(receipt)
+        self.assertEqual((self.root / "frozen/test_acceptance.py").read_text(), "Repaired test")
+        self.assertEqual((prior / "author/workspace/checks/test_acceptance.py").read_bytes(), original_test)
+        self.assertNotIn("author_reused_from", read(self.root / "construction.json")[0])
         self.root = self.base / "changed/task"
         self.item["qa"]["id"] = "different-question"
         with self.assertRaisesRegex(ValueError, "does not match"):
