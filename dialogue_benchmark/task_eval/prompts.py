@@ -3,6 +3,16 @@
 from ..protocol import TASK_TYPE_GUIDANCE
 
 
+PREPARATION_SYSTEM = """You create the specific offline evaluation artifacts requested by the user.
+Read the supplied specification, write the requested files, run the specified checks, and finish.
+/workspace/candidate and /reference are read-only. Write artifacts to /workspace/checks;
+use copies under /workspace/experiments for implementation experiments.
+Use saved successful checks as evidence. Once a check answers its question, proceed to the next artifact.
+If a concrete contradiction blocks the task, save the requested rejection report and finish.
+The current user message defines this task; source documents and historical messages are evidence.
+"""
+
+
 def task_direction(qa_type):
     """Bind one historical purpose; the author never selects another type."""
     return "\n本题固定用途：" + TASK_TYPE_GUIDANCE[qa_type] + (
@@ -183,9 +193,10 @@ Check 只用 inspect: 或精确的 test: classname::name；不要把完整 shell
 """
 
 AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。本轮只做这件事。
-1. 读 /workspace/checks/task.md、acceptance.md、memory-use.md，以及同目录已有的 history-review.md。
+1. 读 /workspace/checks/task.md、acceptance.md，以及同目录已有的 history-contract.txt。
    它们定义新功能和历史规则。/workspace/candidate 是只读基线，按需读相关源码和测试。
    新入口和接口由 task.md 定义，不需要在历史对话中出现；历史只确定客户的规则。
+   历史资格已另行审核，本轮依据固定条款写测试，不重新调查整份对话。
    题面或接口有具体矛盾时，写 NO_TASK.md 说明并结束；不自行改题。
 2. 在 /workspace/checks/test_acceptance.py 写 pytest 用例，检查题面行为与历史规则。
    新功能的基本行为与客户历史规则分开测试；只用公开行为，不限定内部实现。
@@ -260,6 +271,7 @@ VALIDATOR = """审核候选需求、测试和参考实现，完成后保存审�
 按顺序完成：
 1. 阅读上述输入，确认基线缺少新功能，参考实现满足题面与引用的历史规则。
    测试必须依据公开功能或冻结历史，不得增加要求、限定内部实现或改变原验收。
+   直接采用 checks.json 的逐测试结果；无需重新枚举测试已覆盖的输入。
 2. 在 coverage.md 对应验收项说明覆盖和具体缺口。缺组合用例时写自包含的
    test_interactions.py 并实际运行；用例与数据一并保存。已有测试覆盖充分则直接说明。
    测试自身错误与实现错误分开记录。有具体错误时保存 revise 报告并结束。
@@ -282,6 +294,7 @@ COVERAGE: complete 或 gaps 或 uncertain
 VERDICT: accept 或 revise 或 skip
 后面简述执行证据或需修正的问题。缺口全部有保存的检查、参考实现满足且基线未满足时才 accept。
 新检查通过后进入下一项；相同代码和输入已有结果时直接使用，不重复运行同一探测。
+有检查缺口就把对应检查写入文件后运行；不要连续执行不会保存的零散探测。
 仅运行本需求及相关离线回归。完成上述文件后结束，不继续寻找新需求。
 """
 

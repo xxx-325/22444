@@ -249,7 +249,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             remaining = budget.remaining()
             prepare(author, baseline)
             authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS + feedback,
-                                 reference=reference, **remaining)
+                                 system=prompts.PREPARATION_SYSTEM, reference=reference, **remaining)
             metrics = authored.get("metrics", {})
             budget.record([dict(request_count=metrics.get("attempted_requests", 0),
                                 **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
@@ -347,6 +347,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         print(root.name, "preflight validation", attempt, flush=True)
         validated = run_agent(validator, config, "judge", prompts.VALIDATOR + (
                               prompts.HISTORY_VALIDATOR if history else ""),
+                              system=prompts.PREPARATION_SYSTEM,
                               reference=validation_reference, **agent_options)
         verdict_file = validator / "workspace/checks/validation.txt"
         feedback = verdict_file.read_text() if verdict_file.exists() else "验收者未完成验证，请核查需求和测试。"
