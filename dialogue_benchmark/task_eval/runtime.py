@@ -5,7 +5,7 @@ import os
 import sys
 import time
 
-from .artifacts import copy_tree, read, save
+from .artifacts import copy_tree, read, save, install_candidate_fixture
 from .metrics import measure, text_content
 
 
@@ -28,20 +28,137 @@ def ask_model(prompt, payload, config, output):
         save(output / "response-text.json", client.responses)
 
 
-def review_task(task, answer, config, output):
+def _review_history_targets(task, answer, config, output, evidence, budget):
+    """Check only frozen H rows; derive the overall qualification in Python."""
+    from ..llm import stage_error
+    from .prompts import HISTORY_QUALIFY
+    targets = evidence.get("history_targets", [])
+    target_ids = [row.get("id") for row in targets]
+    payload = {"public_task": task, "historical_answer": answer,
+               "history_targets": targets,
+               "repository_queries": evidence.get("repository_queries", []),
+               "contracts": evidence.get("contracts", []),
+               "sources": evidence.get("sources", [])}
+    try:
+        allowed_history_sources = sorted({source for target in targets for source in target.get("sources", [])})
+        allowed_public_sources = sorted({query.get("id") for query in evidence.get("repository_queries", [])})
+        protocol = (HISTORY_QUALIFY
+                    + "\n本题固定目标 ID 只能使用：" + ",".join(target_ids)
+                    + "。历史来源只能使用：" + ",".join(allowed_history_sources or ["none"])
+                    + "。仓库查询来源只能使用：" + ",".join(allowed_public_sources or ["none"])
+                    + "。不要使用示例中的 e53、query1 等占位符，除非它们确实出现在上面的允许列表。\n")
+        response = (budget.call if budget else ask_model)(protocol, payload, config, output)
+        history_rows = response.get("history_reviews", [])
+        task_row = response.get("task_review")
+        if (not isinstance(task_row, dict) or task_row.get("id") != "task"
+                or len(history_rows) != len(target_ids)
+                or {row.get("id") for row in history_rows} != set(target_ids)):
+            raise ValueError("invalid_history_review_rows")
+        if task_row.get("leakage") not in {"clean", "leaked", "uncertain"} \
+                or not isinstance(task_row.get("issue"), str):
+            raise ValueError("invalid_task_review_row")
+        valid_applicable = {"yes", "no", "uncertain"}
+        valid_public = {"full", "partial", "none", "uncertain"}
+        valid_answer = {"sufficient", "insufficient", "not_applicable", "uncertain"}
+        known_source_ids = {event.get("id") for event in evidence.get("sources", [])}
+        known_source_ids.update(source for target in targets for source in target.get("sources", []))
+        target_sources = {target.get("id"): set(target.get("sources", [])) for target in targets}
+        clean_rows, errors = [], []
+        for row in history_rows:
+            if (row.get("applicable") not in valid_applicable
+                    or row.get("public") not in valid_public
+                    or row.get("answer") not in valid_answer):
+                errors.append(row.get("id", "unknown") + ":invalid_state")
+                continue
+            refs = _comma_refs(row.get("historical_sources"))
+            public_refs = _comma_refs(row.get("public_sources"))
+            if set(refs) - known_source_ids or set(refs) - target_sources.get(row["id"], set()):
+                errors.append(row["id"] + ":unknown_history_source")
+            allowed_public = {"task"} | {query.get("id") for query in evidence.get("repository_queries", [])}
+            if set(public_refs) - allowed_public:
+                errors.append(row["id"] + ":unknown_public_source")
+            # ``partial`` may describe a small amount of information visible
+            # in the task itself without a repository query.  Only a ``full``
+            # public claim must carry an explicit source; otherwise a model's
+            # harmless omission of ``task`` would turn a semantic review into
+            # a protocol failure.
+            if row.get("public") == "full" and not public_refs:
+                errors.append(row["id"] + ":public_evidence_missing")
+            if (row.get("applicable") == "yes" and row.get("public") != "full"
+                    and row.get("answer") == "not_applicable"):
+                errors.append(row["id"] + ":answer_state_inconsistent")
+            quote = row.get("answer_quote", "none")
+            from .history import answer_quote_supported
+            if row.get("answer") == "sufficient" and (not isinstance(quote, str)
+                    or not quote.strip() or quote == "none"
+                    or not answer_quote_supported(quote, answer)):
+                errors.append(row["id"] + ":answer_quote_missing")
+            clean_rows.append({"id": row["id"], "applicable": row["applicable"],
+                               "public": row["public"], "answer": row["answer"],
+                               "historical_sources": refs, "public_sources": public_refs,
+                               "answer_quote": quote, "issue": row.get("issue", "none")})
+        if errors:
+            status, issue = "uncertain", "; ".join(errors)
+        elif task_row["leakage"] != "clean":
+            status, issue = task_row["leakage"], task_row["issue"]
+        elif not any(row["applicable"] == "yes" for row in clean_rows):
+            status, issue = "ineligible", "no_applicable_history_target"
+        elif any(row["applicable"] == "uncertain" or row["public"] == "uncertain"
+                 or row["answer"] == "uncertain" for row in clean_rows):
+            status, issue = "uncertain", "history_coverage_uncertain"
+        elif any(row["applicable"] == "yes" and row["public"] != "full"
+                 and row["answer"] == "insufficient" for row in clean_rows):
+            status, issue = "uncertain", "historical_answer_incomplete"
+        elif not any(row["applicable"] == "yes" and row["public"] != "full"
+                     and row["answer"] == "sufficient" for row in clean_rows):
+            status, issue = "ineligible", "no_memory_gap"
+        else:
+            status, issue = "clean", "none"
+        result = {"status": status, "issue": issue, "history_rows": clean_rows,
+                  "task_review": task_row}
+    except Exception as error:
+        result = {"status": "uncertain", "issue": "history_review_failed",
+                  "error": stage_error("history_review", error)}
+    usage_path = Path(output) / "usage.json"
+    result["usage"] = read(usage_path) if usage_path.exists() else []
+    save(Path(output) / "result.json", result)
+    return result
+
+
+def _comma_refs(value):
+    if not value or value == "none":
+        return []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def review_task(task, answer, config, output, *, evidence=None, budget=None):
+    """Run a fixed-choice task check; historical candidates use per-H review."""
+    if evidence and evidence.get("history_targets"):
+        return _review_history_targets(task, answer, config, output, evidence, budget)
     """One small fixed-choice check; no repository or agent tool context."""
     from ..llm import stage_error
-    from .prompts import TASK_REVIEW
+    from .prompts import EXTERNAL_TASK_REVIEW, TASK_REVIEW
     payload = {"public_task": task, "historical_answer": answer}
+    if evidence is not None:
+        payload["evidence"] = evidence
     try:
-        response = ask_model(TASK_REVIEW, payload, config, output)
+        prompt = EXTERNAL_TASK_REVIEW if evidence and evidence.get("qa_source") == "external" else TASK_REVIEW
+        response = (budget.call if budget else ask_model)(prompt, payload, config, output)
         reviews = response.get("reviews", [])
         decision = reviews[0] if len(reviews) == 1 else {}
         result = {"status": decision.get("leakage"), "issue": decision.get("issue")}
-        if (result["status"] not in {"clean", "leaked", "uncertain"}
+        result.update(memory_gap=decision.get("memory_gap"), answer_quote=decision.get("answer_quote"))
+        if (result["status"] not in {"clean", "leaked", "ineligible", "uncertain"}
                 or not isinstance(result["issue"], str) or not result["issue"].strip()
                 or (result["status"] == "clean") != (result["issue"] == "none")):
             result = {"status": "uncertain", "issue": "invalid_task_review"}
+        if result["status"] == "clean":
+            gap, quote = result.get("memory_gap"), result.get("answer_quote")
+            if (not isinstance(gap, str) or not gap.strip() or gap == "none"
+                    or not isinstance(quote, str) or not quote.strip() or quote == "none" or quote not in answer):
+                result.update(status="uncertain", issue="missing_supported_memory_gap")
     except Exception as error:
         result = {"status": "uncertain", "issue": "task_review_failed",
                   "error": stage_error("task_review", error)}
@@ -113,7 +230,7 @@ def public_reply(events):
 
 
 def run_agent(root, config, role, message, *, system=None, reference=None,
-              max_requests=80, max_tokens=1500000, history=None):
+              max_requests=80, max_tokens=1500000, max_seconds=1200, history=None):
     from simulator.openhands.budget import Budget
     from simulator.openhands.container import SDKContainer
 
@@ -130,10 +247,11 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
     exchanges = []
     private = root / "private"
     private.mkdir(parents=True, exist_ok=True)
-    budget = CallBudget({"max_seconds": 1200}, journal=private / "budget.json")
+    install_candidate_fixture(root / "workspace/checks")
+    budget = CallBudget({"max_seconds": max_seconds}, journal=private / "budget.json")
     save(private / "input.json", {"message": message, "system": system,
                                   "max_requests": max_requests, "max_tokens": max_tokens,
-                                  "max_seconds": 1200})
+                                  "max_seconds": max_seconds})
     worker = None
     outcome = {"status": "running"}
     try:

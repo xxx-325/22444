@@ -327,7 +327,8 @@ def compact_run(root):
                 spec = attempt / "author/workspace/checks"
                 # Preserve rejected criteria and tests for debugging, without failed code copies.
                 item["artifacts"] = dict(item.get("artifacts", {}))
-                for folder in (spec, attempt / "validator/workspace/checks"):
+                for folder in (spec, attempt / "validator/workspace/checks",
+                               attempt / "qualified-draft", attempt / "task-review"):
                     if folder.is_dir():
                         for path in folder.rglob("*"):
                             if path.is_file() and path.suffix in {".md", ".txt", ".py", ".patch", ".sh", ".json"}:

@@ -3,7 +3,9 @@
 This repository builds useful, evidence-grounded questions from a dialogue.
 The QA builder is independent of any memory product: it does not connect to a
 memory service or scan a repository to fill missing historical facts. An optional
-task experiment extends approved QA into new repository requirements.
+read-only final-repository probe can remove questions that the current checkout
+already answers directly. An optional task experiment extends approved QA into
+new repository requirements.
 
 ## What it does
 
@@ -40,10 +42,12 @@ questions connect that history to implementation or testing behavior.
 | `verification_reuse` | An actual test or experiment result | Use that result to choose boundaries and regression checks |
 | `compatibility_preservation` | Established behavior required by existing callers | Add behavior while preserving the required old contract |
 
-Each request has one statically nominated purpose. Focus and QA generation use
-only its definition; a separate short review checks target alignment. Evidence,
-atomicity, and completeness remain separate checks. The task author receives the
-same purpose and must connect the actual historical answer to a new implementation
+By default, generation does not fix one purpose in advance. The model first
+chooses one useful follow-up target from the selected evidence and writes the
+question; deterministic evidence rules then assign the applicable type. Passing
+`--general-types` or `--code-types` explicitly constrains that choice. A separate
+short review checks target alignment, while evidence, atomicity, and completeness
+remain separate checks. The task author receives the final type and must connect the actual historical answer to a new implementation
 decision and observable acceptance behavior. Older QA types are not accepted; regenerate QA
 before deriving tasks from an older run.
 
@@ -85,6 +89,30 @@ python -m dialogue_benchmark.cli examples/dialogue.json \
   --model 'your-model'
 ```
 
+When a final repository snapshot is available, add `--repository /path/to/checkout`.
+After QA review and before quotas are applied, a host-controlled probe may look up
+and read relevant files. It receives the question, answer claims to verify, and
+code anchors, without historical sources. Only repository content counts as
+evidence that an answer is recoverable. External-only publication holds uncertain
+cases for review. Probe receipts are kept under
+`recoverability/`, and the audit marks filtered candidates as
+`filtered_recoverable`, not as quality rejections.
+
+### External-only QA source
+
+The dialogue producer may also save a small `external-events.json` sidecar. It
+records public dialogue source IDs for facts that arose from a user correction,
+an environment observation, a perturbation failure, a compatibility exception,
+or a completed verification, together with the later public event that used
+the fact. It contains provenance and event kind, not a second private answer.
+
+Run `--qa-source external --external-events /path/to/external-events.json` to
+use only those events as QA seeds. This mode does not build the evidence graph
+or search ordinary code facts. It extracts facts from the referenced dialogue,
+generates and reviews QA, and still runs the optional final-repository probe so
+questions whose complete answer is already recoverable are separated from the
+external set. The default `--qa-source graph` path is unchanged.
+
 The input file may be a unified JSON document or a supported native rollout.
 OpenHands public `session.jsonl` exports preserve paired tools and successful
 file edits. A `dialogue.json` list of user/assistant messages is also accepted;
@@ -92,8 +120,9 @@ that list alone does not contain the tool history. Native multiline tool output
 keeps its line boundaries, and complete edit bodies are represented once in the
 version evidence instead of repeated inside tool metadata.
 The supplied records can contain visible messages, paired tool calls/results,
-code observations, and successful patches. Paths are treated as evidence only;
-the builder never reads those paths from disk.
+code observations, and successful patches. Paths are treated as evidence only by
+the fact/QA stages; the optional final-repository probe is the only stage that
+reads a supplied checkout.
 
 Each run is written to its own directory. It contains normalized evidence,
 scopes, facts, candidate questions, audit information, and the public QA view.
@@ -125,15 +154,34 @@ python -m dialogue_benchmark.task_eval.run \
   --count 3 --task-budget 6 --revisions 5 --workers 2
 ```
 
-The configured model receives a historical QA, its actual generation input, and
-read-only access to the dialogue-end repository. It authors a new requirement,
-tests where feasible, and acceptance criteria.
+The host calls the configured model once per selection decision and executes one
+structured read-only lookup/read request, retaining exact sources, ranges, and
+pagination. Initial evidence includes selected history, user messages, and related
+visible plans; full history stays on the host. Duplicate requests, errors, and
+exhausted budgets produce pending records, not ineligibility conclusions.
+A candidate first freezes the historical targets from the original dialogue.
+Then one tool-free call writes only the public task, and a second tool-free call
+writes private history use and acceptance material. The existing qualification
+review runs only after the public task is fixed; only then does OpenHands
+construct tests. Selection, drafting, review, and test authoring share cumulative
+budgets, without a per-response output cap.
+The test author cannot change qualified requirements or historical rules.
+The public draft preserves the selected project's goal and uses actual repository
+observations. An unfinished test author stops with its own reason; changed draft
+files are listed separately, without restarting construction automatically.
+Use `--selection-only` to stop after qualification, retaining decisions, queries,
+and usage without starting OpenHands or paired execution.
 An independent Code Agent implements the requirement; a validator checks the
 baseline, reference implementation, and test quality. Failed attempts remain
 available for inspection, with up to five revisions by default.
 `count` targets completed task pairs. Distinct QA-derived requirements are tried
 in bounded batches until the target, QA pool, or `task-budget` is exhausted.
 The default task budget is twice the target; failure records are retained.
+
+`examples/controlled_report_fixture.py` creates a small report repository and a
+scripted customer-protocol dialogue for testing this pipeline. It is a synthetic
+mechanism fixture, not an automatically generated collaboration episode. Real
+episodes use the same QA and task stages after dialogue generation.
 
 The dialogue-end code is pinned as an independent local Git baseline, with no
 upstream remote. `--baseline` can reuse an already pinned clean repository.
@@ -145,10 +193,13 @@ To restore a result, clone the baseline, check out the receipt's base commit,
 then run `git apply --index /path/to/changes.patch` in that clone.
 
 A requirement must solve a real new problem, with a historical rule that changes
-observable behavior. Main historical tasks use still-applicable external rules;
-recoverable information is excluded and uncertain availability needs review.
-Before trials, the validator checks the exact injected answer against all active
-rules, including scoped corrections and exceptions. Missing answer content returns
+observable behavior. At least one required rule must need external history;
+repository-recoverable compatibility requirements can also apply and are checked.
+Uncertain availability needs review. Before trials, the validator checks the exact
+injected answer against necessary information still missing from the public task
+and repository, including scoped corrections and exceptions. At least one such
+gap must remain. Already supplied information need not be repeated in the answer.
+Acceptance covers every active rule. Missing answer content returns
 for QA correction or a smaller task; it is never filled from private acceptance notes.
 
 The frozen acceptance table has four columns: ID, requirement, basis, and check.
@@ -156,8 +207,13 @@ Each mandatory row cites the new task or a historical rule and an exact test nam
 a saved shell check, or a repeatable inspection. The program retains individual
 JUnit results and executes the same frozen tests/regressions with the Code Agent's
 project path configuration. It also replays a saved wrong implementation which
-retains the new functionality but violates a historical rule. This must fail the
+retains the new functionality but violates an external historical rule. This must fail the
 historical check while passing the basic functionality checks.
+Generated pytest tests use the program-provided `candidate_root` fixture; the
+reserved `conftest.py` supplies the same repository path in authoring and all checks.
+Static QA evidence marked `unknown` may proceed to semantic QA review; explicit
+`insufficient` evidence is rejected. Neither QA approval nor static uncertainty
+replaces task eligibility review.
 
 Both fresh solvers start from the same pinned code. Only the memory condition
 receives the QA answer. Both can explicitly request history; the responder answers

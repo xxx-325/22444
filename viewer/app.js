@@ -243,7 +243,7 @@
   }
 
   const stopNames = {target_reached:"已达到目标", pool_exhausted:"证据组候选池已耗尽", budget_exhausted:"探索预算已用完", global_blocker:"鉴权等全局错误"};
-  const selectionNames = {published:"已发布", over_quota:"审核通过 · 超出配额", duplicate:"重复 · 未发布", not_approved:"未通过完整审核", rejected:"拒绝", safety_blocked:"敏感信息拦截", not_selected:"未选择"};
+  const selectionNames = {published:"已发布", over_quota:"审核通过 · 超出配额", duplicate:"重复 · 未发布", not_approved:"未通过完整审核", rejected:"拒绝", safety_blocked:"敏感信息拦截", filtered_recoverable:"当前仓库可直接回答 · 已过滤", not_selected:"未选择"};
   function renderAudit() {
     const rows=(data.candidate_records||[]).filter(row => {
       const q=row.current||row.original||{};
@@ -275,7 +275,7 @@
       if(q.evidence_group_id&&data.groups.some(g=>g.id===q.evidence_group_id))
         card.append(button("定位证据子图 ↑",()=>{chooseGroup(q.evidence_group_id);go(4);$("steps").scrollIntoView({behavior:"auto"});},"text-button"));
       const detail=el("details");detail.append(el("summary","展开原始审核、拒绝原因与修正前后"));
-      for(const [label,value] of [["原始审核",q.review],["拒绝记录",row.rejections],["发布选择原因",row.selection_reason],["重复目标",row.duplicate_of],["校验前候选",row.original],["修正前后版本",row.revisions]]){
+      for(const [label,value] of [["原始审核",q.review],["拒绝记录",row.rejections],["仓库可恢复性",row.recoverability],["发布选择原因",row.selection_reason],["重复目标",row.duplicate_of],["校验前候选",row.original],["修正前后版本",row.revisions]]){
         detail.append(el("h4",label),el("pre",value==null||Array.isArray(value)&&!value.length?"未保存 / 未发生":JSON.stringify(value,null,2),"audit-json"));
       }
       card.append(detail);panel.append(card);

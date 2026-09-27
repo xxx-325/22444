@@ -1,0 +1,247 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from dialogue_benchmark import cli
+from dialogue_benchmark.llm import parse_text_response
+from dialogue_benchmark.repository_probe import _repository_entries, probe_candidate, repository_anchors
+
+
+class FakeProbeClient:
+    responses = []
+
+    def __init__(self, *unused, **kwargs):
+        self.usage = []
+
+    def ask(self, prompt, payload):
+        self.usage.append({"request_count": 1, "prompt_tokens": 10,
+                           "completion_tokens": 3})
+        value = self.responses.pop(0)
+        return parse_text_response(value) if isinstance(value, str) else value
+
+
+class RepositoryProbeTests(unittest.TestCase):
+    def test_probe_file_map_includes_readable_nested_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src/api.py").write_text("value = 1\n")
+            (root / "README.md").write_text("Demo\n")
+            self.assertEqual(_repository_entries(root), ["README.md", "src/api.py"])
+
+    def test_protocol_is_small_and_rejects_answer_style_fields(self):
+        result = parse_text_response(
+            "PROBE: need_evidence\nREASON: read the entry\n"
+            "QUERY: read|repo|config.py|-|0\nEVIDENCE: none\nEND_PROBE")
+        self.assertEqual(result["probe"]["decision"], "need_evidence")
+        with self.assertRaises(ValueError):
+            parse_text_response(
+                "PROBE: recoverable\nREASON: yes\nQUERY: none\n"
+                "EVIDENCE: q1\nANSWER: leaked\nEND_PROBE")
+
+    def test_probe_reads_repo_and_checks_answer_claims(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "config.py").write_text("def load_config():\n    raise ValueError('missing')\n")
+            output = Path(directory) / "probe"
+            FakeProbeClient.responses = [
+                "PROBE: need_evidence\nREASON: inspect entry\n"
+                "QUERY: read|repo|config.py|-|0\nEVIDENCE: none\nEND_PROBE",
+                "PROBE: recoverable\nREASON: the file states the behavior\n"
+                "QUERY: none\nEVIDENCE: query1\nEND_PROBE",
+            ]
+            question = {"question": "config.py 的 load_config 如何处理缺失配置？",
+                        "answer_points": [{"text": "load_config 遇到缺失配置会抛出 ValueError"}]}
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate(question, root, "https://example.invalid", "m", "KEY", output)
+            self.assertEqual(result["status"], "recoverable")
+            payload = json.dumps(json.loads((output / "step-001/input.json").read_text()),
+                                 ensure_ascii=False)
+            self.assertIn("load_config 遇到缺失配置会抛出 ValueError", payload)
+            self.assertEqual(result["query_count"], 1)
+
+    def test_duplicate_query_does_not_claim_recoverable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("return None\n")
+            FakeProbeClient.responses = [
+                "PROBE: need_evidence\nREASON: inspect\n"
+                "QUERY: read|repo|api.py|-|0\nEVIDENCE: none\nEND_PROBE",
+                "PROBE: need_evidence\nREASON: inspect again\n"
+                "QUERY: read|repo|api.py|-|0\nEVIDENCE: query1\nEND_PROBE",
+            ]
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate({"question": "api.py 的返回行为是什么？"}, root,
+                                         "https://example.invalid", "m", "KEY",
+                                         Path(directory) / "probe")
+            self.assertEqual(result["status"], "uncertain")
+            self.assertIn("invalid_probe_query", result["reason"])
+
+    def test_terminal_probe_with_followup_query_is_retried_as_evidence_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("return None\n")
+            FakeProbeClient.responses = [
+                "PROBE: uncertain\nREASON: inspect the file\n"
+                "QUERY: read|repo|api.py|-|0\nEVIDENCE: none\nEND_PROBE",
+                "PROBE: history_required\nREASON: the historical result is absent\n"
+                "QUERY: none\nEVIDENCE: query1\nEND_PROBE",
+            ]
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate({"question": "api.py 的行为是什么？"}, root,
+                                         "https://example.invalid", "m", "KEY",
+                                         Path(directory) / "probe")
+            self.assertEqual(result["status"], "history_required")
+            self.assertEqual(result["query_count"], 1)
+
+    def test_empty_lookup_cannot_support_recoverable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("return None\n")
+            FakeProbeClient.responses = [
+                "PROBE: need_evidence\nREASON: search\n"
+                "QUERY: lookup|repo|.|missing_symbol|0\nEVIDENCE: none\nEND_PROBE",
+                "PROBE: recoverable\nREASON: yes\nQUERY: none\n"
+                "EVIDENCE: query1\nEND_PROBE",
+            ]
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate({"question": "api.py 的 missing_symbol 行为是什么？"}, root,
+                                         "https://example.invalid", "m", "KEY",
+                                         Path(directory) / "probe")
+            self.assertEqual(result["status"], "uncertain")
+            self.assertEqual(result["reason"], "recoverable_without_repository_evidence")
+
+    def test_recoverable_candidate_is_filtered_before_quota(self):
+        question = {"id": "q1", "qa_mode": "code", "status": "approved",
+                    "question": "config.py 如何处理缺失配置？", "answer_points": [],
+                    "forbidden_points": []}
+        view = cli._publication_view(
+            [question], {"code": 1},
+            recoverability_check=lambda item: {"status": "recoverable", "evidence": ["query1"]})
+        self.assertEqual(view["questions"], [])
+        self.assertEqual(view["publication_rejected"][0]["reason"],
+                         "repository_recoverable")
+        audit = cli.build_audit([question], [question], view["publication_rejected"],
+                                [], [], [])
+        self.assertEqual(audit[0]["selection_status"], "filtered_recoverable")
+        self.assertEqual(audit[0]["review_status"], "approved")
+
+    def test_external_mode_does_not_publish_uncertain_recoverability(self):
+        question = {"id": "q1", "qa_mode": "code", "status": "approved",
+                    "question": "config.py 如何处理缺失配置？", "answer_points": [],
+                    "forbidden_points": []}
+        view = cli._publication_view(
+            [question], {"code": 1}, strict_external=True,
+            recoverability_check=lambda item: {"status": "uncertain", "reason": "probe_error"})
+        self.assertEqual(view["questions"], [])
+        self.assertEqual(view["publication_rejected"][0]["reason"],
+                         "repository_recoverability_uncertain")
+
+    def test_probe_does_not_receive_credentials_or_private_paths(self):
+        seen = []
+        unsafe = {"id": "q1", "qa_mode": "code", "status": "approved",
+                  "question": "config.py 如何处理？",
+                  "answer_points": [{"text": "token=secret-value"}],
+                  "forbidden_points": []}
+        safe = {"id": "q2", "qa_mode": "code", "status": "approved",
+                "question": "/Users/alice/work/config.py 如何处理？",
+                "answer_points": [{"text": "ordinary"}],
+                "forbidden_points": []}
+        view = cli._publication_view(
+            [unsafe, safe], {"code": 1}, workspaces=("/Users/alice/work",),
+            recoverability_check=lambda item: seen.append(item) or {
+                "status": "uncertain", "reason": "not enough"})
+        self.assertEqual(len(view["questions"]), 1)
+        self.assertNotIn("secret-value", json.dumps(seen))
+        self.assertNotIn("/Users/alice", json.dumps(seen))
+
+    def test_anchor_extraction_includes_claims_to_verify(self):
+        anchors = repository_anchors("src/config.py 的 load_config 应处理 ValueError")
+        self.assertIn("src/config.py", anchors["paths"])
+        self.assertIn("load_config", anchors["terms"])
+        self.assertIn("ValueError", anchors["errors"])
+        claim_anchors = repository_anchors("如何处理缺失配置？", ["ParameterSource.UNSET"])
+        self.assertIn("ParameterSource", claim_anchors["terms"])
+
+    def test_cli_runs_probe_before_applying_quota(self):
+        example = Path(__file__).resolve().parents[1] / "examples" / "dialogue.json"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            output = Path(directory) / "run"
+
+            class FakeClient:
+                def __init__(self, *unused):
+                    self.usage = []
+
+            def extract(scope, client, qa_mode, checkpoint=None):
+                source = scope["dialogue"][0]["id"]
+                return {"facts": [{"id": "f1", "qa_mode": qa_mode,
+                                   "statement": "config.py preserves the recorded behavior",
+                                   "sources": [source]}],
+                        "questions": [], "rejected": [], "stage_errors": [],
+                        "stage_status": {"facts": "completed"}}
+
+            def generate(scope, facts, client, max_questions, qa_mode, target_type, **kwargs):
+                source = facts[0]["sources"][0]
+                question = {"id": "q1", "candidate_id": "q1", "qa_mode": qa_mode,
+                            "question": "config.py 的 load_config 如何处理缺失配置？",
+                            "answer_points": [{"text": "recorded behavior", "sources": [source]}],
+                            "forbidden_points": []}
+                return {"questions": [question], "all_candidates": [question],
+                        "rejected": [], "stage_errors": [], "raw_generated": 1,
+                        "stage_status": {"qa": "completed"}}
+
+            def review(scope, facts, candidates, client, **kwargs):
+                return {"questions": [dict(item, status="approved") for item in candidates],
+                        "rejected": [], "stage_errors": [], "revisions": [],
+                        "stage_status": {"review": "completed"}}
+
+            with patch.object(cli, "ChatClient", FakeClient), \
+                    patch.object(cli, "extract_facts", extract), \
+                    patch.object(cli, "generate_from_facts", generate), \
+                    patch.object(cli, "review_candidates", review), \
+                    patch.object(cli, "build_evidence_groups", return_value=[{
+                        "id": "code-group-1", "qa_mode": "code",
+                        "scope": {"dialogue": [{"id": "e1", "order": 1,
+                                                   "kind": "message", "role": "user",
+                                                   "text": "config.py"}],
+                                  "events": [], "versions": [], "edges": [],
+                                  "historical_edges": [], "stages": []},
+                        "facts": [{"id": "f1", "qa_mode": "code",
+                                   "statement": "config.py preserves the recorded behavior",
+                                   "sources": ["e1"]}],
+                        "allowed_types": ("constraint_followthrough",),
+                        "eligible_types": ("constraint_followthrough",),
+                    }]), \
+                    patch.object(cli, "static_evidence_check", return_value={
+                        "status": "supported", "reason": "recorded_type_evidence",
+                        "fact_ids": ["f1"], "source_ids": ["e1"],
+                    }), \
+                    patch("dialogue_benchmark.repository_probe.probe_candidate",
+                          return_value={"status": "recoverable", "evidence": ["query1"],
+                                         "reason": "current source is sufficient", "usage": []}):
+                status = cli.main([
+                    str(example), "--output", str(output), "--qa-mode", "code",
+                    "--code-types", "constraint_followthrough", "--code-count", "1",
+                    "--code-group-budget", "1", "--parallel-workers", "1",
+                    "--allow-network", "--endpoint", "https://example.invalid",
+                    "--model", "model", "--repository", str(root),
+                ])
+            public = json.loads((output / "qa-public.json").read_text())
+            audit = json.loads((output / "qa-audit.json").read_text())
+            self.assertEqual(status, 0)
+            self.assertEqual(public["counts"]["code"], 0)
+            self.assertEqual(audit["recoverability"]["filtered"], 1)
+            self.assertEqual(audit["candidate_records"][0]["selection_status"],
+                             "filtered_recoverable")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -75,6 +75,21 @@ class SimplePipelineTests(unittest.TestCase):
         self.assertNotIn("DIFFICULTY:", prompt)
         self.assertNotIn("TRACK:", prompt)
 
+    def test_untyped_generation_leaves_type_for_static_post_label(self):
+        client = CaptureClient(self.response)
+        result = generate_from_facts(
+            self.scope, self.facts, client, qa_mode="general",
+            allowed_types={"constraint_followthrough", "correction_update"},
+            generation_mode="untyped")
+
+        self.assertEqual(result["stage_status"]["qa"], "completed")
+        self.assertNotIn("type", result["questions"][0])
+        self.assertNotIn("category", result["questions"][0])
+        self.assertIn("最有后续开发用途", client.prompts[0])
+        self.assertNotIn("TARGET_DEFINITION", client.prompts[0])
+        self.assertNotIn("constraint_followthrough:", client.prompts[0])
+        self.assertNotIn("correction_update:", client.prompts[0])
+
     def test_explicit_target_must_be_allowed_and_multiple_allowed_types_need_choice(self):
         # A target bound by the caller cannot silently escape its allowed set.
         client = CaptureClient(self.response)

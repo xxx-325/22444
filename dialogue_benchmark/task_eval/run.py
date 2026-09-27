@@ -12,7 +12,9 @@ from .metrics import compare_trials
 from .runtime import configure, review_task, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline
-from .history import prepare_history, freeze_contract, historical_context, read_history_review, oracle_coverage
+from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
+                      oracle_coverage, write_contract_from_targets)
+from .selection import SelectionBudget, select_task, write_draft
 
 def solver_input(task, answer=None):
     message = prompts.SOLVER + "\n\n" + task
@@ -29,6 +31,45 @@ def answer_text(question):
 
 def prepare(root, baseline):
     copy_tree(baseline, Path(root) / "workspace/candidate")
+
+
+def explore_repository(root, baseline, item, config, options, public_history=None):
+    """Use a read-only OpenHands worker to map a QA to a natural code area.
+
+    This is deliberately separate from task authoring.  The worker may inspect
+    the whole snapshot, but it cannot change the candidate or write the public
+    task.  Its short report is passed to the host-controlled selector and is
+    retained for audit.
+    """
+    from .prompts import REPOSITORY_EXPLORER
+
+    root = Path(root)
+    explorer = root / "repository-explorer"
+    prepare(explorer, baseline)
+    # Judge sandboxes require a reference mount even for this read-only
+    # exploration stage. Keep it empty and private: the explorer should learn
+    # from the candidate snapshot and QA, not from task acceptance artifacts.
+    explorer_reference = explorer / "reference"
+    explorer_reference.mkdir(parents=True, exist_ok=True)
+    qa = item.get("qa", {})
+    lines = [REPOSITORY_EXPLORER, "\nQA 定位问题:",
+             "QUESTION: " + str(qa.get("question", "")),
+             "TYPE: " + str(qa.get("type", "")),
+             "不要读取或猜测答案；只用问题中的对象定位当前代码。"]
+    remaining = dict(max_requests=min(40, options.get("max_requests", 80)),
+                     max_tokens=min(300000, options.get("max_tokens", 1500000)),
+                     max_seconds=600)
+    outcome = run_agent(explorer, config, "judge", "\n".join(lines),
+                        reference=explorer_reference, **remaining)
+    report = explorer / "workspace/checks/repository-exploration.md"
+    text = report.read_text(encoding="utf-8") if report.is_file() else ""
+    save(root / "repository-exploration.json", {
+        "status": outcome.get("status"),
+        "metrics": outcome.get("metrics", {}),
+        "report": text,
+        "final": outcome.get("final", ""),
+    })
+    return text, outcome
 
 
 def freeze(spec, output, baseline):
@@ -82,34 +123,150 @@ def agent_finished(outcome):
     return str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}
 
 
-def construct(item, root, baseline, config, revisions, agent_options, *, design_probe=False):
-    direction = prompts.task_direction(item["qa"]["type"])
+def construct(item, root, baseline, config, revisions, agent_options, *, design_probe=False, selection_only=False):
     feedback = ""
     reference = root / "author-reference"
     reference.mkdir(parents=True)
     save(reference / "qa.json", item["qa"])
     shutil.copy2(item["generation_input"], reference / "qa-input.json")
     save(reference / "provenance.json", {k: v for k, v in item.items() if k not in {"qa", "public_records"}})
-    public_history = (prepare_history(item["public_records"], item["generation_input"])
+    # Use the exact source closure saved with the QA request for every source.
+    # External-only still avoids the full session: prepare_history keeps only
+    # the cited event and its bounded visible context.  Keeping this closure
+    # lets task construction freeze a private external rule instead of copying
+    # the answer into the public task.
+    qa_source_ids = set()
+    for point in item.get("original_candidate", {}).get("answer_points", []):
+        if isinstance(point, dict):
+            qa_source_ids.update(source for source in point.get("sources", [])
+                                 if isinstance(source, str) and source)
+    public_history = (prepare_history(
+        item["public_records"], item["generation_input"],
+        qa_source_ids=qa_source_ids or None)
                       if item.get("public_records") else None)
     if public_history:
         save(reference / "history.json", public_history)
-    history_prompt = prompts.HISTORY_AUTHOR if public_history else ""
+        save(reference / "history-focus.json", public_history["initial_events"])
     attempts = []
+    budget = SelectionBudget(root, agent_options)
+    exploration_text = ""
+    # Malformed/offline selection fixtures may not contain a question.  There
+    # is nothing meaningful for a repository explorer to anchor on, and
+    # selection-only mode explicitly promises not to start OpenHands.
+    if not selection_only and item.get("qa", {}).get("question"):
+        try:
+            exploration_text, exploration = explore_repository(
+                root, baseline, item, config, budget.remaining(), public_history)
+            metrics = exploration.get("metrics", {})
+            budget.record([dict(
+                request_count=metrics.get("attempted_requests", 0),
+                **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens")
+                    if k in metrics} if metrics.get("usage_complete") else {}),
+            )])
+        except Exception as error:
+            save(root / "repository-exploration.json", {
+                "status": "error", "error_type": type(error).__name__,
+                "detail": str(error), "report": "",
+            })
+    selection = select_task(item["qa"], public_history, baseline, config,
+                            root / "selection", budget,
+                            exploration=exploration_text)
+    selection["qa_source"] = item.get("qa_source", "graph")
+    if selection["status"] != "candidate":
+        save(root / "construction.json", [{"attempt": 0, "accepted": False, "status": selection["status"],
+                                           "reason": selection["reason"]}])
+        return None
+    if selection.get("history_targets"):
+        save(reference / "history-targets.json", selection["history_targets"])
     for attempt in range(revisions + 1):
         run = root / ("construction-%02d" % attempt)
         author = run / "author"
-        prepare(author, baseline)
         print(root.name, "author", attempt, flush=True)
-        authored = run_agent(author, config, "judge", prompts.AUTHOR + direction + history_prompt + feedback,
-                             reference=reference, **agent_options)
         spec = author / "workspace/checks"
-        record = {"attempt": attempt, "author_status": authored["status"]}
+        gate_state = {}
+        draft_selection = dict(selection)
+        if public_history:
+            draft_selection.update(public_history=public_history,
+                                   historical_answer=answer_text(item["qa"]),
+                                   history_targets=selection.get("history_targets", {}))
+
+        def qualify():
+            if (spec / "NO_TASK.md").exists():
+                gate_state["review"] = {"status": "ineligible", "issue": (spec / "NO_TASK.md").read_text()}
+                return gate_state["review"]
+            try:
+                frozen_targets = (selection.get("history_targets", {})
+                                  if selection.get("history_targets", {}).get("targets") else None)
+                draft_history = (freeze_contract(spec, public_history, answer_text(item["qa"],),
+                                                 require_external=False, targets=frozen_targets)
+                                 if public_history else None)
+                draft_items = acceptance_items(spec, draft_history)
+                protected = {name: (spec / name).read_text() for name in
+                             ("task.md", "memory-use.md") + (("history-contract.txt",) if public_history else ())}
+                refs = {ref for c in (draft_history or {}).get("contracts", []) for ref in c["sources"]}
+                evidence = {"memory_use": protected["memory-use.md"], "acceptance": draft_items,
+                            "qa_source": item.get("qa_source", "graph"),
+                            "repository_queries": [q for q in selection.get("evidence", {}).get("queries", [])
+                                                   if q["query"]["target"] == "repo"],
+                            "contracts": (draft_history or {}).get("contracts", []),
+                            "history_targets": (frozen_targets or {}).get("targets", []),
+                            "sources": [e for e in (public_history or {}).get("events", [])
+                                        if e["id"] in refs or e.get("role") == "user"]}
+                decision = review_task(protected["task.md"], answer_text(item["qa"]),
+                                       config, run / "task-review", evidence=evidence, budget=budget)
+                if decision.get("status") == "clean" and frozen_targets:
+                    # H is immutable; only the finite review may classify its
+                    # applicability and repository availability.
+                    write_contract_from_targets(spec, frozen_targets, decision)
+                    draft_history = freeze_contract(spec, public_history, answer_text(item["qa"]),
+                                                    targets=frozen_targets)
+                    draft_items = acceptance_items(spec, draft_history)
+                    protected = {name: (spec / name).read_text() for name in
+                                 ("task.md", "memory-use.md", "history-contract.txt")}
+                gate_state.update(review=decision, protected=protected,
+                                  requirements=[{k: r[k] for k in ("id", "requirement", "basis")} for r in draft_items])
+                copy_tree(spec, run / "qualified-draft")
+                return decision
+            except (ValueError, KeyError, OSError) as error:
+                decision = {"status": "uncertain", "issue": str(error)}
+                gate_state["review"] = decision
+                save(run / "task-review/result.json", decision)
+                return decision
+
+        try:
+            write_draft(draft_selection, config, run / "draft", spec, budget, feedback=feedback)
+            task_review = qualify()
+            if task_review["status"] != "clean":
+                attempts.append(dict(attempt=attempt, accepted=False, reason="task_" + task_review["status"],
+                                     status="pending" if task_review["status"] == "uncertain" else "stop",
+                                     task_review=task_review))
+                break
+            if selection_only:
+                save(root / "construction.json", [dict(attempt=attempt, status="qualified",
+                     accepted=False, task_review=task_review)])
+                return {"selection_only": True, "status": "qualified"}
+            remaining = budget.remaining()
+            prepare(author, baseline)
+            authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS,
+                                 reference=reference, **remaining)
+            metrics = authored.get("metrics", {})
+            budget.record([dict(request_count=metrics.get("attempted_requests", 0),
+                                **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
+                                   if metrics.get("usage_complete") else {}))])
+        except Exception as error:
+            attempts.append(dict(attempt=attempt, accepted=False, status="pending", reason=str(error)))
+            break
+        record = {"attempt": attempt, "author_status": authored["status"],
+                  "author_metrics": authored.get("metrics", {}),
+                  "construction_budget": read(root / "selection-budget.json")}
         if authored.get("error_code") or authored.get("error_type"):
             record["author_error"] = {k: authored[k] for k in ("error_code", "error_type", "detail") if k in authored}
         attempts.append(record)
         if (spec / "NO_TASK.md").exists():
             record["reason"] = (spec / "NO_TASK.md").read_text()
+            break
+        if authored.get("error_code") in {"token_budget_exhausted", "request_budget_exhausted", "runtime_budget_exhausted"}:
+            record["reason"] = authored["error_code"]
             break
         required = ("task.md", "acceptance.md")
         if any(not (spec / name).exists() for name in required):
@@ -122,22 +279,27 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                         "无法提出适当需求时写 NO_TASK.md。" % authored["status"])
             save(root / "construction.json", attempts)
             continue
-        task_review = review_task((spec / "task.md").read_text(), answer_text(item["qa"]),
-                                  config, run / "task-review")
+        task_review = gate_state.get("review", {"status": "uncertain", "issue": "qualification_not_completed"})
         record["task_review"] = task_review
         if task_review["status"] != "clean":
             record.update(accepted=False, reason="task_" + task_review["status"])
             prior = reference / ("previous-%02d" % attempt)
             copy_tree(spec, prior)
-            feedback = ("\n阅读 /reference/previous-%02d，修正公开需求中的解题提示：%s。"
-                        "保留所有可观察行为、触发条件和兼容要求；只删除内部定位与历史改法。"
-                        "重新写齐文件。" % (attempt, task_review["issue"]))
             save(root / "construction.json", attempts)
-            continue
+            break
+        changed = [name for name, text in gate_state["protected"].items()
+                   if not (spec / name).exists() or (spec / name).read_text() != text]
+        if changed or not agent_finished(authored):
+            record.update(accepted=False, status="pending", changed_qualified_files=changed,
+                          reason="qualified_draft_changed" if changed else "author_incomplete")
+            break
         history = None
         if public_history:
             try:
-                history = freeze_contract(spec, public_history, answer_text(item["qa"]))
+                frozen_targets = (selection.get("history_targets", {})
+                                  if selection.get("history_targets", {}).get("targets") else None)
+                history = freeze_contract(spec, public_history, answer_text(item["qa"]),
+                                          targets=frozen_targets)
             except (ValueError, KeyError, OSError) as error:
                 record.update(accepted=False, reason="invalid_history_contract", detail=str(error))
                 feedback = "\n上一轮历史契约错误，请根据公开来源重写：" + str(error)
@@ -145,6 +307,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 continue
         try:
             items = acceptance_items(spec, history)
+            if [{k: r[k] for k in ("id", "requirement", "basis")} for r in items] != gate_state["requirements"]:
+                raise ValueError("Qualified acceptance requirements changed during test construction")
             save(spec / "acceptance.json", items)
         except ValueError as error:
             record.update(accepted=False, reason="invalid_acceptance", detail=str(error))
@@ -240,7 +404,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             if history:
                 receipt.update(comparison="without_memory_vs_oracle_history",
                                reference_information=history["reference_information"],
-                               oracle_sufficiency="validated_against_active_rules")
+                               oracle_sufficiency="validated_against_external_rules")
             save(root / "frozen.json", receipt)
             return receipt
         # New author conversation receives the previous artifacts and concrete verifier feedback.
@@ -332,6 +496,8 @@ def main(argv=None):
                         help="Independent non-secret runtime configuration")
     parser.add_argument("--design-probe", action="store_true",
                         help="Run a separate no-memory design probe; never an admission gate")
+    parser.add_argument("--selection-only", action="store_true",
+                        help="Stop after controlled selection, draft and qualification; no OpenHands execution")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
@@ -382,6 +548,7 @@ def main(argv=None):
                 "comparison": "Historical answer injection; no memory retriever",
                 "baseline_version": version, "baseline": str(baseline),
                 "target": args.count, "task_budget": task_budget,
+                "selection_only": args.selection_only,
                 "selected_qa_ids": [i["qa"]["id"] for i in selected], "tasks": []}
     save(output / "manifest.json", manifest)
     agent_options = {"max_requests": args.agent_requests, "max_tokens": args.agent_tokens}
@@ -390,9 +557,14 @@ def main(argv=None):
         root = output / ("task-%02d" % (index + 1))
         try:
             receipt = construct(item, root, baseline, config, args.revisions, agent_options,
-                                **({"design_probe": True} if args.design_probe else {}))
+                                **({"design_probe": True} if args.design_probe else {}),
+                                selection_only=args.selection_only)
             if receipt is None:
-                return {"task": root.name, "status": "not_admitted", "qa_id": item["qa"]["id"],
+                records = read(root / "construction.json") if (root / "construction.json").exists() else [{}]
+                return {"task": root.name, "status": records[-1].get("status", "not_admitted"), "qa_id": item["qa"]["id"],
+                        "type": item["qa"]["type"]}
+            if args.selection_only:
+                return {"task": root.name, "status": "qualified", "qa_id": item["qa"]["id"],
                         "type": item["qa"]["type"]}
             comparison = evaluate(item, root, baseline, receipt, config, agent_options, index)
             return {"task": root.name, "status": "evaluated", "qa_id": item["qa"]["id"],
@@ -407,7 +579,7 @@ def main(argv=None):
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         next_index = 0
         while next_index < len(selected):
-            completed = sum(task["status"] == "evaluated" for task in manifest["tasks"])
+            completed = sum(task["status"] == ("qualified" if args.selection_only else "evaluated") for task in manifest["tasks"])
             if completed >= args.count:
                 break
             size = min(args.workers, args.count - completed, len(selected) - next_index)
@@ -419,7 +591,7 @@ def main(argv=None):
                 manifest["tasks"].sort(key=lambda item: item["task"])
                 save(output / "manifest.json", manifest)
                 write_report(output, manifest)
-    completed = sum(task["status"] == "evaluated" for task in manifest["tasks"])
+    completed = sum(task["status"] == ("qualified" if args.selection_only else "evaluated") for task in manifest["tasks"])
     manifest.update(completed=completed, shortfall=max(0, args.count - completed),
                     stop_reason="target_met" if completed >= args.count else
                     "task_budget_exhausted" if len(selected) >= task_budget else "qa_pool_exhausted")

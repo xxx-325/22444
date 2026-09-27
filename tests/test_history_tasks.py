@@ -8,7 +8,8 @@ from unittest.mock import patch
 from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
-    answer_clarification, freeze_contract, historical_context, prepare_history, read_history_review)
+    answer_clarification, freeze_contract, freeze_targets, historical_context, prepare_history,
+    read_history_review, oracle_coverage, validate_contract_targets)
 from dialogue_benchmark.task_eval.runtime import run_agent, configure
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
@@ -66,7 +67,73 @@ class HistoryTests(unittest.TestCase):
                    for i, e in enumerate(self.history["events"])]
         result = prepare_history(records, self.root / "input.json")
         self.assertEqual(result["selected_event_ids"], ["old"])
+        self.assertEqual(result["qa_source_ids"], ["old"])
         self.assertEqual(result["events"][-1]["id"], "correction")
+
+    def test_fragment_answer_source_resolves_to_public_event_identity(self):
+        save(self.root / "input.json", {"payload": {}})
+        records = [{"id": "e1", "original_id": "original-event", "order": 1,
+                    "kind": "message", "role": "user", "text": "External rule"}]
+        result = prepare_history(records, self.root / "input.json", qa_source_ids={"e1#fragment-2"})
+        self.assertEqual(result["qa_source_ids"], ["original-event"])
+        self.assertEqual(result["initial_events"][0]["id"], "original-event")
+
+    def test_mixed_contract_checks_oracle_only_for_external_rule(self):
+        (self.root / "history-contract.txt").write_text(CONTRACT.replace(
+            "repository: external", "repository: recoverable", 1))
+        history = freeze_contract(self.root, self.history, "EU rejects blanks.")
+        review = self.root / "oracle.txt"
+        review.write_text("REVIEW h2\ncoverage: complete\nquote: EU rejects blanks.\nEND_REVIEW")
+        self.assertTrue(oracle_coverage(review, history))
+        review.write_text("REVIEW h2\ncoverage: missing\nquote: EU rejects blanks.\nEND_REVIEW")
+        self.assertFalse(oracle_coverage(review, history))
+        (self.root / "history-contract.txt").write_text(CONTRACT.replace("external", "recoverable"))
+        with self.assertRaises(ValueError):
+            freeze_contract(self.root, self.history, "answer")
+
+    def test_source_aliases_are_exact_and_prefixes_are_rejected(self):
+        self.history["source_aliases"] = {"source1": "old", "source2": "correction"}
+        (self.root / "history-contract.txt").write_text(CONTRACT.replace("sources: old", "sources: source1"))
+        self.assertEqual(freeze_contract(self.root, self.history, "answer")["contracts"][0]["sources"], ["old"])
+        (self.root / "history-contract.txt").write_text(CONTRACT.replace("sources: old", "sources: ol"))
+        with self.assertRaises(ValueError):
+            freeze_contract(self.root, self.history, "answer")
+
+    def test_history_targets_are_frozen_before_repository_and_answer_labels(self):
+        self.history["source_aliases"] = {"source1": "old", "source2": "correction"}
+        targets = freeze_targets([{"id": "h1", "statement": "EU rejects blanks",
+                                   "scope": "EU tenants", "behavior": "reject",
+                                   "sources": "source2", "supersedes": "none"}], self.history)
+        self.assertEqual(targets["targets"][0]["sources"], ["correction"])
+        rows = [{"id": "h1", "statement": "EU rejects blanks", "scope": "EU tenants",
+                 "behavior": "reject", "sources": "correction", "supersedes": "none",
+                 "active": "yes", "repository": "recoverable"}]
+        validate_contract_targets(rows, targets)
+        rows[0]["statement"] = "EU accepts blanks"
+        with self.assertRaises(ValueError):
+            validate_contract_targets(rows, targets)
+
+    def test_freezing_targets_does_not_require_an_external_gap(self):
+        targets = freeze_targets([{"id": "h1", "statement": "Preserve all blanks.",
+                                   "scope": "all tenants", "behavior": "preserve",
+                                   "sources": "old", "supersedes": "none"}], self.history)
+        (self.root / "history-contract.txt").write_text(
+            "REVIEW h1\nstatement: Preserve all blanks.\nscope: all tenants\n"
+            "sources: old\nsupersedes: none\nbehavior: preserve\nactive: yes\n"
+            "repository: recoverable\nEND_REVIEW\n")
+        frozen = freeze_contract(self.root, self.history, "answer", require_external=False, targets=targets)
+        self.assertEqual(frozen["contracts"][0]["repository"], "recoverable")
+
+    def test_focus_keeps_user_correction_and_plan_without_unrelated_tools(self):
+        save(self.root / "input.json", {"ref_to_source": {"r1": "e1"}})
+        records = [dict(id="e%d" % i, original_id="uuid%d" % i, order=i, kind=kind,
+                        role=role, text=text) for i, kind, role, text in (
+            (1, "message", "assistant", "The plan"),
+            (2, "tool_result", "tool", "Unrelated bulk output"),
+            (3, "message", "user", "Follow that plan, except EU."))]
+        result = prepare_history(records, self.root / "input.json")
+        self.assertEqual([e["id"] for e in result["initial_events"]], ["uuid1", "uuid3"])
+        self.assertEqual(len(result["events"]), 3)
 
     def test_history_uses_same_acceptance_without_subjective_override(self):
         history = freeze_contract(self.root, self.history, "answer")
@@ -236,7 +303,16 @@ class HistoryConstructionTests(unittest.TestCase):
                     {"id": "e2", "original_id": "correction", "order": 2, "kind": "message", "text": "EU rejects blanks"}]
                 fixture.item["qa"]["answer_points"] = [{"text": "EU rejects blanks; other tenants preserve blanks."}]
                 original = fixture.fake_agent
+                def draft(selection, config, output, spec, budget, feedback=""):
+                    fixture.fake_draft(selection, config, output, spec, budget, feedback)
+                    (spec / "history-contract.txt").write_text(CONTRACT)
+                    with (spec / "acceptance.md").open("a") as handle:
+                        handle.write("\n| a2 | Other blanks retained | h1 | test: test_acceptance::test_other |\n"
+                                     "| a3 | EU blanks rejected | h2 | test: test_acceptance::test_eu |\n")
                 def agent(root, *args, **kwargs):
+                    if root.name == "author":
+                        (root / "workspace/checks/test_acceptance.py").write_text("Original test")
+                        return {"status": "finished"}
                     result = original(root, *args, **kwargs)
                     checks = root / "workspace/checks"
                     if root.name == "author":
@@ -256,6 +332,7 @@ class HistoryConstructionTests(unittest.TestCase):
                     return {"status": status, "cases": [{"id": "test_acceptance::test_" + name, "status": status}
                                                          for name in ("feature", "other", "eu")]}
                 with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+                     patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
                      patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
                      patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
                      patch("dialogue_benchmark.task_eval.run.check_history_mutations", return_value={"status": mutation}) as replay:
@@ -266,4 +343,4 @@ class HistoryConstructionTests(unittest.TestCase):
                 self.assertEqual(replay.call_count, int(coverage == "complete"))
                 if accepted:
                     self.assertFalse((fixture.root / "frozen/checkpoints.json").exists())
-                    self.assertEqual(receipt["oracle_sufficiency"], "validated_against_active_rules")
+                    self.assertEqual(receipt["oracle_sufficiency"], "validated_against_external_rules")

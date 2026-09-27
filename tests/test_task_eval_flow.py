@@ -30,12 +30,25 @@ class TaskPreflightTests(unittest.TestCase):
         self.with_coverage = True
         self.validator_status = "ConversationExecutionStatus.FINISHED"
         self.reference_status = "ConversationExecutionStatus.FINISHED"
+        for target, kwargs in (("select_task", {"return_value": {"status": "candidate"}}),
+                               ("write_draft", {"side_effect": self.fake_draft})):
+            mocked = patch("dialogue_benchmark.task_eval.run." + target, **kwargs)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
+    def fake_draft(self, selection, config, output, spec, budget, feedback=""):
+        spec.mkdir(parents=True, exist_ok=True)
+        for name, text in (("task.md", "Preserve pending data after replacement"),
+                           ("memory-use.md", "A historical constraint changes the output."),
+                           ("acceptance.md", "| a1 | Pending data remains readable | task | test: test_acceptance::test_feature |")):
+            (spec / name).write_text(text)
 
     def fake_agent(self, root, config, role, message, **kwargs):
         if root.name == "author":
             checks = root / "workspace/checks"
-            checks.mkdir()
+            checks.mkdir(exist_ok=True)
             for name, text in (("task.md", "Preserve pending data after replacement"),
+                               ("memory-use.md", "A historical constraint changes the output."),
                                ("acceptance.md", "| a1 | Pending data remains readable | task | test: test_acceptance::test_feature |"),
                                ("test_acceptance.py", "Original test")):
                 (checks / name).write_text(text)
@@ -106,12 +119,24 @@ class TaskPreflightTests(unittest.TestCase):
              patch("dialogue_benchmark.task_eval.run.run_checks") as checks:
             receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0, {})
         self.assertIsNone(receipt)
-        self.assertEqual(agent.call_count, 1)
+        self.assertEqual(agent.call_count, 0)
         checks.assert_not_called()
-        self.assertTrue((self.root / "author-reference/previous-00/task.md").exists())
+        self.assertTrue((self.root / "construction-00/qualified-draft/task.md").exists())
+
+    def test_selection_only_qualifies_once_without_starting_agents(self):
+        with patch("dialogue_benchmark.task_eval.run.run_agent") as agent, \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}) as review, \
+             patch("dialogue_benchmark.task_eval.run.run_checks") as checks:
+            receipt = construct(self.item, self.root, self.baseline, {}, 0, {}, selection_only=True)
+        self.assertEqual(receipt["status"], "qualified")
+        self.assertEqual(review.call_count, 1)
+        self.assertIsNotNone(review.call_args.kwargs["budget"])
+        agent.assert_not_called()
+        checks.assert_not_called()
 
     def test_author_budget_failure_keeps_cause_without_identical_retries(self):
-        with patch("dialogue_benchmark.task_eval.run.run_agent", return_value={
+        with patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+             patch("dialogue_benchmark.task_eval.run.run_agent", return_value={
                 "status": "error", "error_code": "token_budget_exhausted", "error_type": "RuntimeError"}) as agent:
             receipt = construct(self.item, self.root, self.baseline, {}, 5, {})
         self.assertIsNone(receipt)
@@ -119,6 +144,52 @@ class TaskPreflightTests(unittest.TestCase):
         records = read(self.root / "construction.json")
         self.assertEqual(records[0]["reason"], "token_budget_exhausted")
         self.assertEqual(records[0]["author_error"]["error_code"], "token_budget_exhausted")
+
+    def test_ineligible_draft_never_enters_test_construction(self):
+        stages = []
+        def author(root, *args, **kwargs):
+            checks = root / "workspace/checks"
+            checks.mkdir()
+            for name, text in (("task.md", "Add documentation"),
+                               ("memory-use.md", "Keep rendering unchanged"),
+                               ("acceptance.md", "| a1 | Add page | task | inspect: Check page |")):
+                (checks / name).write_text(text)
+            stages.append("tests")
+            return {"status": "finished"}
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=author), \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "ineligible", "issue": "Scope expanded"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks") as checks:
+            self.assertIsNone(construct(self.item, self.root, self.baseline, {}, 2, {}))
+        self.assertEqual(stages, [])
+        checks.assert_not_called()
+        self.assertEqual(len(read(self.root / "construction.json")), 1)
+
+    def test_second_phase_cannot_change_qualified_requirement(self):
+        original = self.fake_agent
+        def author(root, *args, **kwargs):
+            result = original(root, *args, **kwargs)
+            if root.name == "author":
+                (root / "workspace/checks/task.md").write_text("An expanded requirement")
+            return result
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=author), \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks") as checks:
+            self.assertIsNone(construct(self.item, self.root, self.baseline, {}, 0, {}))
+        checks.assert_not_called()
+        record = read(self.root / "construction.json")[0]
+        self.assertEqual(record["reason"], "qualified_draft_changed")
+        self.assertEqual(record["changed_qualified_files"], ["task.md"])
+
+    def test_stuck_author_is_not_retried_or_reported_as_changed_draft(self):
+        with patch("dialogue_benchmark.task_eval.run.run_agent", return_value={"status": "STUCK"}) as agent, \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks") as checks:
+            self.assertIsNone(construct(self.item, self.root, self.baseline, {}, 5, {}))
+        self.assertEqual(agent.call_count, 1)
+        checks.assert_not_called()
+        record = read(self.root / "construction.json")[0]
+        self.assertEqual(record["reason"], "author_incomplete")
+        self.assertEqual(record["changed_qualified_files"], [])
 
     def test_public_review_is_small_and_does_not_resolve_conflicts_as_clean(self):
         config = {"judge": {"base_url": "https://example.com/v1", "model": "test", "key_env": "KEY"}}
@@ -136,6 +207,8 @@ class TaskPreflightTests(unittest.TestCase):
         spec.mkdir()
         for name in ("test_acceptance.py", "test_interactions.py"):
             (spec / name).write_text("test content")
+        (spec / "tests").mkdir()
+        (spec / "tests/test_feature.py").write_text("test content")
         # A report retained in the source must not become this execution's receipt.
         (spec / "receipt.xml").write_text("<testsuite><testcase /></testsuite>")
         class Sandbox:
@@ -158,6 +231,7 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertIn("--rootdir=/workspace/checks", command)
         self.assertFalse(any("PYTHONPATH=" in part for part in command))
         self.assertIn("/workspace/checks/test_interactions.py", command)
+        self.assertIn("/workspace/checks/tests/test_feature.py", command)
         self.assertIn("--junitxml=/workspace/experiments/receipt.xml", command)
         self.assertEqual(result["status"], "error")
         release.assert_not_called()

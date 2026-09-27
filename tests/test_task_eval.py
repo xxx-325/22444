@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +16,41 @@ from dialogue_benchmark.task_eval.run import (admission, freeze, solver_input,
 
 
 class TaskEvaluationTests(unittest.TestCase):
+    def test_author_uses_remaining_runtime_budget(self):
+        for limit, turns in ((100, 1), (12, 1)):
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
+                workers = []
+                class Budget:
+                    def __init__(self, config, journal):
+                        self.config = config
+                        self.deadline = time.monotonic() + 60
+                        self.data = {"attempts": 0, "prompt_tokens": 0, "completion_tokens": 0}
+                class Worker:
+                    def __init__(self, *args, **kwargs):
+                        self.budget = kwargs["budget"]
+                        self.messages = []
+                        self.closed = False
+                        workers.append(self)
+                    def start(self): pass
+                    def close(self): self.closed = True
+                    def events(self): return []
+                    def turn(self, message):
+                        self.messages.append(message)
+                        self.budget.data["attempts"] += 1
+                        self.budget.data["prompt_tokens"] += 5
+                        return {"status": "finished"}
+                with patch.dict("sys.modules", {
+                        "simulator.openhands.budget": SimpleNamespace(Budget=Budget),
+                        "simulator.openhands.container": SimpleNamespace(SDKContainer=Worker)}), \
+                     patch("dialogue_benchmark.task_eval.retention.release_agent"), \
+                     patch("dialogue_benchmark.task_eval.retention.save_trace"):
+                    result = run_agent(Path(directory), {"judge": {}, "image": "test"}, "judge", "Draft",
+                                       max_seconds=37, max_tokens=limit)
+                self.assertEqual(len(workers), 1)
+                self.assertEqual(len(workers[0].messages), turns)
+                self.assertTrue(workers[0].closed)
+                self.assertEqual(workers[0].budget.config["max_seconds"], 37)
+
     def test_task_agents_do_not_inherit_per_response_output_limit(self):
         original = {"image": "sdk", "execution_image": "executor", "execution_backend": "ssh_sandbox",
                     "code": {"model": "solver", "key_env": "TEST_PROVIDER_KEY", "max_output_tokens": 8192},
@@ -223,6 +259,24 @@ class TaskEvaluationTests(unittest.TestCase):
             result = qa_inputs(root)
             self.assertEqual(len(result), 1)
             self.assertEqual(json.loads(Path(result[0]["generation_input"]).read_text())["payload"], "exact input")
+
+    def test_plain_message_normalized_input_is_public_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "stages").mkdir()
+            question = {"type": "constraint_followthrough", "id": "g1_q1",
+                        "status": "approved", "question": "Question"}
+            (root / "qa-public.json").write_text(json.dumps({"questions": [question]}))
+            (root / "stages/group-raw-candidates.json").write_text(
+                json.dumps({"questions": [question]}))
+            (root / "stages/group-qa-input.json").write_text(json.dumps({"payload": "exact"}))
+            (root / "normalized.json").write_text(json.dumps([{
+                "kind": "message", "role": "user", "id": "e1", "text": "public"
+            }]))
+            result = qa_inputs(root)
+            self.assertEqual(result[0]["public_records"][0]["original_id"], "e1")
+            self.assertEqual(result[0]["public_records"][0]["input_schema"],
+                             "model-visible-dialogue-v1")
 
     def test_evidence_contract_is_bound_without_inventing_judgments(self):
         class Client:

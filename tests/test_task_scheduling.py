@@ -16,7 +16,7 @@ class TaskSchedulingTests(unittest.TestCase):
             (source / "a.py").write_text("value = 1\n")
             items = [{"qa": {"type": "constraint_followthrough", "id": "q%d" % n}, "original_candidate": {"evidence_group_id": "g%d" % n}}
                      for n in range(5)]
-            def construct(item, *args):
+            def construct(item, *args, **kwargs):
                 return None if item["qa"]["id"] == "q0" else {"accepted": True}
             with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=items), \
                  patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \

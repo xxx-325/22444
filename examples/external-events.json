@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "id": "external-compat-1",
+      "kind": "compatibility_contract",
+      "source_ids": ["e12"],
+      "used_by": ["e27"],
+      "qa_mode": "code"
+    },
+    {
+      "id": "external-test-1",
+      "kind": "verification_result",
+      "source_ids": ["e31"],
+      "used_by": ["e34"],
+      "qa_mode": "code"
+    }
+  ]
+}

@@ -23,11 +23,24 @@ def read(path):
     return load(path)
 
 
+def install_candidate_fixture(directory):
+    """Provide the same repository location in authoring and scored executions."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "conftest.py").write_text(
+        'from pathlib import Path\nimport pytest\n\n'
+        '@pytest.fixture(scope="session")\ndef candidate_root():\n'
+        '    return Path("/workspace/candidate")\n', encoding="utf-8")
+
+
 def copy_tree(source, target, *, include_caches=False):
     source, target = Path(source), Path(target)
-    if any(p.is_symlink() for p in source.rglob("*")):
+    ignored_artifact_dirs = {".tox", ".venv", "_build"}
+    if any(p.is_symlink() and not any(part in ignored_artifact_dirs
+                                      for part in p.relative_to(source).parts)
+           for p in source.rglob("*")):
         raise ValueError("Snapshot contains a symlink")
-    ignored = [".git", "__pycache__", ".pytest_cache", ".venv", "*.pyc"]
+    ignored = [".git", "__pycache__", ".pytest_cache", ".venv", ".tox", "_build", "*.pyc"]
     if not include_caches:
         ignored += [".mypy_cache", ".ruff_cache"]
     shutil.copytree(source, target, ignore=shutil.ignore_patterns(*ignored))
@@ -60,12 +73,26 @@ def qa_inputs(qa_run):
     """Join approved questions to the actual saved generation request, never reconstruct it."""
     qa_run = Path(qa_run)
     public = read(qa_run / "qa-public.json")["questions"]
+    run_manifest = read(qa_run / "manifest.json") if (qa_run / "manifest.json").exists() else {}
     if any(question.get("type") not in QA_TYPES for question in public):
         raise ValueError("QA input must use the six memory-purpose types; regenerate older QA")
     normalized_path = qa_run / "normalized.json"
     normalized = read(normalized_path) if normalized_path.exists() else []
-    public_records = (normalized if normalized and all(
-        r.get("input_schema") == "model-visible-dialogue-v1" for r in normalized) else None)
+    public_records = None
+    if normalized and all(r.get("input_schema") == "model-visible-dialogue-v1" for r in normalized):
+        public_records = normalized
+    elif normalized and all(
+            isinstance(r, dict) and r.get("kind") == "message"
+            and r.get("role") in {"user", "assistant"}
+            and isinstance(r.get("text"), str) and isinstance(r.get("id"), str)
+            for r in normalized):
+        # A plain user/assistant dialogue is still a public history.  Older
+        # list inputs predate the envelope marker and therefore do not carry
+        # original_id/input_schema; add only the local identity needed by
+        # task_eval, never tool or controller records.
+        public_records = [dict(r, original_id=r.get("original_id", r["id"]),
+                               input_schema="model-visible-dialogue-v1")
+                          for r in normalized]
     requests = {}
     for path in sorted((qa_run / "stages").glob("*raw-candidates*")):
         input_path = path.with_name(path.name.replace("raw-candidates", "qa-input"))
@@ -78,7 +105,8 @@ def qa_inputs(qa_run):
         if question.get("status") == "approved" and question["id"] in requests:
             path, original = requests[question["id"]]
             item = {"qa": question, "generation_input": str(path.resolve()),
-                    "original_candidate": original}
+                    "original_candidate": original,
+                    "qa_source": run_manifest.get("qa_source", "graph")}
             if public_records is not None:
                 item["public_records"] = public_records
             result.append(item)

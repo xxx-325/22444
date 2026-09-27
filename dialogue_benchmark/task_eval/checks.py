@@ -6,10 +6,15 @@ import subprocess
 import uuid
 import xml.etree.ElementTree as ET
 
-from .artifacts import copy_tree, save
+from .artifacts import copy_tree, save, install_candidate_fixture
 from .runtime import release_completed_execution
 
-TEST_FILES = ("test_acceptance.py", "test_interactions.py")
+def _test_identity(value):
+    """Match a pytest file node ID to its JUnit module ID without fuzzy aliases."""
+    module, separator, name = value.partition("::")
+    if module.endswith(".py"):
+        module = module[:-3].replace("/", ".")
+    return module + separator + name
 
 
 def acceptance_items(spec, history=None):
@@ -18,9 +23,13 @@ def acceptance_items(spec, history=None):
     contracts = {c["id"] for c in (history or {}).get("contracts", []) if c.get("active", True)}
     for line in (Path(spec) / "acceptance.md").read_text().splitlines():
         cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
-        if len(cells) != 4 or not re.fullmatch(r"a\d+", cells[0]):
+        # Models occasionally capitalize the otherwise stable a1/a2 labels.
+        # The identity is still unambiguous, so accept case without changing
+        # the four-column contract.
+        if len(cells) != 4 or not re.fullmatch(r"a\d+", cells[0], re.IGNORECASE):
             continue
         identity, requirement, basis, check = cells
+        identity = identity.lower()
         sources = [s.strip() for s in basis.split(",")]
         if (not requirement or not check or any(s != "task" and s not in contracts for s in sources)
                 or any(row["id"] == identity for row in rows)):
@@ -33,7 +42,7 @@ def acceptance_items(spec, history=None):
             tests = ["command::" + name]
         if not tests and not check.startswith("inspect:"):
             raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
-        if tests and any(not re.fullmatch(r"[\w.]+::[\w\[\].-]+", t) for t in tests):
+        if tests and any(not re.fullmatch(r"[\w./-]+::[\w\[\].-]+", t) for t in tests):
             raise ValueError("Use exact JUnit classname::name: " + identity)
         rows.append({"id": identity, "requirement": requirement, "basis": sources,
                      "tests": tests, "check": check})
@@ -75,12 +84,12 @@ def assess_acceptance(items, checks, review_path=None, roots=None):
             pass
     cases = {}
     for case in checks.get("cases", []):
-        cases.setdefault(case["id"], []).append(case)
+        cases.setdefault(_test_identity(case["id"]), []).append(case)
     rows = []
     for item in items:
         status, evidence = "uncertain", "Required check not established"
         if item["tests"]:
-            selected = [cases.get(name, []) for name in item["tests"]]
+            selected = [cases.get(_test_identity(name), []) for name in item["tests"]]
             if any(c["status"] == "failed" for group in selected for c in group):
                 status = "failed"
             elif (checks["status"] in {"passed", "failed"} and all(len(group) == 1 and group[0]["status"] == "passed"
@@ -141,7 +150,9 @@ def pytest_result(exit_code, xml_path):
 def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
     from simulator.openhands.sandbox import ExecutionSandbox
     output, spec = Path(output), Path(spec)
-    tests = [name for name in TEST_FILES if (spec / name).is_file()]
+    tests = sorted({path.relative_to(spec).as_posix()
+                    for pattern in ("test_*.py", "*_test.py")
+                    for path in spec.rglob(pattern) if path.is_file()})
     scripts = sorted((spec / "commands").glob("*.sh"))
     if not tests and not scripts:
         result = {"status": "unavailable", "reason": "No generated test; use frozen judge criteria"}
@@ -149,6 +160,7 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
         workspace = output / "workspace"
         copy_tree(candidate, workspace / "candidate")
         copy_tree(spec, workspace / "checks")
+        install_candidate_fixture(workspace / "checks")
         sandbox = ExecutionSandbox(output / "private", workspace, image, "judge",
                                    uuid.uuid4().hex, reference=spec)
         sandbox.prepare()
@@ -178,8 +190,11 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
             result = (pytest_result(run["exit_code"], workspace / "experiments/receipt.xml") if tests else
                       {"status": "passed", "cases": [], "tests": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0})
             for script in scripts:
+                # Generated command checks are shell scripts.  Run them with
+                # bash so arrays, pipefail, and parameter expansion work
+                # consistently across the host and the execution image.
                 executed = execute(command[:command.index(sandbox.name) + 1] +
-                                   ["sh", "/workspace/checks/commands/" + script.name])
+                                   ["bash", "/workspace/checks/commands/" + script.name])
                 # Commands use 1 for a violated requirement, 2+ for execution failures.
                 state = "passed" if executed["exit_code"] == 0 else "failed" if executed["exit_code"] == 1 else "error"
                 result["cases"].append({"id": "command::" + script.stem, "name": script.stem,
@@ -209,13 +224,15 @@ def check_history_mutations(candidate, spec, validator_checks, output, image, *,
     path = validator_checks / "mutations.txt"
     rows = parse_text_response(path.read_text()).get("reviews", []) if path.is_file() else []
     items = read(Path(spec) / "acceptance.json")
+    history = read(Path(spec) / "history.json")
+    external = {c["id"] for c in history["contracts"] if c["active"] and c["repository"] == "external"}
     results = []
     for row in rows:
         name = row.get("id", "")
         if not re.fullmatch(r"m\d+", name):
             continue
         patch = validator_checks / (name + ".patch")
-        targets = [r for r in items if r["id"] == row.get("acceptance") and any(b != "task" for b in r["basis"])]
+        targets = [r for r in items if r["id"] == row.get("acceptance") and external.intersection(r["basis"])]
         if not patch.is_file() or not patch.stat().st_size or len(targets) != 1:
             continue
         root = output / name

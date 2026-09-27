@@ -21,7 +21,9 @@ class AcceptanceSandboxTests(unittest.TestCase):
             "| a3 | Documentation | task | command: documentation |\n")
         (spec / "test_acceptance.py").write_text(
             "from crm import export\n\n"
-            "def test_batch():\n    assert export([{'id': 1}, {'id': 2}], 'crm_v1') == [{'id': 1}, {'id': 2}]\n\n"
+            "def test_batch(candidate_root):\n"
+            "    assert (candidate_root / 'GUIDE.md').read_text() == 'Batch CRM export\\n'\n"
+            "    assert export([{'id': 1}, {'id': 2}], 'crm_v1') == [{'id': 1}, {'id': 2}]\n\n"
             "def test_exception():\n"
             "    row = {'id': 1, 'note': None, 'other': None}\n"
             "    assert export([row], 'crm_v1') == [{'id': 1, 'other': None}]\n"

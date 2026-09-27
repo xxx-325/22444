@@ -781,6 +781,35 @@ specified by the user prompt; do not return JSON or Markdown fences.
 """
 
 
+def _parse_file_response(content):
+    if not isinstance(content, str):
+        raise ValueError("LLM content must be text")
+    if content.lstrip().startswith(("FILE ", "FILE:")):
+        files, name, body = [], None, []
+        for line in content.splitlines():
+            if name is None:
+                if not line.strip():
+                    continue
+                if not (line.startswith("FILE ") or line.startswith("FILE:")):
+                    raise ValueError("Expected FILE block")
+                name, body = line.split(":", 1)[1].strip() if line.startswith("FILE:") else line[5:].strip(), []
+            elif line.startswith("FILE ") or line.startswith("FILE:"):
+                # Some providers omit END_FILE between adjacent files. Treat
+                # the next explicit file header as the boundary, but never
+                # infer files from arbitrary prose.
+                files.append({"name": name, "content": "\n".join(body) + "\n"})
+                name = line.split(":", 1)[1].strip() if line.startswith("FILE:") else line[5:].strip()
+                body = []
+            elif line == "END_FILE":
+                files.append({"name": name, "content": "\n".join(body) + "\n"})
+                name = None
+            else:
+                body.append(line)
+        if name is not None:
+            raise ValueError("Unclosed FILE block")
+        return {"files": files}
+
+
 def parse_json_response(content):
     if not isinstance(content, str):
         raise ValueError("LLM content must be text")
@@ -800,11 +829,151 @@ def _parse_sources(value):
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _strip_protocol_label(value, label):
+    """Accept ``label=value`` in a field that normally contains only value."""
+    prefix = label + "="
+    return value[len(prefix):].strip() if value.startswith(prefix) else value
+
+
 def parse_text_response(content):
     """Parse a small line-tagged protocol, avoiding model-generated JSON."""
     if not isinstance(content, str):
         raise ValueError("LLM content must be text")
+    if content.lstrip().startswith(("FILE ", "FILE:")):
+        return _parse_file_response(content)
     lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if lines and lines[0].startswith("PROBE:"):
+        if lines[-1] != "END_PROBE":
+            raise ValueError("Unclosed repository probe response")
+        allowed = {"PROBE", "REASON", "QUERY", "EVIDENCE"}
+        fields = {}
+        for line in lines[:-1]:
+            if ":" not in line:
+                raise ValueError("Invalid repository probe line")
+            key, value = line.split(":", 1)
+            key, value = key.strip(), value.strip()
+            if key not in allowed or key in fields or not value:
+                raise ValueError("Invalid repository probe field")
+            fields[key] = value
+        # EVIDENCE is optional for a fresh query; models often omit the
+        # explicit `none` while still following the rest of the protocol.
+        fields.setdefault("EVIDENCE", "none")
+        required = {"PROBE", "REASON", "QUERY", "EVIDENCE"}
+        if set(fields) != required:
+            raise ValueError("Incomplete repository probe response")
+        decision = fields["PROBE"]
+        if decision not in {"need_evidence", "recoverable", "history_required", "uncertain"}:
+            raise ValueError("Invalid repository probe decision")
+        if decision == "need_evidence" and fields["QUERY"].casefold() == "none":
+            raise ValueError("Repository probe needs a query")
+        # A weak probe sometimes states a provisional conclusion and includes
+        # the next read on the same line. The host normalizes that to another
+        # evidence step; rejecting the whole probe would turn a useful history
+        # decision into an opaque protocol failure.
+        return {"probe": {"decision": decision,
+                           "reason": fields["REASON"],
+                           "query": fields["QUERY"],
+                           "evidence": fields["EVIDENCE"]}}
+    if lines and lines[0].startswith("DECISION:"):
+        if not lines or lines[-1] != "END":
+            raise ValueError("Unclosed selection response")
+        allowed = {"DECISION", "REASON", "SOURCES", "QUERY",
+                   "PUBLIC_GOAL", "AGREEMENT_OBJECT", "AGREEMENT_SCOPE"}
+        fields = {}
+        for line in lines[:-1]:
+            if ":" not in line:
+                raise ValueError("Invalid selection line")
+            key, value = line.split(":", 1)
+            key, value = key.strip(), value.strip()
+            if key not in allowed or key in fields or not value:
+                raise ValueError("Invalid selection field")
+            fields[key] = value
+        required = {"DECISION", "REASON", "SOURCES", "QUERY"}
+        if set(fields) - required and fields.get("DECISION") != "candidate":
+            raise ValueError("Public selection fields require candidate")
+        if not required <= set(fields):
+            raise ValueError("Incomplete selection response")
+        if (fields.get("DECISION") == "candidate"
+                and not {"PUBLIC_GOAL", "AGREEMENT_OBJECT", "AGREEMENT_SCOPE"} <= set(fields)):
+            raise ValueError("Candidate selection fields are incomplete")
+        item = {key.lower(): value for key, value in fields.items()}
+        item["request"] = item.pop("query")
+        return {"reviews": [item]}
+    if lines == ["NO_TARGETS"]:
+        return {"reviews": []}
+    if lines and lines[0] == "TASK":
+        if "END_TASK" not in lines[1:]:
+            raise ValueError("Unclosed TASK block")
+        end = lines.index("END_TASK", 1)
+        if end != len(lines) - 1 or not any(lines[1:end]):
+            raise ValueError("Invalid TASK block")
+        return {"task": "\n".join(lines[1:end]).strip() + "\n"}
+    if lines and lines[0] == "USE":
+        if "END_USE" not in lines[1:]:
+            raise ValueError("Unclosed USE block")
+        end_use = lines.index("END_USE", 1)
+        use = "\n".join(lines[1:end_use]).strip()
+        if not use:
+            raise ValueError("Empty USE block")
+        rows = []
+        index = end_use + 1
+        if index >= len(lines) or lines[index] != "ACCEPT":
+            raise ValueError("Expected ACCEPT block")
+        index += 1
+        while index < len(lines) and lines[index] != "END_ACCEPT":
+            if not lines[index].startswith("ACCEPT "):
+                raise ValueError("Invalid ACCEPT row")
+            fields = [part.strip() for part in lines[index][7:].split("|", 3)]
+            if len(fields) != 4 or not all(fields):
+                raise ValueError("Invalid ACCEPT row")
+            rows.append({"id": fields[0], "basis": fields[1],
+                         "requirement": fields[2], "check": fields[3]})
+            index += 1
+        if index >= len(lines) or not rows or index != len(lines) - 1:
+            raise ValueError("Invalid ACCEPT block")
+        return {"use": use, "acceptance": rows}
+    if lines and (lines[0].startswith(("H ", "h "))
+                 or re.match(r"^[Hh]\w+\s*\|", lines[0])
+                 or lines[0].casefold().startswith("task |")):
+        history_reviews, task_review = [], None
+        for line in lines:
+            # DeepSeek occasionally lowercases the fixed protocol markers
+            # while preserving all field values.  Normalize only these two
+            # markers; the rest of the protocol remains strict.
+            if line.startswith("h "):
+                line = "H " + line[2:]
+            elif re.match(r"^[hH]\w+\s*\|", line):
+                # Some providers omit the protocol separator between the
+                # marker and target id: ``h1 | ...``.  Normalize that small
+                # formatting variation while keeping all values strict.
+                line = "H " + line
+            elif line.casefold().startswith("task |"):
+                line = "TASK |" + line[len("task |"):]
+            if line.startswith("H "):
+                fields = [part.strip() for part in line[2:].split("|", 6)]
+                if len(fields) != 7 or not all(fields):
+                    raise ValueError("Invalid history review row")
+                fields[1] = _strip_protocol_label(fields[1], "applicable")
+                fields[2] = _strip_protocol_label(fields[2], "public")
+                fields[3] = _strip_protocol_label(fields[3], "answer")
+                fields[4] = _strip_protocol_label(fields[4], "historical_source")
+                fields[5] = _strip_protocol_label(fields[5], "public_source")
+                fields[6] = _strip_protocol_label(fields[6], "answer_quote")
+                history_reviews.append({"id": fields[0], "applicable": fields[1],
+                                        "public": fields[2], "answer": fields[3],
+                                        "historical_sources": fields[4],
+                                        "public_sources": fields[5],
+                                        "answer_quote": fields[6], "issue": "none"})
+            elif line.startswith("TASK |"):
+                fields = [part.strip() for part in line.split("|", 1)]
+                if len(fields) != 2 or fields[1] not in {"clean", "leaked", "uncertain"}:
+                    raise ValueError("Invalid task review row")
+                task_review = {"id": "task", "leakage": fields[1], "issue": "none"}
+            else:
+                raise ValueError("Invalid history review output")
+        if not history_reviews or task_review is None:
+            raise ValueError("Incomplete history review output")
+        return {"history_reviews": history_reviews, "task_review": task_review}
     if lines and lines[0] == "NO_QA":
         if len(lines) == 1:
             return {"questions": []}
@@ -935,8 +1104,20 @@ document or project specification; do not describe document rules as user prefer
 Return at most 12 useful facts per request, each stated concisely.
 """ + FACT_FORMAT
 
+EXTERNAL_FACT_PROMPT = """Extract only externally supplied historical facts from the
+provided dialogue window. Prefer a user correction, a real environment or downstream
+observation, a perturbation-revealed failure, a compatibility exception, or a completed
+test result. Keep the condition, affected object, and observed consequence. Do not
+extract file names, signatures, current implementation details, plans, or facts that
+are merely visible in unchanged code. A fact must be stated in the supplied dialogue
+or public tool result; do not infer one from silence. Separate an old rule from a later
+correction and keep only the still-applicable rule as a separate fact. Return at most
+8 facts. The later QA stage will decide whether the final repository can recover it.
+""" + FACT_FORMAT
+
 SIMPLE_QA_PROMPT = """根据输入生成一道中文问答。固定任务：TARGET_DEFINITION。
 只完成 focus 指定的任务，不转成更容易的旁支。例如任务是解释故障，就不能只问改了什么或测试过几条。
+当同一材料里出现多个彼此独立的决定时，只选择一个最有后续用途的决定；不要把相邻的另一项决定顺手并入题目。
 focus 是出题方向，不是事实。facts 帮助定位，materials 原文才是证据；relations 只表示明确的版本或调用关系。
 QUESTION 必须把 focus 改写成一个自然问题，不能增加 focus 没要求的对象、清单或子任务。
 每个 ANSWER_POINT 都必须直接回答这个问题；旁边材料即使真实，也不能变成额外答案点。
@@ -967,6 +1148,10 @@ MISSING_KIND: earlier_state 或 later_state 或 reason 或 outcome 或 dependenc
 MISSING_OBJECT: 原文中精确的路径或符号，不是资料编号
 这五种缺口依次指旧状态、新状态、原因、实际结果、跨代码位置的依赖。
 """
+
+SIMPLE_UNTYPED_DEFINITION = """从选定证据中选择一个最有后续开发用途、且可以由这些材料单独回答的记忆目标。
+优先选择会改变未来实现、故障定位、兼容性或验证决定的历史信息；不要只问文件清单、当前签名或泛泛主题。
+如果材料同时支持多个方向，只选择其中一个最清楚、最有实际用途的方向。不要输出题型、难度或分类。"""
 
 SIMPLE_CODE_QA_RULES = """
 Use recorded history to answer one future implementation, diagnosis, or validation
@@ -1632,7 +1817,7 @@ def _empty_result(facts=None, questions=None):
             "facts": list(facts or []), "stage_errors": [], "stage_status": {}}
 
 
-def extract_facts(scope, client, qa_mode="code", checkpoint=None):
+def extract_facts(scope, client, qa_mode="code", checkpoint=None, external_only=False):
     """Extract one chunk's facts without starting QA generation."""
     save = checkpoint or (lambda name, data: None)
     result = _empty_result()
@@ -1642,6 +1827,8 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None):
         return result
     try:
         fact_prompt, _, _ = _prompt_for_mode(qa_mode, None, 1)
+        if external_only:
+            fact_prompt = EXTERNAL_FACT_PROMPT
         source_ids = _scope_material_source_ids(scope)
         fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)
         _check_simple_request_budget(fact_prompt, fact_payload,
@@ -1688,14 +1875,20 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
 
     failed_stage = "qa"
     try:
-        if generation_mode not in {"legacy", "simple"}:
-            raise ValueError("generation_mode must be legacy or simple")
+        if generation_mode not in {"legacy", "simple", "untyped"}:
+            raise ValueError("generation_mode must be legacy, simple, or untyped")
+        simple_mode = generation_mode in {"simple", "untyped"}
         if generation_mode == "simple":
             target_type = _simple_target_type(qa_mode, target_type, allowed_types)
+        elif generation_mode == "untyped":
+            target_type = None
+        if simple_mode:
+            definition = (SIMPLE_TYPE_GUIDANCE[target_type]
+                          if target_type is not None else SIMPLE_UNTYPED_DEFINITION)
             focus_prompt = SIMPLE_FOCUS_PROMPT.replace(
-                "TARGET_DEFINITION", SIMPLE_TYPE_GUIDANCE[target_type])
+                "TARGET_DEFINITION", definition)
             qa_prompt = SIMPLE_QA_PROMPT.replace(
-                "TARGET_DEFINITION", SIMPLE_TYPE_GUIDANCE[target_type])
+                "TARGET_DEFINITION", definition)
             if qa_mode == "code":
                 focus_prompt += SIMPLE_CODE_FOCUS_RULES
                 qa_prompt += SIMPLE_CODE_QA_RULES
@@ -1708,7 +1901,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                                  for source in fact.get("sources", [])}
         fact_sources = set(selected_fact_sources)
         generation_extra_sources = set()
-        if generation_mode == "simple":
+        if simple_mode:
             generation_extra_sources = {
                 source for source in scope.get("generation_extra_sources", [])
                 if isinstance(source, str)
@@ -1719,7 +1912,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
         qa_budget = scope.get("model_request_chars", scope.get("max_context_chars", 60000))
         group_types = scope.get("evidence_group", {}).get("target_types", [])
         full_range_question = bool(scope.get("full_range_required"))
-        if generation_mode == "simple":
+        if simple_mode:
             failed_stage = "focus"
             focus_sources = (_scope_material_source_ids(scope)
                              if full_range_question else fact_sources)
@@ -1806,10 +1999,10 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             qa_scope = payload["scope"]
         failed_stage = "qa"
         save("qa-input.json", {"system_prompt": SYSTEM, "prompt": qa_prompt, "payload": payload,
-                               "ref_to_source": ref_to_source if generation_mode == "simple" else {}})
+                               "ref_to_source": ref_to_source if simple_mode else {}})
         result["generation_request_count"] += 1
         emitted = _ask_stage(client, qa_prompt, payload, "qa")
-        if generation_mode == "simple":
+        if simple_mode:
             emitted = _restore_local_sources(emitted, ref_to_source)
         if "missing_kind" in emitted:
             result["missing_kind"] = emitted["missing_kind"]
@@ -1825,20 +2018,21 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 candidate.setdefault("qa_mode", qa_mode)
                 candidate["origin_qa_mode"] = qa_mode
                 candidate["evidence_group_id"] = scope.get("evidence_group", {}).get("id")
-                if generation_mode == "simple":
+                if target_type is not None:
                     candidate["type"] = target_type
                     if qa_mode == "code":
                         candidate["category"] = target_type
         result["all_candidates"] = deepcopy(emitted.get("questions", []))
         save("raw-candidates.json", emitted)
-        if generation_mode == "simple":
+        if simple_mode:
             candidates, rejected = validate_simple_candidates(
                 emitted, result["facts"], qa_scope, qa_mode=qa_mode)
             for candidate in candidates:
-                candidate["type"] = target_type
-                if qa_mode == "code":
-                    candidate["category"] = target_type
-                if generation_mode == "simple" and isinstance(focus, dict):
+                if target_type is not None:
+                    candidate["type"] = target_type
+                    if qa_mode == "code":
+                        candidate["category"] = target_type
+                if simple_mode and isinstance(focus, dict):
                     candidate["_generation_focus"] = deepcopy(focus)
         else:
             candidates, rejected = validate_candidates(

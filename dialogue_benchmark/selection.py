@@ -461,7 +461,10 @@ def build_audit(candidates, outcomes, rejected, selections, published, revisions
         if isinstance(q, dict) and q.get("id") in rows:
             row = rows[q["id"]]
             row["rejections"].append(deepcopy(item))
-            if item.get("reason") != "credential_detected":
+            if item.get("reason") == "repository_recoverable":
+                row["selection_status"] = "filtered_recoverable"
+                row["recoverability"] = deepcopy(item.get("probe", {}))
+            elif item.get("reason") != "credential_detected":
                 row.update(current=deepcopy(q), review_status="rejected", selection_status="rejected")
             if item.get("review"):
                 row["current"]["review"] = deepcopy(item["review"])

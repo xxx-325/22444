@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import re
+from difflib import SequenceMatcher
 
 from ..llm import parse_text_response
 from .artifacts import read, save
@@ -17,14 +18,136 @@ def _refs(value):
     return [] if not value or value == "none" else [s.strip() for s in value.split(",") if s.strip()]
 
 
-def prepare_history(records, generation_input):
+def answer_quote_supported(quote, answer):
+    """Check that a short review quote is grounded in the injected answer.
+
+    Models sometimes join two adjacent answer points with punctuation or omit
+    a small subject prefix.  Accept those deterministic, high-overlap forms;
+    a quote that only appears in the historical source still fails.
+    """
+    if not isinstance(quote, str) or not quote.strip() or not isinstance(answer, str):
+        return False
+    if quote in answer:
+        return True
+    lines = [re.sub(r"^[-*]\s*", "", line).strip()
+             for line in answer.splitlines() if line.strip()]
+    parts = [part.strip(" \t\r\n;；。.!！?") for part in re.split(r"[;；。.!！?]", quote)
+             if part.strip(" \t\r\n;；。.!！?")]
+    if not parts or not lines:
+        return False
+    for part in parts:
+        compact_part = re.sub(r"\s+", "", part)
+        if not compact_part:
+            continue
+        if any(compact_part in re.sub(r"\s+", "", line) for line in lines):
+            continue
+        if not any(SequenceMatcher(None, compact_part,
+                                   re.sub(r"\s+", "", line)).ratio() >= 0.72
+                   for line in lines):
+            return False
+    return True
+
+
+def _normalise_target(row, aliases, events, known):
+    """Validate one immutable historical target before task-specific labels."""
+    target_id = row.get("id")
+    refs = [aliases.get(ref, ref) for ref in _refs(row.get("sources"))]
+    supersedes = _refs(row.get("supersedes"))
+    if (not isinstance(target_id, str) or not target_id.strip() or target_id in known
+            or not refs or set(refs) - events.keys()
+            or any(not isinstance(row.get(key), str) or not row[key].strip()
+                   for key in ("statement", "scope", "behavior"))
+            or set(supersedes) - known.keys()):
+        raise ValueError("Invalid historical target or public source reference")
+    order = max(events[ref]["order"] for ref in refs)
+    if any(order <= known[prior]["order"] for prior in supersedes):
+        raise ValueError("Historical replacement must cite a later public event")
+    return {"id": target_id, "statement": row["statement"], "scope": row["scope"],
+            "behavior": row["behavior"], "sources": refs, "supersedes": supersedes,
+            "order": order}
+
+
+def freeze_targets(rows, history):
+    """Freeze historical truth without deciding repository availability or QA coverage."""
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("No historical targets")
+    events = {event["id"]: event for event in history.get("events", [])}
+    aliases = history.get("source_aliases", {})
+    known, targets = {}, []
+    for row in rows:
+        target = _normalise_target(row, aliases, events, known)
+        known[target["id"]] = target
+        targets.append(target)
+    return {"targets": targets, "source_aliases": aliases,
+            "cutoff_event_id": history.get("cutoff_event_id"),
+            "events": history.get("events", [])}
+
+
+def validate_contract_targets(spec_rows, frozen_targets):
+    """Ensure private history-contract cannot rewrite the already frozen targets."""
+    expected = {row["id"]: row for row in frozen_targets.get("targets", [])}
+    seen = set()
+    for row in spec_rows:
+        target_id = row.get("id")
+        if target_id not in expected or target_id in seen:
+            raise ValueError("History contract changed frozen targets")
+        target = expected[target_id]
+        for key in ("statement", "scope", "behavior", "sources", "supersedes"):
+            actual = row.get(key)
+            if key in {"sources", "supersedes"}:
+                actual = _refs(actual)
+                if key == "sources":
+                    aliases = frozen_targets.get("source_aliases", {})
+                    actual = [aliases.get(ref, ref) for ref in actual]
+            if actual != target[key]:
+                raise ValueError("History contract changed frozen target " + target_id)
+        seen.add(target_id)
+    if seen != set(expected):
+        raise ValueError("History contract omitted frozen target")
+
+
+def write_contract_from_targets(spec, frozen_targets, review=None):
+    """Materialize the private contract from immutable H and finite review states."""
+    review_rows = {row.get("id"): row for row in (review or {}).get("history_rows", [])}
+    lines = []
+    for target in frozen_targets.get("targets", []):
+        row = review_rows.get(target["id"], {})
+        applicable = row.get("applicable")
+        active = "yes" if applicable == "yes" else "no" if applicable == "no" else "yes"
+        public = row.get("public")
+        repository = ("recoverable" if public == "full" else
+                      "external" if public in {"partial", "none"} else "uncertain")
+        lines.extend([
+            "REVIEW %s" % target["id"],
+            "statement: %s" % target["statement"],
+            "scope: %s" % target["scope"],
+            "sources: %s" % ",".join(target["sources"]),
+            "supersedes: %s" % (",".join(target["supersedes"]) or "none"),
+            "behavior: %s" % target["behavior"],
+            "active: %s" % active,
+            "repository: %s" % repository,
+            "END_REVIEW",
+        ])
+    path = Path(spec) / "history-contract.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def prepare_history(records, generation_input, *, qa_source_ids=None):
     """Bind QA source events and retain the public cutoff for checking later updates."""
     request = read(generation_input)
-    refs = set(request.get("ref_to_source", {}).values())
+    if qa_source_ids is None:
+        qa_source_ids = set(request.get("ref_to_source", {}).values())
+    else:
+        qa_source_ids = set(qa_source_ids)
+    refs = set(qa_source_ids)
     payload_scope = request.get("payload", {}).get("scope", {})
     refs.update(r["id"] for r in payload_scope.get("dialogue", []))
-    evidence, selected = [], []
+    evidence, selected, cited = [], [], []
     for record in records:
+        if record["id"] in qa_source_ids or any(
+                ref.startswith(record["id"] + "#fragment-") for ref in qa_source_ids):
+            cited.append(record["original_id"])
         if record["id"] in refs or any(ref.startswith(record["id"] + "#fragment-") for ref in refs):
             selected.append(record["original_id"])
         evidence.append({"id": record["original_id"], "order": record["order"],
@@ -32,11 +155,44 @@ def prepare_history(records, generation_input):
                          "text": record.get("text", "")})
     if not selected:
         raise ValueError("No public source records for historical task")
+    aliases = {"source%d" % (i + 1): event["id"] for i, event in enumerate(evidence)}
+    # Keep the selected source closure small.  Previously every user message
+    # in the session was added here, which let task selection drift to an
+    # unrelated later topic even when the QA pointed at one external fact.
+    initial_ids = set(selected)
+    for i, event in enumerate(evidence):
+        if event["id"] not in initial_ids:
+            continue
+        if event.get("role") == "assistant":
+            # A selected assistant report may be followed by the user's
+            # confirmation in the next visible turn.  Skip tool records, but
+            # stop at another assistant message so we do not import a topic
+            # from a distant conversation branch.
+            for following in evidence[i + 1:]:
+                if following.get("role") == "assistant":
+                    break
+                if following.get("role") == "user":
+                    initial_ids.add(following["id"])
+                    break
+            continue
+        if event.get("role") != "user":
+            continue
+        # Include only the preceding visible reply, which may explain the
+        # selected user correction.  The selected usage/reply is already in
+        # `selected` when the generation request cited it.
+        prior = next((e for e in reversed(evidence[:i]) if e.get("role") == "assistant"
+                      and e["kind"] == "message"), None)
+        if prior:
+            initial_ids.add(prior["id"])
     return {"cutoff_event_id": records[-1]["original_id"], "selected_event_ids": selected,
+            "qa_source_ids": cited,
+            "source_aliases": aliases,
+            "initial_events": [dict(e, source="source%d" % (i + 1))
+                               for i, e in enumerate(evidence) if e["id"] in initial_ids],
             "events": evidence}
 
 
-def freeze_contract(spec, history, oracle):
+def freeze_contract(spec, history, oracle, *, require_external=True, targets=None):
     """Validate source closure and scoped updates; semantics remain a validator check."""
     spec = Path(spec)
     path = spec / "history-contract.txt"
@@ -46,7 +202,8 @@ def freeze_contract(spec, history, oracle):
     known = {}
     for row in rows:
         cid = row.get("id")
-        refs = _refs(row.get("sources"))
+        aliases = history.get("source_aliases", {})
+        refs = [aliases.get(ref, ref) for ref in _refs(row.get("sources"))]
         replaced = _refs(row.get("supersedes"))
         if (not cid or cid in known or not refs or set(refs) - sources.keys()
                 or any(not isinstance(row.get(k), str) or not row[k].strip()
@@ -64,10 +221,14 @@ def freeze_contract(spec, history, oracle):
         contracts.append(contract)
     if not contracts:
         raise ValueError("No historical contract")
+    if targets:
+        validate_contract_targets(rows, targets)
     active = [c for c in contracts if c["active"]]
-    if not active or any(c["repository"] != "external" for c in active):
-        raise ValueError("Main historical tasks require active external rules; uncertain rules need review")
+    if require_external and (not any(c["repository"] == "external" for c in active) or any(
+            c["repository"] == "uncertain" for c in active)):
+        raise ValueError("Require an active external rule and resolve uncertain rules")
     result = {"cutoff_event_id": history["cutoff_event_id"], "contracts": contracts,
+              "public_task": (spec / "task.md").read_text() if (spec / "task.md").exists() else "",
               "events": history["events"], "oracle_answer": oracle,
               "reference_information": "oracle plus scoped historical contract",
               "oracle_sufficiency": "not_established_by_reference"}
@@ -99,21 +260,28 @@ def read_history_review(acceptance, history):
 
 
 def oracle_coverage(path, history):
-    """Require an exact answer excerpt for each active rule, reviewed before trials."""
+    """Require an exact answer excerpt for each external rule used in acceptance."""
     if not Path(path).is_file():
         return False
     rows = parse_text_response(Path(path).read_text()).get("reviews", [])
+    missing_information = 0
     for rule in history["contracts"]:
-        if not rule["active"]:
+        if not rule["active"] or rule["repository"] != "external":
             continue
         matched = [r for r in rows if r.get("id") == rule["id"]]
         if len(matched) != 1:
             return False
         row = matched[0]
         quote = row.get("quote", "")
-        if row.get("coverage") != "complete" or not quote.strip() or quote not in history["oracle_answer"]:
+        if row.get("coverage") == "provided":
+            if not quote.strip() or quote not in history.get("public_task", ""):
+                return False
+            continue
+        if row.get("coverage") != "complete" or not quote.strip() \
+                or not answer_quote_supported(quote, history["oracle_answer"]):
             return False
-    return True
+        missing_information += 1
+    return missing_information > 0
 
 
 def answer_clarification(message, history, exchanges, config, output):

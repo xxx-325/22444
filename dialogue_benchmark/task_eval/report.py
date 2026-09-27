@@ -18,6 +18,23 @@ def write_report(output, manifest):
              "QA answers supply historical information. Both groups may ask for frozen history.",
              "", "| Task | Condition | Result | History questions | Development tools | File views | Reads/searches | Solver tokens |",
              "|---|---|---|---|---|---|---|---|"]
+    if manifest.get("selection_only"):
+        lines = ["# Controlled task selection", "", "No OpenHands agents or paired trials were started.", "",
+                 "| Task | QA | Outcome | Queries | Requests | Tokens |", "|---|---|---|---|---|---|"]
+        for task in tasks:
+            root = output / task["task"]
+            def saved(name):
+                path = root / name
+                return json.loads(path.read_text()) if path.exists() else {}
+            budget, selection = saved("selection-budget.json"), saved("selection/result.json")
+            lines.append("| %s | %s | %s | %s | %s | %s |" % (
+                task["task"], task.get("qa_id", ""), task["status"], selection.get("query_count", "—"),
+                budget.get("requests", "—"), budget.get("total_tokens", "—")))
+            lines += ["", "- %s: %s" % (task["task"], selection.get("reason", "Not saved")),
+                      "- [Saved decisions and queries](%s/selection/result.json)" % task["task"], ""]
+        (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        write_html(output, manifest)
+        return
     for task in tasks:
         for condition, trial in task.get("comparison", {}).items():
             m = trial.get("metrics", {})

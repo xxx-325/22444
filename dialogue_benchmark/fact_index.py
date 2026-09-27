@@ -2120,6 +2120,35 @@ def static_evidence_check(group, evidence_index, target_type, candidate=None):
     """Check the cited history for either track, before or after generation."""
     text, cited_sources = _answer_evidence(candidate or {})
     complete = group.get("review_guard_complete", True) is True
+    # External-only groups deliberately have no graph edges or version nodes.
+    # Their type is fixed by the dialogue producer's public-event ledger; do
+    # not send them through graph-only old/new/failure heuristics, which would
+    # reject a valid public correction merely because the repository graph is
+    # absent.
+    external_kind = (group.get("scope") or {}).get("external_kind")
+    external_types = {
+        "user_correction": "correction_update",
+        "external_observation": "external_state_application",
+        "environment_observation": "external_state_application",
+        "perturbation_revealed": "failure_avoidance",
+        "compatibility_contract": "compatibility_preservation",
+        "verification_result": "verification_reuse",
+    }
+    if external_kind:
+        expected = external_types.get(external_kind)
+        infos = _group_infos(group, evidence_index)
+        if expected != target_type:
+            return _code_evidence_result("insufficient", "external_type_mismatch", infos, cited_sources)
+        if not infos:
+            return _code_evidence_result("insufficient", "external_fact_missing", infos, cited_sources)
+        if candidate is not None:
+            known = scope_source_ids(group.get("scope", {}), group.get("qa_mode"))
+            if not cited_sources or set(cited_sources) - known:
+                return _code_evidence_result("insufficient", "answer_source_out_of_scope", [], cited_sources)
+            infos = _group_infos(group, evidence_index, cited_sources)
+            if not infos:
+                return _code_evidence_result("insufficient", "answer_source_not_external", [], cited_sources)
+        return _code_evidence_result("supported", "declared_external_event", infos, cited_sources)
     infos = _group_infos(group, evidence_index)
     if candidate is not None:
         known = scope_source_ids(group.get("scope", {}), group.get("qa_mode"))
@@ -2131,11 +2160,40 @@ def static_evidence_check(group, evidence_index, target_type, candidate=None):
     return _evaluate_memory_evidence(infos, evidence_index, target_type, text,
                                     cited_sources, complete, candidate is not None, group.get("scope", {}))
 
+
+_POST_GENERATION_TYPE_PRIORITY = (
+    "correction_update", "failure_avoidance", "verification_reuse",
+    "compatibility_preservation", "external_state_application",
+    "constraint_followthrough",
+)
+
+
+def static_candidate_types(group, candidate, evidence_index, allowed_types=None):
+    """Infer eligible QA purposes after a candidate has cited its evidence.
+
+    This is deliberately post-generation.  A group may be explored and sent
+    to the model without first proving that it belongs to one narrow purpose.
+    The final label is still deterministic and evidence-backed.
+    """
+    mode = group.get("qa_mode")
+    allowed = set(allowed_types or QA_TYPES)
+    ordered = [kind for kind in _POST_GENERATION_TYPE_PRIORITY if kind in allowed]
+    ordered.extend(sorted(allowed - set(ordered)))
+    options = []
+    checks = {}
+    for target_type in ordered:
+        check = static_evidence_check(group, evidence_index, target_type, candidate)
+        checks[target_type] = check
+        if check.get("status") == "supported":
+            options.append(target_type)
+    return options, checks
+
 def _static_eligible_types(infos, qa_mode, proposed, evidence_index):
     """Nominate types even when expansion still needs an earlier/later state."""
     return _candidate_types(infos, qa_mode, proposed), _relation_metadata(infos, evidence_index)
 
-def static_candidate_labels(group, candidate, evidence_index, target_type):
+def static_candidate_labels(group, candidate, evidence_index, target_type,
+                            *, type_origin="static_target", type_candidates=None):
     """Label one generated candidate from its actually cited answer evidence."""
     answer_sources = []
     for point in candidate.get("answer_points", []):
@@ -2157,7 +2215,7 @@ def static_candidate_labels(group, candidate, evidence_index, target_type):
         extra_nodes=answer_sources)
     labels = {
         "type": target_type,
-        "type_origin": "static_target",
+        "type_origin": type_origin,
         "difficulty": relation["difficulty"],
         "difficulty_origin": "static_graph_distance",
         "difficulty_distance": relation["max_distance"],
@@ -2167,6 +2225,8 @@ def static_candidate_labels(group, candidate, evidence_index, target_type):
     requirement = static_evidence_check(group, evidence_index, target_type, candidate)
     labels.update(static_evidence_status=requirement["status"],
                   static_evidence_reason=requirement["reason"])
+    if type_candidates:
+        labels["type_candidates"] = list(type_candidates)
     if group.get("qa_mode") == "code":
         labels.update(
             category=target_type,
@@ -2205,7 +2265,8 @@ def _initial_neighbor_lookup(infos):
 
 def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                           target_chars=16000, max_chars=32000,
-                          evidence_index=None, static_selection=False, seed_sources=()):
+                          evidence_index=None, static_selection=False, seed_sources=(),
+                          defer_type_selection=False):
     """Create deterministic minimal fact groups, including cross-chunk links.
 
     The index proposes evidence groups; it never answers a question. A group is
@@ -2224,7 +2285,7 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
     info_by_id = evidence_index["info_by_id"]
 
     def eligible(infos, proposed):
-        if not static_selection:
+        if not static_selection or defer_type_selection:
             return set(proposed)
         selected, _ = _static_eligible_types(
             infos, qa_mode, proposed, evidence_index)
@@ -2245,7 +2306,8 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
     for info in infos:
         if info["fact"]["id"] not in roots:
             continue
-        proposed = _candidate_types([info], qa_mode, allowed_types)
+        proposed = (set(allowed_types) if defer_type_selection
+                    else _candidate_types([info], qa_mode, allowed_types))
         types = eligible([info], proposed)
         if types:
             utility = len(info["labels"] & {
@@ -2280,7 +2342,8 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
                     continue
                 structural_kept += 1
             pair = [left, right]
-            proposed = _candidate_types(pair, qa_mode, allowed_types)
+            proposed = (set(allowed_types) if defer_type_selection
+                        else _candidate_types(pair, qa_mode, allowed_types))
             types = eligible(pair, proposed)
             if types:
                 ids = tuple(sorted((left["fact"]["id"], right["fact"]["id"])))
@@ -2320,7 +2383,8 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
             if ranked:
                 _, extra = sorted(ranked, key=lambda item: (-item[0], item[1]["fact"]["id"]))[0]
                 triple = base + [extra]
-                proposed = _candidate_types(triple, qa_mode, allowed_types)
+                proposed = (set(allowed_types) if defer_type_selection
+                            else _candidate_types(triple, qa_mode, allowed_types))
                 types = eligible(triple, proposed)
                 if types:
                     triple_ids = tuple(sorted(ids + (extra["fact"]["id"],)))
@@ -2437,6 +2501,8 @@ def build_evidence_groups(facts, scopes, qa_mode, allowed_types, max_groups,
             "score": score,
             "request_chars": request_chars,
             "eligible_types": tuple(sorted(types)),
+            "type_selection": ("post_generation" if defer_type_selection
+                               else "preselected"),
             "relation_path": relation_path,
             "static_difficulty": relation_path["difficulty"],
             "expansion_pointer": {"candidates": [], "derived_on_demand": True},

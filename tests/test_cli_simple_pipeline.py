@@ -14,6 +14,77 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "dialogue.json"
 
 
 class SimpleCliPipelineTests(unittest.TestCase):
+    def test_post_generation_group_uses_one_untyped_request_then_static_label(self):
+        scope = {
+            "cutoff": 1,
+            "dialogue": [{"id": "e1", "order": 1, "kind": "message",
+                          "role": "user", "stage_id": "s1",
+                          "text": "保留 yaml 配置格式"}],
+            "events": [], "versions": [], "edges": [], "historical_edges": [],
+            "stages": [{"id": "s1", "record_ids": ["e1"]}],
+        }
+        fact = {"id": "f1", "qa_mode": "general",
+                "statement": "配置必须保留 yaml 格式", "sources": ["e1"]}
+        index = build_evidence_index([fact], [scope], "general")
+        group = {
+            "id": "general-group-1", "qa_mode": "general",
+            "scope": scope, "facts": [fact],
+            "allowed_types": ("constraint_followthrough", "verification_reuse"),
+            "eligible_types": ("constraint_followthrough", "verification_reuse"),
+            "type_selection": "post_generation",
+        }
+        calls = []
+
+        class FakeClient:
+            def __init__(self, *unused):
+                self.usage = []
+
+        def generate(scope, facts, client, max_questions, target_type,
+                     generation_mode, **kwargs):
+            calls.append((target_type, generation_mode, max_questions))
+            self.assertIsNone(target_type)
+            self.assertEqual(generation_mode, "untyped")
+            question = {
+                "id": "q1", "candidate_id": "q1", "qa_mode": "general",
+                "question": "配置格式需要保留什么？",
+                "answer_points": [{"text": "必须保留 yaml 格式。", "sources": ["e1"]}],
+                "forbidden_points": [],
+            }
+            return {"questions": [question], "all_candidates": [question],
+                    "stage_status": {"qa": "completed"}, "raw_generated": 1,
+                    "generation_attempt_count": 1, "generation_request_count": 1,
+                    "expansion_rounds": 0, "expansion_stop_reason": "candidate_generated",
+                    "repair_context": None}
+
+        def review(scope, facts, candidates, client, **kwargs):
+            return {"questions": [dict(item, status="approved") for item in candidates],
+                    "rejected": [], "stage_errors": [],
+                    "stage_status": {"review": "completed"}, "revisions": []}
+
+        with patch.object(cli, "ChatClient", FakeClient), \
+                patch.object(cli, "generate_from_facts", generate), \
+                patch.object(cli, "review_candidates", review), \
+                patch.object(cli, "static_candidate_types", return_value=(
+                    ["constraint_followthrough"], {
+                        "constraint_followthrough": {"status": "supported"},
+                    })), \
+                patch.object(cli, "static_evidence_check", return_value={
+                    "status": "supported", "reason": "recorded_type_evidence",
+                    "fact_ids": ["f1"], "source_ids": ["e1"],
+                }):
+            result = cli._run_qa_tasks(
+                [(0, "general", group)], "https://example.invalid", "model", "KEY", 1,
+                review_mode="simple", evidence_indexes={"general": index})
+
+        self.assertEqual(calls, [(None, "untyped", 1)])
+        self.assertEqual(len(result["questions"]), 1)
+        self.assertEqual(result["questions"][0]["type"],
+                         "constraint_followthrough")
+        self.assertEqual(result["questions"][0]["type_origin"],
+                         "static_post_generation")
+        self.assertEqual(result["type_attempts"][0]["type_selection"],
+                         "post_generation")
+
     def test_one_group_attempts_each_eligible_type_sequentially(self):
         scope = {
             "cutoff": 1,

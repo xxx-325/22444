@@ -49,6 +49,18 @@ class FrozenAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["cases"][0]["id"], "test_export::test_null")
         self.assertIn("Expected retained field", result["cases"][0]["detail"])
 
+    def test_file_node_ids_match_junit_modules_without_basename_aliases(self):
+        items = [dict(self.items[0], tests=["tests/test_export.py::test_batch"])]
+        checks = {"status": "passed", "cases": [
+            {"id": "tests.test_export::test_batch", "status": "passed"}]}
+        self.assertEqual(assess_acceptance(items, checks)["status"], "passed")
+        checks["cases"][0]["id"] = "other.test_export::test_batch"
+        self.assertEqual(assess_acceptance(items, checks)["status"], "uncertain")
+        checks["cases"] = [
+            {"id": "tests.test_export::test_batch", "status": "passed"},
+            {"id": "tests/test_export.py::test_batch", "status": "passed"}]
+        self.assertEqual(assess_acceptance(items, checks)["status"], "uncertain")
+
     def test_manual_evidence_must_resolve_and_missing_feature_is_not_inapplicable(self):
         items = [dict(self.items[0], tests=[])]
         code = self.root / "output.txt"
@@ -77,7 +89,7 @@ class FrozenAcceptanceTests(unittest.TestCase):
         self.assertEqual(acceptance_items(self.root, history)[0]["tests"], ["command::export"])
 
     def test_oracle_requires_actual_answer_excerpt_for_all_active_rules(self):
-        history = {"oracle_answer": "Retain other nulls", "contracts": [{"id": "h1", "active": True}]}
+        history = {"oracle_answer": "Retain other nulls", "contracts": [{"id": "h1", "active": True, "repository": "external"}]}
         path = self.root / "oracle.txt"
         for quote, state, expected in (("Retain other nulls", "complete", True),
                                        ("Private criterion", "complete", False),
@@ -101,6 +113,7 @@ class FrozenAcceptanceTests(unittest.TestCase):
         for path in (spec, candidate, validator):
             path.mkdir()
         save(spec / "acceptance.json", self.items)
+        save(spec / "history.json", {"contracts": [{"id": "h1", "active": True, "repository": "external"}]})
         (candidate / "export.py").write_text("feature = True\nkeep_other_nulls = True\n")
         (validator / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
         (validator / "m1.patch").write_text(

@@ -10,20 +10,190 @@ def task_direction(qa_type):
         "只主题相关不算；用不到这条知识就写 NO_TASK.md。"
         "将对应可观察行为写入 acceptance.md，供参考验证和两组执行共同使用。\n")
 
-AUTHOR = """你是出题者。读取 /reference/qa.json 和 /reference/qa-input.json，
+SELECT_TASK = """判断这条历史答案是否支持一个自然的新开发需求。只判断当前答案，勿寻找全仓库所有可能任务。
+QA 指定本次记忆主题。history 同一消息里的其他话题仅供核对原文，不能替换 QA 的主题。
+repository_exploration 是一个只读代码浏览 Agent 对当前快照的调查报告；它用于理解项目和选择完整功能，不是历史证据，也不能替代 QA 答案。
+repository_overview 是项目的静态概览，用来判断需求能否落到一个完整功能；它不是历史证据。
+你的工作是提出尚未实现的后续功能，不是寻找历史遗留待办。旧约定可以用于新功能。
+历史约定已经确定，不等于应用它的未来功能已经实现；两者分别核查。
+如果 history 为空但 QA 已明确给出用户侧或环境侧观测，这是 external-only 输入；
+把 QA 的 answer points 当作已批准的外部证据，不要因为没有原始历史副本而拒绝，
+只需核对当前仓库是否仍缺该行为以及它能否形成自然的新功能。
+历史仍须适用；新需求须有实际用途；至少一项必要信息未由当前仓库提供且答案准确包含它。
+新需求不能凭空增加答案没有提出的修复政策、开关、缓存或默认行为。
+如果 QA 只是记录一次用户侧/环境侧结果，优先把它延伸为可验证的诊断、报告或回归能力，
+让答案中的具体结果成为新功能的可观察输出；不能只把旧故障改写成“以后不要失败”。
+仓库可恢复的兼容要求可以同时存在。过去某次工作的要求不能扩成所有未来工作的约定。
+规则未实现不等于规则未记录。核查相关说明文档和实现；没有读过的文件不能声称其包含或不包含规则。
+只依据提供的原文。没有搜索命中不证明信息在仓库外；证据不足时查一个具体事实。
+每轮只返回下面这些行，不要输出 JSON、Markdown 或解释。每次回复只能有一行 QUERY：即使还想查两个文件，也只查最重要的一个，下一轮再查另一个；绝对不要输出第二行 QUERY：。
+DECISION: need_evidence 或 candidate 或 stop 或 pending
+REASON: 待核查事实怎样影响资格；candidate 则说明新用途、历史条件和行为影响；stop 必须有不合格证据
+SOURCES: 已提供的 source 别名、query 编号或 repository_exploration，逗号分隔；无引用写 none
+QUERY: op|target|path|text|offset；不适用的 path 或 text 写 -；无需查询写 none
+candidate 还必须给出三行：
+PUBLIC_GOAL: 不含具体历史规则的一句话新功能目标
+AGREEMENT_OBJECT: 历史约定涉及的对象
+AGREEMENT_SCOPE: 新功能中沿用该对象的范围
+END
+候选必须先实际核查相关仓库。仅想不到需求用 pending，不是 stop。
+查询只有 lookup/read，不执行命令。QUERY 的五段依次是操作、目标、路径、文字、偏移量。例：
+QUERY: lookup|repo|.|export|0
+QUERY: read|repo|src/export.py|-|0
+QUERY: lookup|history|-|Maple|0
+QUERY: read|history|-|source1|0
+lookup 每页20项；仓库 read 的 offset 是从0开始的行号，历史 read 是字符位置。
+续页使用结果的 next_offset。不得请求整份历史或重复已有完整原文。
+必要信息仍无法查清选 pending，说明缺什么；不要虚构规则或为制造记忆差异扩题。
+严格区分：历史已经做完的工作不是新需求。历史中的代码或文档摘录不等于当前仓库核查。
+queries 为空时不能选 candidate。需要查询只能选 need_evidence，不能同时选 candidate。
+candidate/stop/pending 的 QUERY 必须为 none。最后一行必须是 END。
+"""
+
+HISTORY_TARGETS = """从给定的原始对话中固定与当前问题直接相关、仍可能影响后续实现的历史约定。
+不要看答案要点，也不要根据当前仓库补写规则。只保留用户确认、实际观察或明确修订过的行为；
+计划、猜测、一次性的操作指令不要作为约定。每条只写一个可观察的行为和适用范围。
+旧规则被后续消息局部修订时，保留旧条款并在 supersedes 标明；没有可确认的规则时返回 NO_TARGETS。
+输出格式：
+REVIEW h1
+statement: 原始对话确认的历史事实或约定
+scope: 对象和适用条件
+behavior: 本次未来功能中可观察的行为
+sources: source1,source2
+supersedes: none 或较早的 h id
+END_REVIEW
+只引用输入中的精确 source 别名，不输出仓库判断、答案引用或新接口设计。
+"""
+
+PUBLIC_TASK = """只根据 public_input 写一项自然的新开发需求，只输出 FILE task.md ... END_FILE。
+public_input 中的历史对象和适用场景可以被提及，但其中没有历史规则；不要猜测或补写具体历史行为。
+明确这次新增功能的接口、输入输出、普通兼容要求和边界；内部实现路线由开发者决定。
+不要写 memory-use、验收标准、答案、历史条款、来源编号或“为了测试记忆”。
+"""
+
+PUBLIC_TASK_SIMPLE = """只根据 public_input 写一项自然的新开发需求。
+沿用 public_goal 的功能目标，根据实际仓库说明接口、输入输出和兼容边界。
+repository_overview、repository_exploration、repository_evidence 都是当前公开仓库资料。
+提供可执行的入口和必要参数，形式适合项目即可，不要求一律新增函数或输出格式。
+agreement_object 与 agreement_scope 表示要沿用的历史约定对象和范围；在需求中自然指明沿用它，
+不重述或猜测该约定的具体取值和例外。仓库当前行为不能替代该外部约定。
+仅约束新增能力及明确要求修改的行为；不要同时要求同一路径保持旧行为和改变旧行为。
+不额外增加功能、内部实现步骤、来源编号或“为了测试记忆”。
+严格只输出：
+TASK
+任务正文
+END_TASK
+不要输出 JSON、Markdown 文件头、代码围栏或其他文字。
+"""
+
+REPOSITORY_EXPLORER = """你是需求构造前的只读代码探索 Agent。当前仓库是最终对话快照。
+你可以查看源码、测试、文档和配置，但不要修改候选仓库，不要生成补丁，不要运行会改变文件的命令。
+围绕问题中的对象查看仓库。问题用来定位，不证明过去发生过什么；报告只写实际读到的当前仓库内容。
+据此提出自然的功能扩展方向，不推测历史答案或编造历史约定。
+优先阅读入口、相关实现、相关测试和文档，确认已有能力、缺失能力、输入输出边界和可验证位置。
+如果历史信息只适合做兼容约束，也要指出它会影响哪个未来行为。
+完成后在 /workspace/checks/repository-exploration.md 写入以下五段，每段简短：
+PROJECT_AREA:
+RELEVANT_FILES:
+CURRENT_CAPABILITY:
+NATURAL_EXTENSION:
+BOUNDARIES_AND_TESTS:
+最后停止，不修改代码。
+"""
+
+PRIVATE_DRAFT = """task.md 已固定。根据固定历史目标、原始来源、实际答案和仓库查询，生成私有验收材料。
+只能使用给定的历史目标，不能新增或改写历史条款；不能修改 task.md。
+memory-use.md 说明每条适用目标怎样影响本任务及实际答案覆盖的内容。
+history-contract.txt 必须逐条复制目标的 statement/scope/behavior/sources/supersedes，
+只补 active: yes|no 和 repository: recoverable|external|uncertain。
+acceptance.md 用四列表格 ID、Requirement、Basis、Check；新功能用 Basis=task，历史行为用 h id。
+每项 Check 必须是具体输入、动作和预期结果，不增加任务没有要求的内部实现。
+输出三个文件，文件头必须分别写成 `FILE memory-use.md`、`FILE history-contract.txt`、
+`FILE acceptance.md`，文件正文后单独写 `END_FILE`；不要在 FILE 后加冒号，不要输出 task.md。
+"""
+
+PRIVATE_DRAFT_SIMPLE = """task.md 已固定。根据固定历史目标、原始来源、实际答案和仓库查询，准备私有验收。
+不要修改 task.md，不要新增历史目标，不要写出内部实现路线。
+先输出一段说明实际答案如何帮助本任务，格式为 USE、正文、END_USE。
+然后输出验收行，格式固定为：
+ACCEPT
+ACCEPT a1 | task | 新功能要求 | inspect: 具体输入、动作和预期结果
+ACCEPT a2 | h1 | 历史行为要求 | inspect: 具体输入、动作和预期结果
+END_ACCEPT
+每行只写一个可观察要求；所有行的 ID 都用 a1、a2、a3 这样的格式；新功能至少一行 task，
+每个适用历史目标单独一行，并把对应的 h id 写在第二列。不要把 h1 直接写成行 ID。
+不要输出 history-contract、JSON、Markdown 表格、FILE 头或其他文字。
+"""
+
+HISTORY_QUALIFY = """只核对给定的固定历史目标，不自行新增 memory_gap，也不重新写历史真值。
+输入有几个目标，就必须按原顺序逐个输出几行；不能合并、遗漏或改写目标 ID。
+每个目标只输出一行，格式中的占位词必须替换成下列字面值之一：
+H h1 | yes | partial | sufficient | e53 | query1 | 原样引用
+applicable 只能是 yes、no、uncertain（不要写 applicable）；
+public 只能是 full、partial、none、uncertain（不要写 public）；
+answer 只能是 sufficient、insufficient、not_applicable、uncertain。
+historical_source 只能填给定目标的 source ID（例如 e53），public_source 只能填 task 或 query 编号
+（例如 query1）；没有来源或引用写 none。answer_quote 必须是 historical_answer 的原文，不能改写。
+最后输出一行：TASK | clean（或 leaked/uncertain）。
+public 只表示题面或实际仓库是否已提供该目标；实现是否完成不影响它。
+public=full 时必须引用 task 或 query；public=partial 可以引用 task/query，也可以在没有可引用查询时写 none；完全没有公开部分才写 none。
+answer 只表示实际注入答案是否补足题面和仓库尚未提供的必要部分。
+answer=sufficient 时，最后一列必须逐字复制 historical_answer 中的一段文字；不能从 history/source 改写或引用，不能因为来源中有同义句就填 sufficient。
+如果某个目标的规则没有出现在 historical_answer 中，必须填 answer=insufficient、answer_quote=none；不能用历史来源替答案补齐。
+公开需求故意不重复具体历史映射时，只要该映射会改变新增功能的可观察行为，historical_answer 对这条映射就是必要且 sufficient；不要要求题面先写出答案才承认缺口。
+例如题面只说“保持字段状态一致”，答案明确说明 null 与 UNSET 的具体方向时，answer 应填 sufficient，并引用答案中的原句。
+不要输出 JSON、REVIEW、END_REVIEW、解释或其他字段。
+"""
+
+DRAFT_TASK = """根据已选候选和已提供证据，一次组织草案。没有工具，不能另行调查或补造事实。
+信息不足返回 REVIEW pending，reason: 缺失事实，END_REVIEW。
+否则返回四个文件块，名称为 task.md、memory-use.md、history-contract.txt、acceptance.md。
+格式：FILE task.md，然后换行写文件正文，最后单独一行 END_FILE。所有文件都按此格式。
+正文直接换行，不用 JSON、不转义、不加引号或代码围栏。history-contract.txt 内可正常写 REVIEW。
+task.md 写自然的新需求和沿用的历史对象，不重述全部历史答案、不泄露实现步骤。
+memory-use.md 写实际用途、答案哪条信息改变哪个结果、仓库核查位置及剩余信息缺口。
+acceptance.md 用 Markdown 四列表：ID、Requirement、Basis、Check。
+ID 为 a1 等；Basis 为 task 或历史契约编号；Check 为 inspect: 具体输入、动作、预期输出。
+分别列新功能和历史要求，覆盖所有有效规则。不生成测试代码。
+新功能必须单列至少一行 Basis=task。历史约定在题面只引用对象，别把完整规则重新写进题面。
+memory-use.md 的仓库结论必须引用实际 query 及其文件行号；未返回的内容写未知。
+只在 history-contract.txt 放有历史消息来源的规则，不能把 query 编号当历史来源。
+仓库文档的普通兼容要求写进 task.md，验收 Basis=task。新接口设计由新需求确定，不要求历史答案提供。
+历史契约格式如下：
+"""
+
+TASK_ONLY_DRAFT = """根据已选候选、只读仓库探索和已提供仓库证据，组织一项自然的新开发需求。
+本轮是 external-only QA：没有把原始对话作为任务输入，也没有可引用的历史契约。
+不要臆造历史来源、历史条款或内部答案；不要把 QA 的答案内容写进公开 task.md。
+输出三个文件块，名称为 task.md、memory-use.md、acceptance.md；格式为
+FILE name，然后正文，最后单独一行 END_FILE。不要 JSON、代码围栏或其他文字。
+task.md 只写完整的新功能、输入输出、普通兼容边界和可验证行为，不写答案、来源编号或“为了测试记忆”。
+公开 task 不要写 QA 中的具体 URL、错误文本、退出码因果、具体页面名或观测结论；
+这些具体外部结果只进入有记忆条件，作为诊断器的判定依据。公开 task 只保留自然的功能目标，
+例如“增加文档构建日志诊断，区分外部依赖问题与源文件问题并报告页面进度”。
+需求必须给出一个可执行的入口（优先使用仓库已有命令；没有时明确一个简单的脚本路径、参数和输出位置），
+并写清输出中至少有哪些公开分类和成功/失败语义。不要留下“由开发者决定接口”或无法调用的抽象能力。
+需求必须让 QA 答案中的至少一个具体外部结果成为可观察输出或回归条件；
+不要把一次故障直接扩大成答案没有要求的修复策略、离线开关、缓存或默认行为。
+memory-use.md 说明 QA 答案中的外部事实会改变哪项实现选择，但不要重述具体答案，
+并说明当前仓库核查到的文件和仍需开发者确认的行为。
+acceptance.md 用 Markdown 四列表：ID、Requirement、Basis、Check；所有 Basis 必须是 task，
+每行一个可观察要求，至少包含一行新功能基本行为。Check 写具体输入、动作和预期输出，
+Check 只用 inspect: 或精确的 test: classname::name；不要把完整 shell 命令写在 command: 后，
+也不要新增 task.md 没有提出的要求。
+"""
+
+AUTHOR_TESTS = """选题资格已通过，现在完成测试构造。
+先读取 /workspace/checks/task.md、memory-use.md 和 acceptance.md；这些就是本轮草案。
+同目录的 task.md、memory-use.md、history-contract.txt 的内容已经固定，不能改动。
+如果 /workspace/checks/history.json 不存在，本轮没有冻结历史契约，不要创建或引用 h1 等历史条款；
+只为 task.md 中的公开功能写检查。
+acceptance.md 只可将 Check 换成具体测试或命令，不能改 ID、Requirement、Basis 或增加要求。
+如发现需求必须修改，请说明问题并结束，不自行改题。
+读取 /reference/qa.json 和 /reference/qa-input.json，
 后者是生成该 QA 时实际提供的材料。自主查看只读的 /workspace/candidate。
 若这两个参考文件无法读取，立即报告输入错误并结束，不猜测历史，不另选主题出题。
-先看 QA 直接关联的文件，按固定历史用途提出新开发需求；没有合适需求就写 NO_TASK.md。
-先判断 ans 的关键信息是否已在当前源码、测试或文档明确给出；如果是，
-立即写 NO_TASK.md，指出对应位置。不要遍历全部历史来另找一个出题理由。
-通用要求（例如能构建、保持显示不变）若没有具体历史条件，也不生成任务。
-从历史知识延伸一个真实、范围适中的新开发需求。基线已有的修复要保留，
-新需求必须尚未完成。不要把 QA 改成重做原修复，也不要只考参数或文件名。
-公开说明输入、输出、兼容要求，不泄露内部改法。历史答案只能提供旧经验。
-不要把历史答案中的内部定位或修复方法复制进公开需求；必要的公共 API 名称可以写。
-在 /workspace/checks 写下列文件：
-task.md：给开发者的新需求，中文。
-acceptance.md：四列表格，每行一项强制要求：
+在 /workspace/checks 实现已有验收表的检查：
 | ID | Requirement | Basis | Check |
 | a1 | 新功能基本行为 | task | test: test_acceptance::test_feature |
 | a2 | 历史规则对应的输出 | h1 | test: test_acceptance::test_rule |
@@ -34,35 +204,61 @@ Basis 是 task 或历史契约编号，多个用逗号分隔。测试用精确 J
 新功能基本行为单独一行，用自动测试或固定命令验证。
 相关回归命令也在出题时写入 commands/*.sh，参考实现和两组一致执行。
 继承执行镜像的项目路径配置，不自行假定 src 布局或修改 PYTHONPATH。
-同一对象上能同时发生的条件要写明组合结果，例如“持有引用 + 替换对象 + 异常退出”。
+同一对象上已经要求的条件要测试组合结果，例如“持有引用 + 替换对象 + 异常退出”。
 所有必须满足的行为必须在 task.md 写明或明确引用已冻结的历史契约；验收不能新增要求。
-memory-use.md：回答两句：新需求解决什么实际问题？哪条历史约定改变其具体行为？
-仅为考记忆附加特殊条件就写 NO_TASK.md；不得依据有记忆组是否获胜修改需求。
 test_acceptance.py：使用 pytest，通过公开行为检查新需求，不锁定参考实现。
+测试通过 candidate_root fixture 获取仓库目录；程序已提供 conftest.py，不要修改它。
+不要从测试文件路径推断仓库目录。需要辅助 fixture 就写在测试模块内。
 若部分或全部无法稳定测试，写 TESTS_UNAVAILABLE.md 说明具体缺口，
 并在 acceptance.md 写出 Judge 可执行或检查的标准，不偷偷增加需求。
 先在基线上试运行测试，确认失败是因为新功能缺失；依赖和路径错误不能算。
-仓库外不要找资料。若没有合适的新需求，写 NO_TASK.md 说明原因。
+若任务是日志解析或诊断脚本，不要运行完整 Sphinx 构建、联网构建或长时间回归；用自包含的短日志夹具覆盖公开行为，
+所有探索命令应可在约 30 秒内结束，避免等待外部网络或生成整套文档。
+测试构造只需围绕 acceptance.md 做一次最小核对：读相关实现、写自包含检查、运行该检查并保存结果，然后立即结束。
+不要反复 grep 同一个词、轮询状态或为了寻找更多背景继续浏览；接口未完全确定时采用 task.md 已给出的入口，
+不再回到仓库寻找第二个入口。
+仓库外不要找资料。若已有验收无法实现，写 NO_TASK.md 说明具体冲突。
 完成后简短总结。"""
 
-TASK_REVIEW = """只判断公开开发需求是否提前给出了历史答案中的解题帮助。
-允许：公共 API、可观察的输入输出、触发条件和必须保留的兼容行为。
-不允许：复述历史修复过程、指出负责修复的内部类/函数/分支、直接给出实现方法。
-公开需求出现历史答案里的私有类/函数名，或写出其内部调用顺序，即为 leaked；
-写在“背景”或“兼容要求”里也一样。兼容要求应描述对外行为，不指定内部调用顺序。
-不能为了隐藏答案删掉用户必须知道的需求。仅因公共 API 或行为与答案重合，不算泄露。
-题面可以明确引用已有历史约定及对象，不必复述约定内容；引用本身不是泄露。
-只检查 public_task 是否泄露；historical_answer 本来就可以包含内部方法。
-选 clean（没有提前给出）、leaked（提前给出）或 uncertain（不能确定）。
-只返回以下文本；issue 在 clean 时为 none，否则简短指出原文位置及问题，不写新需求：
+TASK_REVIEW = """核对这个候选能否测试历史答案的帮助。先找信息缺口，再给结论。
+public_task 是两组都能看到的需求；historical_answer 才是有记忆组收到的答案。
+evidence.sources 是审查依据，不会额外注入给有记忆组；不能拿它替代 historical_answer。
+必要历史规则若已全部写进 public_task 或仓库，选 ineligible，即使代码还未实现。
+若仍有必要条件或例外未公开，写入 memory_gap，并从 historical_answer 原样摘录支持它的 answer_quote。
+答案只是泛泛的“保持兼容”，却缺具体规则，选 uncertain；不能从历史原文替它补齐。
+仅剩部分信息缺口时，只要求答案覆盖剩余部分；所有有效要求仍须验收。
+核对历史范围、后续纠正及新需求的真实用途；扩大旧要求范围或仅主题相关选 ineligible。
+仓库结论只依据 repository_queries；未读文档不能认定文档没记录，证据不足选 uncertain。
+题面直接透露内部修法选 leaked；公共 API、自然行为要求和引用历史约定本身不算泄露。
+全部成立才选 clean。只返回：
 REVIEW
-leakage: clean|leaked|uncertain
-issue: 引用公开需求中的泄露原句并简述问题，或 none
+leakage: clean|leaked|ineligible|uncertain
+memory_gap: 必须从历史补充的具体信息；没有写 none
+answer_quote: historical_answer 中原文；没有写 none
+issue: clean 时写 none，否则简短说明具体问题
+END_REVIEW
+"""
+
+EXTERNAL_TASK_REVIEW = """核对这个 external-only 候选是否真的需要 QA 提供的外部观测。
+public_task 是两组都能看到的自然需求；historical_answer 是只有有记忆组收到的外部观测答案。
+repository_exploration 和 repository_queries 只说明当前快照，不能替代运行结果、具体错误来源、退出码因果或日志表现。
+如果 public_task 或当前仓库已经完整写出答案中的具体观测，选 ineligible；不要把“仓库里没有搜到”当成外部事实。
+如果需求是自然的诊断、报告或回归能力，而完成它必须依据 historical_answer 中未公开的具体观测，选 clean。
+memory_gap 必须写出尚未公开、会改变实现或验收的具体观测；answer_quote 必须逐字摘自 historical_answer。
+如果需求只是主题相关、只要求修复一次故障，或答案没有具体可复用观测，选 ineligible 或 uncertain。
+只返回：
+REVIEW
+leakage: clean|ineligible|uncertain
+memory_gap: 尚未公开的具体外部观测；没有写 none
+answer_quote: historical_answer 中原文；没有写 none
+issue: clean 时写 none，否则简短说明具体问题
 END_REVIEW
 """
 
 SOLVER = """请完成下面的开发需求。代码在 /workspace/candidate，依赖已安装，
 环境无外网。自主查看仓库、修改并运行必要测试。不要修改无关行为。
+若需求是日志解析或诊断脚本，不要执行 tox/uv 安装、完整 Sphinx 构建或联网等待；用短的本地日志夹具验证入口。
+不要把 .tox、虚拟环境或 docs/_build 产物当作代码提交，完成后清理这类临时目录。
 完成后报告实际修改和测试结果，不仅给计划。"""
 
 HISTORY_REQUEST = """\n如果需要用户重新提供以前交代的规则，以 finish 提交且只写
@@ -87,7 +283,7 @@ coverage.md 和 revise 报告后结束，未完成项写 uncertain，不再继�
 这些文件会随需求一起冻结。只在临时实验里测过、未保存的检查不算覆盖。
 检查错误实现要实际执行，不能凭代码相似判断。已发现的错误逃过检查时，
 补入测试或固定检查步骤。参考实现失败则 revise。
-至少保存一个“新功能基本完成，但遗漏或错用关键历史规则”的错误变体。
+至少保存一个“新功能基本完成，但遗漏或错用有效 external 历史规则”的错误变体。
 在 /workspace/checks/m1.patch 保存相对参考实现的 git diff 补丁，
 补丁路径必须是 a/项目相对路径 和 b/项目相对路径，不含 /reference 等容器前缀。
 在 mutations.txt 写 REVIEW m1、acceptance: a2、END_REVIEW（各占一行）。
@@ -110,6 +306,9 @@ VERDICT: accept 或 revise 或 skip
 只有新需求未满足且参考实现已验证可行，才 accept。不能执行测试不等于不可判断；
 明确依据候选标准检查代码并指出证据。所有已发现缺口均补入将冻结的检查后才写
 COVERAGE: complete；仍有缺口时写 gaps 并 revise。证据不足则 uncertain/revise。
+这是一次有限的验收，不要反复分段打印 checks.json 或重复 grep 同一路径。
+若自动测试已给出清晰的基线/参考结果，直接保存 coverage.md、acceptance-review.txt、mutations.txt 和 validation.txt；
+对 inspect 项可用一次短命令或源码行号作为证据。不要等待网络、运行完整文档构建或轮询状态。
 """
 
 JUDGE = """你是独立验收者。只读代码在 /workspace/candidate；
@@ -127,17 +326,11 @@ evidence 只能填写一个真实文件位置；执行证据请保存为文本�
 交给共同复核，不单独修改一组标准。
 """
 
-HISTORY_AUTHOR = """\n本轮使用公开历史契约。/reference/history.json 是实际公开历史，
-selected_event_ids 指向 QA 相关资料；查找同对象后续纠正，不能只看旧结论。
-先读选定事件，再查同对象后续用户消息；仅在需要核实某次操作时读对应工具结果。
-不要按时间区间逐批打印所有工具记录。
-task.md 明确新功能及其沿用的历史约定对象；不重复历史问题已经完成的修复或扩展。
-具体旧规则可以通过明确引用约定来要求遵循，不必在题面重述答案。
-在 history-contract.txt 按事件顺序写契约，保留旧规则与后续局部修订：
+HISTORY_CONTRACT = """在 history-contract.txt 按事件顺序写契约，保留旧规则与后续局部修订：
 REVIEW h1
 statement: 一条已公开事实或约定，不写新任务的实现方案
 scope: 对象和适用条件；后续修订只覆盖其明确范围
-sources: history.json 中的原始公开事件 id，逗号分隔
+sources: 程序提供的 source1 等精确别名，或完整原始事件 id；不得自己截短
 supersedes: 被此条局部替代的前面契约 id，或 none
 behavior: 本任务可观察的应用行为；不能限定内部实现或固定工具路线
 active: yes 或 no
@@ -147,8 +340,10 @@ repository 表示当前仓库是否充分给出该信息；需要实际查看源
 没搜到不等于不可恢复。memory-use.md 写核查位置和缺口。
 active 表示本任务是否仍适用，scope 写清截止时仍适用的范围。
 被局部替代的旧规则仅在剩余范围适用，完全失效写 no，保留来源追溯。
-只有 active: yes 且 repository: external 的规则进入本轮主任务；
-recoverable 不作主记忆题；uncertain 待审核。未公开设定不能写入。
+至少一条验收实际使用的有效规则必须 external；可以同时保留 recoverable 兼容要求。
+recoverable 要给仓库约定依据，不能只说代码现在如此。uncertain 先查清，否则停止。
+external 规则中未由题面和仓库提供的必要信息必须由实际 ans 覆盖；普通兼容要求仍需验收。
+至少留有一项这样的信息缺口；已公开部分不要求 ans 重复。未公开设定不能写入。
 acceptance.md 的行为只来自新需求和这里明确引用的历史契约。
 """
 
@@ -156,15 +351,22 @@ HISTORY_VALIDATOR = """\n本轮 /reference/spec/history.json 保存截止点、�
 题面明确引用的旧约定可以作为验收要求。逐条检查 statement/scope/supersedes
 是否被 sources 原文支持、是否遗漏后续相关纠正；检查实际 oracle_answer 是否被原文支持。
 不能把同文件或先后顺序当因果，也不能把建议当已确认约定。
-核查每项有效规则的 repository: external，实际查看仓库；容易恢复或仍不确定就 revise。
-核对 oracle_answer 是否完整覆盖每项有效规则，包括例外和后续纠正。
-在 /workspace/checks/oracle-review.txt 每项写：
+核查每项规则的范围与 repository 判断，实际查看仓库，不能将隐藏的外部规则改标 recoverable。
+至少一条有效 external 规则确实未被仓库和题面完整提供；否则 revise。
+核对 oracle_answer 是否完整覆盖每项有效 external 规则中题面和仓库未提供的内容，包括例外和后续纠正。
+在 /workspace/checks/oracle-review.txt 对每项有效 external 规则写：
 REVIEW h1
-coverage: complete 或 missing 或 stale 或 uncertain
-quote: oracle_answer 中支持当前规则与条件的原文
+coverage: complete 或 provided 或 missing 或 stale 或 uncertain
+quote: complete 时为 oracle_answer 中覆盖剩余缺口的原文；provided 时为题面完整给出该规则的原文
 END_REVIEW
+只有题面完整给出规则才用 provided；仅给部分条件仍需 complete 并核对剩余缺口。
+至少一项必须 complete 且确有缺口；全部 provided 不合格。仓库可恢复却标 external 应修正契约。
 缺失就 revise 并说明需修正 QA 答案或缩小需求，不把验收说明补进 ans。
 核对行为是真实新需求，不重做构造期已经完成的扩展。
+严格以冻结的 task.md 和 acceptance.md 为验收范围。历史契约的行为只能检查
+acceptance.md 中明确以该 h id 为 Basis 的行；不得把历史答案中的一般表述扩大到
+未引用该 h id 的旧入口、其他格式或额外调用方。若 task.md 明确要求现有入口保持兼容，
+历史检查不得改变这一兼容边界。
 在 validation.txt 另写 HISTORY: supported 或 unsupported 或 uncertain；
 不支持或遗漏有效更新就 revise。保持冻结契约不变，不临时发明历史或新增要求。
 """

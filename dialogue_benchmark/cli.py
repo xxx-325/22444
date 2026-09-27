@@ -14,7 +14,9 @@ from .fact_index import (build_evidence_groups, build_evidence_index,
                          merge_scopes,
                          candidate_review_projection, coverage_report,
                          expand_evidence_group_once,
-                         static_candidate_labels, static_evidence_check)
+                         static_candidate_labels, static_candidate_types,
+                         static_evidence_check)
+from .external import filter_external_facts, load_external_scopes
 from .general import build_general_scope, identify_stages
 from .graph import build_graph, graph_at, query_scope_adaptive
 from .llm import (ChatClient, extract_facts, generate_from_facts,
@@ -114,7 +116,7 @@ def _build_parser():
     parser.add_argument("--code-group-budget", type=int,
                         help="Maximum code evidence groups to explore")
     parser.add_argument("--questions-per-group", type=int, default=1,
-                        help="Legacy generation cap; simple mode emits at most one question per eligible type")
+                        help="Maximum candidates requested from one evidence group")
     parser.add_argument("--max-questions", type=int,
                         help="Deprecated alias for --code-count (global, not per chunk)")
     parser.add_argument("--chunk-chars", type=int, default=24000,
@@ -124,7 +126,7 @@ def _build_parser():
     parser.add_argument("--parallel-workers", type=int, default=6,
                         help="Shared concurrent model tasks across both tracks")
     parser.add_argument("--expansion-budget", type=int, default=3,
-                        help="Maximum directed evidence expansions per fixed target type")
+                        help="Maximum directed evidence expansions while completing a group")
     parser.add_argument("--review-mode", choices=("simple", "split", "single"),
                         default="simple",
                         help="Simple completeness/evidence review (default), or legacy comparison modes")
@@ -137,6 +139,12 @@ def _build_parser():
     parser.add_argument("--key-env", default="BENCHMARK_API_KEY")
     parser.add_argument("--reuse-facts", type=Path,
                         help="Reuse saved facts/errors from an identical normalized input and chunk layout")
+    parser.add_argument("--repository", type=Path,
+                        help="Final repository snapshot for the read-only recoverability probe")
+    parser.add_argument("--qa-source", choices=("graph", "external"), default="graph",
+                        help="Question source: graph evidence (default) or dialogue external events")
+    parser.add_argument("--external-events", type=Path,
+                        help="Version-1 external event sidecar used by --qa-source external")
     return parser
 
 
@@ -168,6 +176,14 @@ def _parse_options(args, parser):
         parser.error("Network access requires --allow-network")
     if args.allow_network and not (args.endpoint and args.model):
         parser.error("Network mode requires --endpoint and --model")
+    if args.repository is not None and not args.allow_network:
+        parser.error("--repository requires --allow-network for the model probe")
+    if args.qa_source == "external" and args.external_events is None:
+        parser.error("--qa-source external requires --external-events")
+    if args.qa_source == "graph" and args.external_events is not None:
+        parser.error("--external-events requires --qa-source external")
+    if args.external_events is not None and not args.external_events.is_file():
+        parser.error("--external-events must point to an existing file")
     if (args.initial_hops < 0 or args.max_hops < args.initial_hops
             or args.max_context_chars <= 0 or args.model_request_chars <= 0
             or args.chunk_chars <= 0 or args.chunk_overlap < 0
@@ -184,6 +200,8 @@ def _parse_options(args, parser):
         "enabled_code": enabled_code,
         "general_types": tuple(general_types or DEFAULT_GENERAL_TYPES) if enabled_general else (),
         "code_types": tuple(code_types or DEFAULT_CODE_TYPES) if enabled_code else (),
+        "general_types_explicit": args.general_types is not None,
+        "code_types_explicit": args.code_types is not None,
         "general_count": general_count if enabled_general else 0,
         "code_count": code_count if enabled_code else 0,
         "general_group_budget": (
@@ -193,6 +211,7 @@ def _parse_options(args, parser):
             args.code_group_budget if args.code_group_budget is not None
             else max(10, code_count * 4)) if enabled_code else 0,
         "questions_per_group": min(3, args.questions_per_group),
+        "qa_source": args.qa_source,
     }
 
 
@@ -227,7 +246,8 @@ def _checkpoint(checkpoint_dir, track, phase, index):
     return write
 
 
-def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None, reuse_dir=None):
+def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
+                    reuse_dir=None, external_only=False):
     """Extract every chunk's facts through one bounded shared executor."""
     if not tasks:
         return {"facts": [], "questions": [], "rejected": [], "usage": [],
@@ -256,9 +276,13 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
                 raise ValueError("Missing saved fact-stage result")
             else:
                 client = ChatClient(endpoint, model, key_env)
-                result = extract_facts(
-                    scope, client, qa_mode=track,
-                    checkpoint=_checkpoint(checkpoint_dir, track, "chunk", index))
+                kwargs = {
+                    "qa_mode": track,
+                    "checkpoint": _checkpoint(checkpoint_dir, track, "chunk", index),
+                }
+                if external_only:
+                    kwargs["external_only"] = True
+                result = extract_facts(scope, client, **kwargs)
             prefix = "%s_s%d_c%d_" % (track, scope.get("scope_index", 0),
                                         scope.get("chunk_index", index))
             _prefix_facts(result, prefix, track)
@@ -337,7 +361,12 @@ def _static_generation_rejection(group, target_type, check):
 def generate_simple_target(group, evidence_index, target_type, client,
                            qa_mode, candidate_prefix=None, checkpoint=None,
                            expansion_budget=3):
-    """Generate one fixed target with a bounded directed-expansion loop."""
+    """Generate one target with bounded expansion.
+
+    ``target_type`` is optional for the post-generation path.  In that mode
+    evidence expansion and the model request are not filtered by a taxonomy;
+    the cited answer is labelled statically after generation.
+    """
     if qa_mode not in {"general", "code"}:
         raise ValueError("qa_mode must be general or code")
     if not isinstance(expansion_budget, int) or expansion_budget < 0:
@@ -350,8 +379,12 @@ def generate_simple_target(group, evidence_index, target_type, client,
 
     def bind_target(active_group):
         scope = dict(active_group["scope"])
-        scope["evidence_group"] = dict(
-            scope.get("evidence_group", {}), target_type=target_type)
+        evidence_group = dict(scope.get("evidence_group", {}))
+        if target_type is not None:
+            evidence_group["target_type"] = target_type
+        else:
+            evidence_group.pop("target_type", None)
+        scope["evidence_group"] = evidence_group
         return dict(active_group, scope=scope)
 
     generation_attempts = 0
@@ -368,7 +401,8 @@ def generate_simple_target(group, evidence_index, target_type, client,
         current = generate_from_facts(
             active_group["scope"], active_group["facts"], client,
             max_questions=1, qa_mode=qa_mode, allowed_types=(target_type,),
-            target_type=target_type, generation_mode="simple",
+            target_type=target_type,
+            generation_mode="simple" if target_type is not None else "untyped",
             checkpoint=phase_checkpoint(phase),
             candidate_prefix=candidate_prefix)
         generation_requests += int(current.get("generation_request_count", 0) or 0)
@@ -413,7 +447,8 @@ def generate_simple_target(group, evidence_index, target_type, client,
         return total
 
     active_group = bind_target(group)
-    static_precheck = static_evidence_check(active_group, evidence_index, target_type)
+    static_precheck = (static_evidence_check(active_group, evidence_index, target_type)
+                       if target_type is not None else None)
     if static_precheck is not None:
         static_checks.append(static_precheck)
     expanded_static_precheck = None
@@ -439,8 +474,9 @@ def generate_simple_target(group, evidence_index, target_type, client,
             return False, audit.get("reason", "expansion_failed")
         active_group = expanded
         expansion_rounds += 1
-        expanded_static_precheck = static_evidence_check(
+        expanded_static_precheck = (static_evidence_check(
             active_group, evidence_index, target_type)
+            if target_type is not None else None)
         static_checks.append(expanded_static_precheck)
         if checkpoint is not None:
             checkpoint("expanded-%d" % expansion_rounds, "evidence.json", {
@@ -469,7 +505,8 @@ def generate_simple_target(group, evidence_index, target_type, client,
             check = expanded_static_precheck
         return True, check
 
-    static_ok, effective_static = satisfy_static(static_precheck)
+    static_ok, effective_static = ((satisfy_static(static_precheck)
+                                    if target_type is not None else (True, None)))
     if not static_ok:
         generated = _static_generation_rejection(
             active_group, target_type, effective_static)
@@ -495,7 +532,7 @@ def generate_simple_target(group, evidence_index, target_type, client,
             if not ok:
                 expansion_stop_reason = reason
                 break
-            if qa_mode == "code":
+            if qa_mode == "code" and target_type is not None:
                 static_ok, effective_static = satisfy_static(
                     expanded_static_precheck)
                 if not static_ok:
@@ -546,18 +583,23 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     "candidate_review_guards": [],
                 }
                 seen_questions = set()
-                target_types = tuple(
+                defer_type_selection = group.get("type_selection") == "post_generation"
+                target_types = ((None,) if defer_type_selection else tuple(
                     group["eligible_types"] if "eligible_types" in group
-                    else group.get("allowed_types", ()))
+                    else group.get("allowed_types", ())))
                 for type_index, target_type in enumerate(target_types, 1):
+                    target_label = target_type or "untyped"
                     prefix = "%s_g%d_t%d_" % (track, index, type_index)
                     attempt_scope = dict(group["scope"])
-                    evidence_group = dict(attempt_scope.get("evidence_group", {}),
-                                          target_type=target_type)
+                    evidence_group = dict(attempt_scope.get("evidence_group", {}))
+                    if target_type is not None:
+                        evidence_group["target_type"] = target_type
+                    else:
+                        evidence_group.pop("target_type", None)
                     attempt_scope["evidence_group"] = evidence_group
                     attempt_group = dict(group, scope=attempt_scope)
                     base_checkpoint = _checkpoint(
-                        checkpoint_dir, track, "group-" + target_type, index)
+                        checkpoint_dir, track, "group-" + target_label, index)
 
                     def scoped_checkpoint(label):
                         if base_checkpoint is None:
@@ -585,41 +627,59 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     missing_object = generated.get("missing_object")
 
                     type_questions = list(generated.get("questions", []))
-                    for question in generated.get("all_candidates", []):
-                        if isinstance(question, dict):
+                    static_post_rejected = []
+
+                    def label_candidate(question):
+                        if not isinstance(question, dict):
+                            return None, {}
+                        if target_type is None:
+                            options, checks = static_candidate_types(
+                                active_group, question, evidence_index,
+                                group.get("allowed_types"))
+                            if not options:
+                                question["type_candidates"] = []
+                                return None, checks
+                            chosen = options[0]
                             question.update(static_candidate_labels(
-                                active_group, question, evidence_index, target_type))
-                            question.setdefault("evidence_group_id", group.get("id"))
-                    for question in type_questions:
+                                active_group, question, evidence_index, chosen,
+                                type_origin="static_post_generation",
+                                type_candidates=options))
+                            return chosen, checks
+                        check = static_evidence_check(
+                            active_group, evidence_index, target_type,
+                            candidate=question)
                         question.update(static_candidate_labels(
                             active_group, question, evidence_index, target_type))
+                        return target_type, {target_type: check}
+
+                    for question in generated.get("all_candidates", []):
+                        if isinstance(question, dict):
+                            label_candidate(question)
+                            question.setdefault("evidence_group_id", group.get("id"))
+                    checked_questions = []
+                    checks_by_id = {}
+                    for question in type_questions:
+                        chosen, checks = label_candidate(question)
+                        checks_by_id[question.get("id")] = checks
                         question["evidence_group_id"] = group.get(
                             "id", "%s-group-%d" % (track, index))
-                    static_post_rejected = []
-                    if type_questions:
-                        checked_questions = []
-                        checks_by_id = {}
-                        for question in type_questions:
-                            check = static_evidence_check(
-                                active_group, evidence_index, target_type,
-                                candidate=question)
-                            question["static_type_evidence"] = check
-                            checks_by_id[question.get("id")] = check
-                            if check.get("status") == "insufficient":
-                                static_post_rejected.append({
-                                    "question": dict(question, status="rejected"),
-                                    "reason": "type_evidence_static_insufficient",
-                                    "static_reason": check.get("reason"),
-                                    "failed_checks": ["type_evidence_sufficient"],
-                                    "static_type_evidence": check,
-                                })
-                            else:
-                                checked_questions.append(question)
-                        type_questions = checked_questions
-                        for question in generated.get("all_candidates", []):
-                            check = checks_by_id.get(question.get("id"))
-                            if check is not None:
-                                question["static_type_evidence"] = check
+                        check = checks.get(chosen) if chosen else None
+                        if chosen is None or (check is not None and
+                                              check.get("status") == "insufficient"):
+                            static_post_rejected.append({
+                                "question": dict(question, status="rejected"),
+                                "reason": "type_evidence_static_insufficient",
+                                "static_reason": (check or {}).get("reason", "no_static_type"),
+                                "failed_checks": ["type_evidence_sufficient"],
+                                "static_type_evidence": check or checks,
+                            })
+                        else:
+                            checked_questions.append(question)
+                    type_questions = checked_questions
+                    for question in generated.get("all_candidates", []):
+                        check = checks_by_id.get(question.get("id"))
+                        if check is not None and len(check) == 1:
+                            question["static_type_evidence"] = next(iter(check.values()))
                     reviewed_questions = type_questions
                     validation_rejected = list(generated.get("rejected", []))
                     type_rejected = [dict(item, stage="qa_validation")
@@ -635,7 +695,9 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                             active_group, evidence_index, review_candidate)
                         guard_audit.update(
                             candidate_id=review_candidate.get("id"),
-                            target_type=target_type)
+                            target_type=review_candidate.get("type", target_type),
+                            type_selection=("post_generation" if target_type is None
+                                            else "preselected"))
                         return ((projected_group or active_group)["scope"],
                                 guard_audit)
                     already_reviewed = False
@@ -691,21 +753,35 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         combined["candidate_review_guards"].extend(
                             reviewed.get("candidate_review_guards", []))
                         type_revisions.extend(reviewed.get("revisions", []))
+                    labeled_reviewed = []
                     for question in reviewed_questions:
                         if isinstance(question, dict):
-                            question.update(static_candidate_labels(
-                                active_group, question, evidence_index, target_type))
+                            chosen, checks = label_candidate(question)
+                            if chosen is None:
+                                type_rejected.append({
+                                    "question": dict(question, status="rejected"),
+                                    "reason": "type_evidence_static_insufficient",
+                                    "static_reason": "no_static_type",
+                                    "failed_checks": ["type_evidence_sufficient"],
+                                    "static_type_evidence": checks,
+                                    "stage": "static_post_review",
+                                })
+                            else:
+                                labeled_reviewed.append(question)
+                    reviewed_questions = labeled_reviewed
                     for revision in type_revisions:
                         after = revision.get("after") if isinstance(revision, dict) else None
                         if isinstance(after, dict):
-                            after.update(static_candidate_labels(
-                                active_group, after, evidence_index, target_type))
+                            label_candidate(after)
                     if reviewed_questions:
                         final_questions = []
                         for question in reviewed_questions:
-                            check = static_evidence_check(
-                                active_group, evidence_index, target_type,
+                            check_type = question.get("type", target_type)
+                            check = (static_evidence_check(
+                                active_group, evidence_index, check_type,
                                 candidate=question)
+                                     if check_type is not None else
+                                     {"status": "insufficient", "reason": "no_static_type"})
                             question["static_type_evidence"] = check
                             if check.get("status") == "insufficient":
                                 type_rejected.append({
@@ -733,7 +809,9 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         if isinstance(text, str):
                             seen_questions.add((track, text.strip().casefold()))
                     combined["type_attempts"].append({
-                        "target_type": target_type,
+                        "target_type": target_type or "post_generation",
+                        "type_selection": ("post_generation" if target_type is None
+                                           else "preselected"),
                         "generation_attempt_count": generation[
                             "generation_attempt_count"],
                         "request_count": generation["generation_request_count"],
@@ -942,12 +1020,35 @@ def _limit_questions(result, limits):
     return result
 
 
-def _publication_view(questions, limits, workspaces=(), duplicate_decisions=()):
+def _publication_view(questions, limits, workspaces=(), duplicate_decisions=(),
+                      recoverability_check=None, strict_external=False):
     # Project separately so approved-first deduplication also works after redaction.
     safe, rejected = [], []
+    recoverability_selection = []
     totals = {"total": 0, "path_redacted": 0, "credential_detected": 0,
               "by_track": {}, "track_details": {}}
     for q in questions:
+        if recoverability_check is not None and isinstance(q, dict) and not _question_has_credential(q):
+            # Probe the same public wording that can be published.  Keep the
+            # private candidate id only for local result association.
+            probe_input, _ = _project_public_question(q, workspaces)
+            probe_input["id"] = q.get("id")
+            probe = recoverability_check(probe_input)
+            probe_status = probe.get("status") if isinstance(probe, dict) else None
+            if probe_status == "recoverable" or (strict_external and probe_status == "uncertain"):
+                reason = ("repository_recoverable" if probe_status == "recoverable"
+                          else "repository_recoverability_uncertain")
+                rejected.append({"question": q, "reason": reason,
+                                 "stage": "recoverability", "probe": probe,
+                                 "track": _question_mode(q)})
+                recoverability_selection.append({
+                    "candidate_id": q.get("id"),
+                    "selection_status": ("filtered_recoverable" if probe_status == "recoverable"
+                                          else "filtered_recoverability_uncertain"),
+                    "reason": reason,
+                    "probe": probe,
+                })
+                continue
         projected, stats = _filter_private_questions([q], rejected, workspaces)
         safe.extend(projected)
         for key in ("total", "path_redacted", "credential_detected"):
@@ -960,10 +1061,13 @@ def _publication_view(questions, limits, workspaces=(), duplicate_decisions=()):
     safe, reviewed_duplicates = apply_duplicate_decisions(safe, duplicate_decisions)
     unique, duplicates = deduplicate_reviewed(safe)
     kept, selection, counts = select_approved(unique, limits)
-    selection = reviewed_duplicates + duplicates + selection + [
+    selection = recoverability_selection + reviewed_duplicates + duplicates + selection + [
         {"candidate_id": r["question"].get("id"),
          "selection_status": "safety_blocked",
-         "reason": r["reason"]} for r in rejected if isinstance(r.get("question"), dict)]
+         "reason": r["reason"]} for r in rejected
+         if isinstance(r.get("question"), dict)
+         and r.get("reason") not in {"repository_recoverable",
+                                      "repository_recoverability_uncertain"}]
     return {"questions": kept, "counts": counts, "selection": selection,
             "publication_rejected": rejected, "path_stats": totals,
             "deduplicated_count": len(unique),
@@ -1140,6 +1244,7 @@ def _empty_question_stats():
         "path_redacted": 0,
         "credential_detected": 0,
         "redaction_deduplicated": 0,
+        "recoverability_filtered": 0,
         "published": 0,
         "by_track": {},
     }
@@ -1223,6 +1328,10 @@ def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     options = _parse_options(args, parser)
+    if args.repository is not None:
+        args.repository = args.repository.resolve()
+        if not args.repository.is_dir():
+            parser.error("--repository must point to an existing directory")
     created = False
     try:
         records = load_dialogue(args.input)
@@ -1243,18 +1352,42 @@ def main(argv=None):
         args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
         created = True
         os.chmod(args.output, 0o700)
-        graph = build_graph(records)
+        external_mode = options["qa_source"] == "external"
+        if external_mode:
+            # External-only selection is driven by the dialogue producer's
+            # public-source event sidecar; it intentionally does not build the
+            # general evidence graph.
+            graph = {"version": 1, "mode": "external", "events": [],
+                     "versions": [], "diagnostics": []}
+        else:
+            graph = build_graph(records)
         save(args.output, "normalized.json", records)
         save(args.output, "graph.json", graph)
-        save(args.output, "current-graph.json", graph_at(graph, cutoff))
+        save(args.output, "current-graph.json",
+             {"mode": "external", "cutoff": cutoff}
+             if external_mode else graph_at(graph, cutoff))
 
         general_scope = None
         code_scopes, adaptive_meta = [], None
-        if options["enabled_general"]:
+        external_bundle = None
+        if external_mode:
+            enabled_tracks = {track for track in ("general", "code")
+                              if options["enabled_" + track]}
+            external_bundle = load_external_scopes(
+                args.external_events, records, cutoff, enabled_tracks,
+                max_chars=args.model_request_chars,
+                max_groups={track: options[track + "_group_budget"]
+                            for track in enabled_tracks})
+            save(args.output, "external-events.json", external_bundle)
+            code_scopes = [scope for scope in external_bundle["scopes"]
+                           if scope["track"] == "code"]
+            general_scope = next((scope for scope in external_bundle["scopes"]
+                                  if scope["track"] == "general"), None)
+        if not external_mode and options["enabled_general"]:
             general_scope = build_general_scope(records, cutoff, args.max_context_chars, graph)
             general_scope["track"] = "general"
             save(args.output, "general-scope.json", general_scope)
-        if options["enabled_code"]:
+        if not external_mode and options["enabled_code"]:
             if seed_sources or public_input:
                 scope = build_general_scope(records, cutoff, args.max_context_chars, graph)
                 scope.update(versions=graph["versions"], events=graph["events"], track="code")
@@ -1295,9 +1428,9 @@ def main(argv=None):
         unique_chunk_count = 0
         if args.allow_network:
             scopes_by_track = []
-            if general_scope is not None:
+            if general_scope is not None and not external_mode:
                 scopes_by_track.append(("general", [general_scope]))
-            if options["enabled_code"]:
+            if options["enabled_code"] and not external_mode:
                 scopes_by_track.append(("code", code_scopes))
             task_index = 0
             seen_chunks = {}
@@ -1342,6 +1475,23 @@ def main(argv=None):
                         fact_tasks.append((task_index, track, chunk))
                         track_task_counts[track] += 1
                         task_index += 1
+            if external_mode:
+                for task_index, scope in enumerate(external_bundle["scopes"]):
+                    track = scope["track"]
+                    scope["model_request_chars"] = args.model_request_chars
+                    fact_tasks.append((task_index, track, scope))
+                    chunk_summaries.append({
+                        "task_index": task_index,
+                        "track": track,
+                        "scope_index": scope.get("scope_index"),
+                        "chunk_index": scope.get("chunk_index"),
+                        "chunk_window": scope.get("chunk_window"),
+                        "context_chars": len(json.dumps(scope, ensure_ascii=False)),
+                        "dialogue_records": len(scope.get("dialogue", [])),
+                        "external_event_id": scope.get("external_event_id"),
+                        "external_kind": scope.get("external_kind"),
+                    })
+                    track_task_counts[track] += 1
             unique_chunk_count = sum(1 for item in chunk_summaries
                                      if item.get("task_index") is not None)
             save(args.output, "chunks.json", chunk_summaries)
@@ -1370,7 +1520,8 @@ def main(argv=None):
                 fact_options = {"reuse_dir": args.reuse_facts} if args.reuse_facts else {}
                 facts_result = _run_fact_tasks(
                     fact_tasks, args.endpoint, args.model, args.key_env,
-                    args.parallel_workers, checkpoint_dir, **fact_options)
+                    args.parallel_workers, checkpoint_dir,
+                    external_only=external_mode, **fact_options)
                 save(args.output, "fact-extraction.json", {
                     "reused_from": str(args.reuse_facts) if args.reuse_facts else None,
                     "usage": facts_result["usage"], "stage_errors": facts_result["stage_errors"],
@@ -1387,6 +1538,9 @@ def main(argv=None):
                     "question_stats": _empty_question_stats(),
                     "all_questions": [],
                 }
+                if external_mode:
+                    result["facts"] = filter_external_facts(
+                        result["facts"], external_bundle["scopes"])
                 # Preserve per-track scope errors collected before fact
                 # extraction.  They are independent of successful chunks.
                 result["stage_errors"].extend(
@@ -1406,7 +1560,51 @@ def main(argv=None):
                 groups, group_tasks = [], []
                 evidence_indexes = {}
                 group_index = 0
+                if external_mode:
+                    external_scopes = external_bundle["scopes"]
+                    for track in ("general", "code"):
+                        if not options["enabled_" + track]:
+                            continue
+                        track_scopes = [scope for scope in external_scopes
+                                        if scope["track"] == track]
+                        track_facts = [fact for fact in result["facts"]
+                                       if fact.get("qa_mode") == track]
+                        evidence_indexes[track] = build_evidence_index(
+                            track_facts, track_scopes, track,
+                            args.model_request_chars)
+                        for scope in track_scopes:
+                            event_id = scope.get("external_event_id")
+                            facts = [fact for fact in track_facts
+                                     if event_id in fact.get("external_event_ids", [])]
+                            if not facts:
+                                result["stage_errors"].append({
+                                    "track": track, "stage": "external_facts",
+                                    "external_event_id": event_id,
+                                    "error_type": "no_external_fact",
+                                })
+                                continue
+                            target_type = scope["evidence_group"]["target_types"][0]
+                            group = {
+                                "id": scope["evidence_group"]["id"],
+                                "qa_mode": track,
+                                "scope": scope,
+                                "facts": facts,
+                                "allowed_types": (target_type,),
+                                "eligible_types": (target_type,),
+                                "type_selection": "preselected",
+                                "max_questions": options["questions_per_group"],
+                            }
+                            groups.append(group)
+                            group_tasks.append((group_index, track, group))
+                            group_index += 1
+                        result["stage_status"].append({
+                            "track": track, "phase": "grouping",
+                            "grouping": "external_events",
+                            "groups": len([g for g in groups if g["qa_mode"] == track]),
+                        })
                 for track in ("general", "code"):
+                    if external_mode:
+                        continue
                     if not options["enabled_" + track]:
                         continue
                     track_facts = [fact for fact in result["facts"]
@@ -1427,7 +1625,10 @@ def main(argv=None):
                             max_chars=args.model_request_chars,
                             evidence_index=evidence_index,
                             seed_sources=seed_sources,
-                            static_selection=args.review_mode == "simple")
+                            static_selection=args.review_mode == "simple",
+                            defer_type_selection=(
+                                args.review_mode == "simple"
+                                and not options.get(track + "_types_explicit", False)))
                         result["stage_status"].append({
                             "track": track, "phase": "grouping",
                             "grouping": "completed", "groups": len(track_groups),
@@ -1456,6 +1657,33 @@ def main(argv=None):
                 budgets = {t: options[t + "_group_budget"] for t in limits}
                 workspaces = [r["workspace"] for r in records if r.get("workspace")]
                 duplicate_state = {"reviewed_pairs": set(), "decisions": []}
+                recoverability_state = {"results": {}, "usage": [], "errors": []}
+
+                def check_repository_recoverability(question):
+                    """Probe only approved candidates before they consume quotas."""
+                    if not args.repository or not args.allow_network:
+                        return {"status": "not_run", "reason": "repository_probe_disabled"}
+                    if not isinstance(question, dict) or question.get("status") != "approved":
+                        return {"status": "not_run", "reason": "candidate_not_approved"}
+                    candidate_id = question.get("id")
+                    if not candidate_id:
+                        return {"status": "uncertain", "reason": "candidate_id_missing"}
+                    if candidate_id in recoverability_state["results"]:
+                        return recoverability_state["results"][candidate_id]
+                    from .repository_probe import probe_candidate
+                    try:
+                        safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(candidate_id))[:120]
+                        probe = probe_candidate(
+                            question, args.repository, args.endpoint, args.model,
+                            args.key_env, args.output / "recoverability" / safe_id)
+                    except Exception as error:
+                        probe = {"status": "uncertain",
+                                 "reason": "probe_error:%s" % type(error).__name__}
+                        recoverability_state["errors"].append({
+                            "candidate_id": candidate_id, "error": probe["reason"]})
+                    recoverability_state["results"][candidate_id] = probe
+                    recoverability_state["usage"].extend(probe.get("usage", []))
+                    return probe
 
                 def adjudicate_duplicates(merged, batch_result, batch_number):
                     candidates = [question for question in merged.get("all_questions", [])
@@ -1502,12 +1730,15 @@ def main(argv=None):
                                                evidence_indexes=evidence_indexes,
                                                expansion_budget=args.expansion_budget),
                     lambda questions, caps: _publication_view(
-                        questions, caps, workspaces, duplicate_state["decisions"]),
+                        questions, caps, workspaces, duplicate_state["decisions"],
+                        recoverability_check=check_repository_recoverability,
+                        strict_external=external_mode),
                     checkpoint=batch_checkpoint, initial_errors=result["stage_errors"],
                     initial_request_count=sum(u.get("request_count", 1) for u in result["usage"]),
                     after_batch=adjudicate_duplicates)
                 for key in ("rejected", "usage", "stage_errors", "stage_status"):
                     result[key].extend(qa_result[key])
+                result["usage"].extend(recoverability_state["usage"])
                 for key in ("questions", "all_questions", "all_candidates", "selection", "revisions",
                             "duplicate_decisions", "dedup_errors", "progress",
                             "expansion_audits", "type_attempts"):
@@ -1521,11 +1752,20 @@ def main(argv=None):
                     for attempt in row.get("target_type_attempts", [])
                 ]
                 result["rejected"].extend(qa_result.get("publication_rejected", []))
+                result["recoverability"] = {
+                    "repository": "provided" if args.repository else None,
+                    "results": recoverability_state["results"],
+                    "errors": recoverability_state["errors"],
+                    "filtered": sum(
+                        item.get("status") == "recoverable"
+                        for item in recoverability_state["results"].values()),
+                }
                 result["question_stats"].update(
                     raw_generated=len(result["all_candidates"]), post_review=len(result["all_questions"]),
                     post_limit=len(result["questions"]),
                     deduplicated=qa_result["deduplicated_count"],
                     over_quota=sum(x["selection_status"] == "over_quota" for x in result["selection"]))
+                result["question_stats"]["recoverability_filtered"] = result["recoverability"]["filtered"]
                 for track in limits:
                     result["question_stats"]["by_track"][track] = {
                         "raw_generated": sum(q.get("qa_mode") == track for q in result["all_candidates"] if isinstance(q, dict)),
@@ -1661,6 +1901,8 @@ def main(argv=None):
             public["counts"][item["qa_mode"]] += 1
         audit = {"status": public["status"], "review_mode": args.review_mode,
                  "rejected": result.get("rejected", []),
+                 "recoverability": result.get("recoverability", {
+                     "repository": None, "results": {}, "errors": [], "filtered": 0}),
                  "candidates": result.get("all_candidates", []),
                  "questions": result.get("all_questions",
                                            result.get("questions", [])),
@@ -1727,6 +1969,10 @@ def main(argv=None):
             "file_versions": len(graph["versions"]),
             "diagnostics": len(graph["diagnostics"]), "mode": public["status"],
             "qa_mode": args.qa_mode,
+            "qa_source": options["qa_source"],
+            "external_events": str(args.external_events) if external_mode else None,
+            "external_event_count": len(external_bundle["events"]) if external_mode else 0,
+            "external_event_rejections": external_bundle["rejected"] if external_mode else [],
             "review_mode": args.review_mode,
             "general_types": list(options["general_types"]),
             "code_types": list(options["code_types"]),
@@ -1750,6 +1996,10 @@ def main(argv=None):
                           for kind in ("conversation", "document", "tool", "code", "test")},
             },
             "network": bool(args.allow_network),
+            "repository_probe": result.get("recoverability", {
+                "repository": "provided" if args.repository else None,
+                "results": {}, "errors": [], "filtered": 0,
+            }),
             "scopes": {
                 "general": 1 if general_scope is not None else 0,
                 "code": len(code_scopes),
@@ -1799,6 +2049,8 @@ def main(argv=None):
                 "path_redacted": result["question_stats"].get("path_redacted", 0),
                 "credential_detected": result["question_stats"].get("credential_detected", 0),
                 "redaction_deduplicated": result["question_stats"].get("redaction_deduplicated", 0),
+                "recoverability_filtered": result["question_stats"].get(
+                    "recoverability_filtered", 0),
                 "status": status_counts,
                 "type": type_counts,
                 "by_track": result["question_stats"].get("by_track", {}),
