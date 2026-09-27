@@ -300,7 +300,9 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
             step = output / ("step-%03d" % len(state["queries"]))
             allowed = "need_evidence, stop, pending" if not state["queries"] else "need_evidence, candidate, stop, pending"
             response = budget.call(SELECT_TASK + "\n本轮可选 decision 只有：" + allowed +
-                                   "。若仓库还没读过，请先查入口或说明文档。", state, config, step)
+                                   "。若仓库还没读过，请先查入口或说明文档。\n"
+                                   "已提供内容、可支持最终结论的 SOURCES：" + ",".join(sorted(known)) +
+                                   "。索引中其余来源只可请求读取，不能引用其内容。", state, config, step)
             rows = response.get("reviews", [])
             if len(rows) != 1:
                 raise ValueError("Expected one selection decision")
