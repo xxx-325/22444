@@ -105,6 +105,7 @@ class TaskPreflightTests(unittest.TestCase):
                                    {"status": "failed"}, {"status": "passed"}])
         self.assertIsNone(receipt)
         self.assertFalse((self.root / "frozen").exists())
+        self.assertEqual(read(self.root / "construction.json")[0]["reason"], "validator_incomplete")
 
     def test_interrupted_reference_does_not_produce_checkpoints(self):
         self.reference_status = "ConversationExecutionStatus.STUCK"

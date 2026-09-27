@@ -370,7 +370,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             if final_spec else {"status": "uncertain"})
         record["reference_acceptance"] = reference_acceptance
         record["oracle_complete"] = oracle_complete
-        if not oracle_complete:
+        if not agent_finished(validated):
+            record["reason"] = "validator_incomplete"
+        elif final_spec is None:
+            record["reason"] = "missing_coverage_checks"
+        elif history and not (validator / "workspace/checks/oracle-review.txt").is_file():
+            record["reason"] = "oracle_review_missing"
+        elif not oracle_complete:
             record["reason"] = "oracle_answer_incomplete"
         elif history and record.get("history_mutations", {}).get("status") != "caught":
             record["reason"] = "historical_mutation_not_verified"
