@@ -234,7 +234,31 @@ def freeze_contract(spec, history, oracle, *, require_external=True, targets=Non
               "reference_information": "oracle plus scoped historical contract",
               "oracle_sufficiency": "not_established_by_reference"}
     save(spec / "history.json", result)
+    write_history_review(spec / "history-review.md", result)
     return result
+
+
+def write_history_review(path, history):
+    """Render exact source text and visible updates without unrelated tool logs."""
+    cited = {source for row in history["contracts"] for source in row["sources"]}
+    lines = ["# Historical evidence", "", "## Answer supplied to the memory condition",
+             "", history["oracle_answer"], "", "## Frozen rules", ""]
+    for row in history["contracts"]:
+        lines.extend(["### " + row["id"], "", row["statement"], "",
+                      "Scope: " + row["scope"],
+                      "Active: " + str(row["active"]).lower(),
+                      "Supersedes: " + (", ".join(row["supersedes"]) or "none"),
+                      "Sources: " + ", ".join(row["sources"]), ""])
+    lines.extend(["## Original sources and visible dialogue", "",
+                  "Messages appear in original order. Cited tool evidence is included; "
+                  "the complete event archive remains in history.json.", ""])
+    for event in history["events"]:
+        if event["id"] not in cited and event.get("kind") != "message":
+            continue
+        lines.extend(["### %s | %s | %s" % (
+            event["order"], event.get("role") or event.get("kind", "source"), event["id"]),
+            "", event["text"], ""])
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
 def historical_context(history):

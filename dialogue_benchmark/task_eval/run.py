@@ -353,6 +353,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         record["validation"] = labels(feedback)
         record["validation_evidence"] = feedback
         record["validator_status"] = validated["status"]
+        record["validator_metrics"] = validated.get("metrics", {})
+        if not agent_finished(validated):
+            record.update(accepted=False, reason="validator_incomplete",
+                          validator_error={k: validated[k] for k in
+                                           ("error_code", "error_type", "detail") if k in validated})
+            save(root / "construction.json", attempts)
+            break
         final_spec = validated_spec(spec, validator / "workspace/checks", run / "validated-spec")
         if final_spec is not None:
             # Never freeze model-written extra tests without executing those exact files.

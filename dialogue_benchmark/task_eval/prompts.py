@@ -111,10 +111,11 @@ PRIVATE_DRAFT_SIMPLE = """task.md 已固定。根据固定历史目标、原始�
 先输出一段说明实际答案如何帮助本任务，格式为 USE、正文、END_USE。
 然后输出验收行，格式固定为：
 ACCEPT
-ACCEPT a1 | task | 新功能要求 | inspect: 具体输入、动作和预期结果
-ACCEPT a2 | h1 | 历史行为要求 | inspect: 具体输入、动作和预期结果
+ACCEPT a1 | task | <本次入口必须实现的一项具体行为> | inspect: <输入、动作、预期结果>
+ACCEPT a2 | h1 | <该历史规则在新入口中决定的具体行为> | inspect: <输入、动作、预期结果>
 END_ACCEPT
-每行只写一个可观察要求；所有行的 ID 都用 a1、a2、a3 这样的格式；新功能至少一行 task，
+尖括号内容全部换成实际要求。每行只写一个可观察要求，覆盖题面明确的兼容要求；
+所有行的 ID 都用 a1、a2、a3 这样的格式；新功能至少一行 task，
 每个适用历史目标单独一行，并把对应的 h id 写在第二列。不要把 h1 直接写成行 ID。
 历史行为应由新入口确定；验收输入不能先把对应历史规则当成配置参数传给实现。
 不要输出 history-contract、JSON、Markdown 表格、FILE 头或其他文字。
@@ -179,8 +180,9 @@ Check 只用 inspect: 或精确的 test: classname::name；不要把完整 shell
 """
 
 AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。本轮只做这件事。
-1. 读 /workspace/checks/task.md、acceptance.md、memory-use.md，以及同目录已有的 history.json。
+1. 读 /workspace/checks/task.md、acceptance.md、memory-use.md，以及同目录已有的 history-review.md。
    它们定义新功能和历史规则。/workspace/candidate 是只读基线，按需读相关源码和测试。
+   新入口和接口由 task.md 定义，不需要在历史对话中出现；历史只确定客户的规则。
    题面或接口有具体矛盾时，写 NO_TASK.md 说明并结束；不自行改题。
 2. 在 /workspace/checks/test_acceptance.py 写 pytest 用例，检查题面行为与历史规则。
    新功能的基本行为与客户历史规则分开测试；只用公开行为，不限定内部实现。
@@ -316,7 +318,10 @@ external 规则中未由题面和仓库提供的必要信息必须由实际 ans 
 acceptance.md 的行为只来自新需求和这里明确引用的历史契约。
 """
 
-HISTORY_VALIDATOR = """\n历史审核：读取 /reference/spec/history.json。
+HISTORY_VALIDATOR = """\n历史审核：先读 /reference/spec/history-review.md。
+它列出实际注入的答案、规则、引用原文和全部公开消息，顺序与原文一致。
+需要核对某次工具操作时，按来源 ID 查询 history.json 中那一条；不必逐条阅读无关工具日志。
+新入口和接口来自 task.md，不要求历史对话曾提出或实现它。
 按公开原文核对规则、范围和后续纠正；核对 oracle_answer 是否包含题面及仓库未提供的必要信息。
 建议不等于已确认事实；通用配置能力不等于客户的具体选择。验收只适用于明确引用该规则的行。
 不得将规则扩大到旧入口或别的对象。历史验收的调用也不能主动传入待考查的规则作为参数。

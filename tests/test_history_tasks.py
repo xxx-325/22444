@@ -70,6 +70,23 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(result["qa_source_ids"], ["old"])
         self.assertEqual(result["events"][-1]["id"], "correction")
 
+    def test_readable_history_retains_sources_and_later_corrections(self):
+        self.history["events"].extend([
+            {"id": "unrelated", "order": 10, "kind": "tool_result", "text": "BULK_TOOL_LOG"},
+            {"id": "later", "order": 11, "kind": "message", "role": "user",
+             "text": "EU rule also covers archived accounts."}])
+        frozen = freeze_contract(self.root, self.history, "EU changed; other tenants unchanged.")
+        review = (self.root / "history-review.md").read_text()
+        for event in self.history["events"]:
+            if event["id"] == "unrelated":
+                self.assertNotIn(event["text"], review)
+            else:
+                self.assertIn(event["id"], review)
+                self.assertIn(event["text"], review)
+        self.assertIn("Supersedes: h1", review)
+        self.assertIn("EU changed; other tenants unchanged.", review)
+        self.assertEqual(read(self.root / "history.json")["events"], frozen["events"])
+
     def test_fragment_answer_source_resolves_to_public_event_identity(self):
         save(self.root / "input.json", {"payload": {}})
         records = [{"id": "e1", "original_id": "original-event", "order": 1,

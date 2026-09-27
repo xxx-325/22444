@@ -133,6 +133,26 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertIsNone(receipt)
         self.assertNotIn("checkpoint_extraction", read(self.root / "construction.json")[0])
 
+    def test_validator_runtime_failure_does_not_reauthor_the_task(self):
+        original = self.fake_agent
+        def agent(root, *args, **kwargs):
+            if root.name == "validator":
+                return {"status": "error", "error_code": "token_budget_exhausted",
+                        "metrics": {"attempted_requests": 12}}
+            return original(root, *args, **kwargs)
+        results = [dict(status=status, cases=[]) for status in ("failed", "passed")]
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent) as worker, \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=results):
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 3, {})
+        self.assertIsNone(receipt)
+        self.assertEqual([call.args[0].name for call in worker.call_args_list],
+                         ["author", "reference-solver", "validator"])
+        records = read(self.root / "construction.json")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["validator_error"]["error_code"], "token_budget_exhausted")
+        self.assertEqual(records[0]["validator_metrics"]["attempted_requests"], 12)
+
     def test_leaking_task_is_rejected_before_reference_solver(self):
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent) as agent, \
              patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "leaked", "issue": "Internal fix given"}), \
