@@ -26,6 +26,7 @@ REASON: 一句简短理由
 QUERY: op|repo|path|text|offset；不查询写 none
 EVIDENCE: query1,query2；没有证据写 none
 END_PROBE
+只有 need_evidence 可以带 QUERY；其余三种结论的 QUERY 必须为 none。
 
 查询格式只有两种：
 lookup|repo|.|文字|0  （查文件名和文件内容）

@@ -177,47 +177,29 @@ Check 只用 inspect: 或精确的 test: classname::name；不要把完整 shell
 也不要新增 task.md 没有提出的要求。
 """
 
-AUTHOR_TESTS = """选题资格已通过，现在完成测试构造。
-先读取 /workspace/checks/task.md、memory-use.md 和 acceptance.md；这些就是本轮草案。
-同目录的 task.md、memory-use.md、history-contract.txt 的内容已经固定，不能改动。
-如果 /workspace/checks/history.json 不存在，本轮没有冻结历史契约，不要创建或引用 h1 等历史条款；
-只为 task.md 中的公开功能写检查。
-acceptance.md 只可将 Check 换成具体测试或命令，不能改 ID、Requirement、Basis 或增加要求。
-如发现需求必须修改，请说明问题并结束，不自行改题。
-历史依据使用同目录 history.json 中已冻结的条款；自主查看只读的 /workspace/candidate。
-/reference/qa.json 和 qa-input.json 保存追溯材料，仅在当前条款确有疑问时按需查看。
-在 /workspace/checks 实现已有验收表的检查：
-| ID | Requirement | Basis | Check |
-| a1 | 新功能基本行为 | task | test: test_acceptance::test_feature |
-| a2 | 历史规则对应的输出 | h1 | test: test_acceptance::test_rule |
-Basis 是 task 或历史契约编号，多个用逗号分隔。测试用精确 JUnit classname::name。
-同一项多个测试用逗号分隔；同时引用测试和命令时用分号分隔，如 test: test_api::test_result; command: check_cli。
-非 pytest 检查写 command: check_name，并保存 commands/check_name.sh，
-成功返回 0、违反要求返回 1、执行异常返回 2，不依赖临时文件。
-需要 Judge 的项写 inspect: 具体动作、输入和预期结果。不能只写“检查正确”。
-新功能基本行为单独一行，用自动测试或固定命令验证。
-task 行只检查公开功能，历史规则分别在对应 h 行检查。一个测试不要同时服务这两种行。
-例如检查 JSON 可解析、记录顺序和字段顺序，不要顺便断言客户的 null 规则；后者用单独测试。
-兼容性只比较约定的维度：要求键排序就检查键顺序，不能用新旧完整输出相等代替。
-相关回归命令也在出题时写入 commands/*.sh，参考实现和两组一致执行。
-继承执行镜像的项目路径配置，不自行假定 src 布局或修改 PYTHONPATH。
-同一对象上已经要求的条件要测试组合结果，例如“持有引用 + 替换对象 + 异常退出”。
-所有必须满足的行为必须在 task.md 写明或明确引用已冻结的历史契约；验收不能新增要求。
-test_acceptance.py：使用 pytest，通过公开行为检查新需求，不锁定参考实现。
-测试通过 candidate_root fixture 获取仓库目录；程序已提供 conftest.py，不要修改它。
-新增模块或函数在测试函数内导入，不能在文件顶层导入尚不存在的接口。
-基线缺少新接口应得到正常测试失败，不应阻止收集其他测试。
-不要从测试文件路径推断仓库目录。需要辅助 fixture 就写在测试模块内。
-若部分或全部无法稳定测试，写 TESTS_UNAVAILABLE.md 说明具体缺口，
-并在 acceptance.md 写出 Judge 可执行或检查的标准，不偷偷增加需求。
-先在基线上试运行测试，确认失败是因为新功能缺失；依赖和路径错误不能算。
-若任务是日志解析或诊断脚本，不要运行完整 Sphinx 构建、联网构建或长时间回归；用自包含的短日志夹具覆盖公开行为，
-所有探索命令应可在约 30 秒内结束，避免等待外部网络或生成整套文档。
-测试构造只围绕 acceptance.md：读相关实现、写自包含检查、运行并修好测试自身错误，然后结束。
-不要反复 grep 同一个词、轮询状态或为了寻找更多背景继续浏览；接口未完全确定时采用 task.md 已给出的入口，
-不再回到仓库寻找第二个入口。
-仓库外不要找资料。若已有验收无法实现，写 NO_TASK.md 说明具体冲突。
-完成后简短总结。"""
+AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。本轮只做这件事。
+1. 读 /workspace/checks/task.md、acceptance.md、memory-use.md，以及同目录已有的 history.json。
+   它们定义新功能和历史规则。/workspace/candidate 是只读基线，按需读相关源码和测试。
+   题面或接口有具体矛盾时，写 NO_TASK.md 说明并结束；不自行改题。
+2. 在 /workspace/checks/test_acceptance.py 写 pytest 用例，检查题面行为与历史规则。
+   新功能的基本行为与客户历史规则分开测试；只用公开行为，不限定内部实现。
+   历史规则由新入口应用，不在调用时把待考查的规则作为参数告诉实现。
+   兼容性只检查要求的维度；同时覆盖已要求条件的组合，不增加新要求。
+3. 将 acceptance.md 的 Check 列替换成对应测试位置，ID、Requirement、Basis 保持原样。
+   例如 test: test_acceptance::test_feature；多个测试用逗号分隔。
+   非 pytest 检查可用 command: check_name，保存 commands/check_name.sh，
+   成功返回0、违反要求返回1、执行异常返回2。相关离线回归也保存为命令，供两组一致执行。
+   不能自动测试的项保留 inspect: 具体动作、输入、预期结果，并写 TESTS_UNAVAILABLE.md。
+4. 在基线上跑一次这些测试，修好测试自身的导入/路径错误，然后完成。
+   基线因缺少新功能而失败是预期结果，不要修基线或反复探测同一已知失败。
+
+执行约定：
+- task.md、memory-use.md、history-contract.txt 已冻结，不改内容；没有 history.json 就没有历史条款。
+- 已有 conftest.py 提供 candidate_root fixture，不修改它；辅助 fixture 放测试模块。
+- 新增接口在测试函数内导入，让缺功能产生测试失败，不阻断测试收集。
+- 沿用环境的项目路径配置，不自行设置 PYTHONPATH 或假定 src 布局。
+- 使用本地自包含输入和已安装依赖。测试只围绕当前验收，不寻找第二个新需求。
+完成后简短报告写了什么和实际测试结果。"""
 
 TASK_REVIEW = """核对这个候选能否测试历史答案的帮助。先找信息缺口，再给结论。
 public_task 是两组都能看到的需求；historical_answer 才是有记忆组收到的答案。
