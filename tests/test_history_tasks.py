@@ -9,7 +9,7 @@ from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
     answer_clarification, freeze_contract, freeze_targets, historical_context, prepare_history,
-    read_history_review, oracle_coverage, validate_contract_targets)
+    read_history_review, oracle_coverage, validate_contract_targets, review_history)
 from dialogue_benchmark.task_eval.runtime import run_agent, configure
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
@@ -86,6 +86,10 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("Supersedes: h1", review)
         self.assertIn("EU changed; other tenants unchanged.", review)
         self.assertEqual(read(self.root / "history.json")["events"], frozen["events"])
+        projection = review_history(frozen)
+        self.assertEqual([e["id"] for e in projection["events"]], ["old", "correction", "later"])
+        self.assertEqual(len(frozen["events"]), 4)
+        self.assertEqual(projection["contracts"], frozen["contracts"])
 
     def test_fragment_answer_source_resolves_to_public_event_identity(self):
         save(self.root / "input.json", {"payload": {}})

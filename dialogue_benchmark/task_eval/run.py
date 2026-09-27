@@ -13,7 +13,7 @@ from .runtime import configure, review_task, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
-                      oracle_coverage, write_contract_from_targets)
+                      oracle_coverage, write_contract_from_targets, review_history)
 from .selection import SelectionBudget, select_task, write_draft
 
 def solver_input(task, answer=None):
@@ -356,6 +356,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                       reference_status=solved["status"])
         validation_reference = run / "validator-reference"
         copy_tree(spec, validation_reference / "spec")
+        if history:
+            save(validation_reference / "spec/history.json", review_history(history))
         copy_tree(candidate, validation_reference / "implementation")
         save(validation_reference / "checks.json", record)
         validator = run / "validator"

@@ -186,6 +186,8 @@ Historical review starts from exact cited evidence and visible dialogue in
 `history-review.md`; the complete event archive remains in `history.json`.
 The test author receives the fixed criteria and historical contract; source
 archives stay with qualification and independent validation.
+The validator sees all visible messages and cited tool evidence; the original
+complete archive remains in the qualified draft and frozen task.
 An interrupted validator retains its error and usage and stops construction;
 it does not trigger a new task draft without a completed review.
 Collection and execution errors return to the test author before starting a
