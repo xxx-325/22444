@@ -329,7 +329,7 @@ def compact_run(root):
                 item["artifacts"] = dict(item.get("artifacts", {}))
                 for folder in (spec, attempt / "validator/workspace/checks",
                                attempt / "qualified-draft", attempt / "task-review",
-                               attempt / "history-review", attempt / "preflight"):
+                               attempt / "history-review", attempt / "checks-review", attempt / "preflight"):
                     if folder.is_dir():
                         for path in folder.rglob("*"):
                             if path.is_file() and path.suffix in {".md", ".txt", ".py", ".patch", ".sh", ".json"}:

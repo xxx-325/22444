@@ -10,7 +10,7 @@ from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
     answer_clarification, freeze_contract, freeze_targets, historical_context, prepare_history,
     read_history_review, oracle_coverage, validate_contract_targets, review_history, review_sources)
-from dialogue_benchmark.task_eval.runtime import run_agent, configure
+from dialogue_benchmark.task_eval.runtime import run_agent, configure, review_checks
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
 import test_task_eval_flow
@@ -395,11 +395,16 @@ class HistoryConstructionTests(unittest.TestCase):
                     status = "failed" if candidate == fixture.baseline else "passed"
                     return {"status": status, "cases": [{"id": "test_acceptance::test_" + name, "status": status}
                                                          for name in ("feature", "other", "eu")]}
+                def coverage_review(spec, baseline, candidate, changed, results, config, output, budget):
+                    output.mkdir(parents=True)
+                    (output / "coverage.md").write_text("Each acceptance row is covered.")
+                    return {"status": "complete", "rows": []}
                 with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
                      patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
                      patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
                      patch("dialogue_benchmark.task_eval.run.review_sources", return_value={
                          "support": "supported", "oracle_complete": coverage == "complete"}), \
+                     patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage_review), \
                      patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
                      patch("dialogue_benchmark.task_eval.run.check_history_mutations", return_value={"status": mutation}) as replay:
                     from dialogue_benchmark.task_eval.run import construct
@@ -410,3 +415,35 @@ class HistoryConstructionTests(unittest.TestCase):
                 if accepted:
                     self.assertFalse((fixture.root / "frozen/checkpoints.json").exists())
                     self.assertEqual(receipt["oracle_sufficiency"], "validated_against_external_rules")
+
+
+class CheckReviewTests(unittest.TestCase):
+    def test_review_uses_saved_tests_and_changed_sources_and_requires_all_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec, baseline, candidate = [root / name for name in ("spec", "base", "candidate")]
+            for path in (spec, baseline, candidate):
+                path.mkdir()
+            save(spec / "acceptance.json", [{"id": "a1"}])
+            save(spec / "history.json", {"events": ["raw history"]})
+            (spec / "history-review.md").write_text("Raw history")
+            (spec / "task.md").write_text("Export selected records")
+            (spec / "test_acceptance.py").write_text("Tests")
+            (baseline / "entry.py").write_text("Old implementation")
+            (candidate / "entry.py").write_text("New implementation")
+            (candidate / "unrelated.py").write_text("Unrelated")
+            for decision, expected in (("complete", "complete"), ("unsupported", "revise")):
+                rows = [dict(id=identity, coverage=decision, evidence="test_acceptance.py")
+                        for identity in ("a1", "tests")]
+                with patch("dialogue_benchmark.task_eval.selection.ask_model", return_value={"reviews": rows}) as call:
+                    result = review_checks(spec, baseline, candidate, ["entry.py"], {"reference": "passed"},
+                                           {}, root / "review", SimpleNamespace(call=call))
+                self.assertEqual(result["status"], expected)
+                payload = call.call_args.args[1]
+                self.assertNotIn("history.json", payload["criteria_and_tests"])
+                self.assertNotIn("history-review.md", payload["criteria_and_tests"])
+                self.assertEqual(payload["changed_sources"], {"entry.py": {
+                    "baseline": "Old implementation", "reference": "New implementation"}})
+            result = review_checks(spec, baseline, candidate, [], {}, {}, root / "missing",
+                SimpleNamespace(call=lambda *args: {"reviews": [rows[0]]}))
+            self.assertEqual(result["status"], "uncertain")

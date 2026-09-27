@@ -28,6 +28,39 @@ def ask_model(prompt, payload, config, output):
         save(output / "response-text.json", client.responses)
 
 
+def review_checks(spec, baseline, candidate, changed_files, checks, config, output, budget):
+    """Review saved tests and source changes without exploratory execution."""
+    from .prompts import CHECKS_REVIEW
+
+    spec, output = Path(spec), Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    try:
+        criteria = read(spec / "acceptance.json")
+        files = {str(path.relative_to(spec)): path.read_text() for path in spec.rglob("*")
+                 if path.is_file() and path.suffix in {".py", ".md", ".txt", ".sh", ".json"}
+                 and path.name not in {"history.json", "history-review.md", "acceptance.json"}}
+        sources = {name: {label: (root / name).read_text() if (root / name).is_file() else None
+                          for label, root in (("baseline", Path(baseline)), ("reference", Path(candidate)))}
+                   for name in changed_files}
+        response = budget.call(CHECKS_REVIEW, {"criteria_and_tests": files, "changed_sources": sources,
+                              "executed_checks": checks}, config, output)
+        rows = response.get("reviews", [])
+        expected = {row["id"] for row in criteria} | {"tests"}
+        if len(rows) != len(expected) or {row.get("id") for row in rows} != expected:
+            raise ValueError("Check review must cover each acceptance row and all additional tests")
+        if any(row.get("coverage") not in {"complete", "gaps", "unsupported", "uncertain"}
+               or not isinstance(row.get("evidence"), str) or not row["evidence"].strip() for row in rows):
+            raise ValueError("Invalid check coverage review")
+        result = {"status": "complete" if all(row["coverage"] == "complete" for row in rows) else "revise",
+                  "rows": rows}
+        (output / "coverage.md").write_text("\n\n".join(
+            "%s: %s\n%s" % (row["id"], row["coverage"], row["evidence"]) for row in rows), encoding="utf-8")
+    except Exception as error:
+        result = {"status": "uncertain", "error_type": type(error).__name__, "detail": str(error)}
+    save(output / "result.json", result)
+    return result
+
+
 def _review_history_targets(task, answer, config, output, evidence, budget):
     """Check only frozen H rows; derive the overall qualification in Python."""
     from ..llm import stage_error

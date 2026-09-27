@@ -9,7 +9,7 @@ from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_inputs, read, save, write_diff
 from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
 from .metrics import compare_trials
-from .runtime import configure, review_task, run_agent
+from .runtime import configure, review_task, review_checks, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
@@ -405,6 +405,19 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 record.update(accepted=False, reason="history_source_or_answer_not_verified")
                 save(root / "construction.json", attempts)
                 break
+            coverage_review = review_checks(spec, baseline, candidate,
+                record["reference_version"]["changed_files"],
+                {"baseline": baseline_checks, "reference": reference_checks},
+                config, run / "checks-review", preflight_budget)
+            record["checks_review"] = coverage_review
+            if coverage_review["status"] != "complete":
+                record.update(accepted=False, reason="checks_" + coverage_review["status"])
+                save(root / "construction.json", attempts)
+                if coverage_review["status"] == "uncertain":
+                    break
+                copy_tree(spec, reference / ("previous-%02d" % attempt))
+                feedback = "\n上一轮测试审核发现具体问题，请保留目标并修正：\n" + str(coverage_review)
+                continue
         validation_reference = run / "validator-reference"
         copy_tree(spec, validation_reference / "spec")
         for name in ("history.json", "history-review.md"):
@@ -414,14 +427,22 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         validator = run / "validator"
         prepare(validator, baseline)
         print(root.name, "preflight validation", attempt, flush=True)
-        validated = run_agent(validator, config, "judge", prompts.VALIDATOR,
+        validated = run_agent(validator, config, "judge", prompts.HISTORY_MUTATION if history else prompts.VALIDATOR,
                               system=prompts.PREPARATION_SYSTEM,
                               reference=validation_reference, **preflight_budget.remaining())
         verdict_file = validator / "workspace/checks/validation.txt"
         feedback = verdict_file.read_text() if verdict_file.exists() else "验收者未完成验证，请核查需求和测试。"
         record["validation"] = labels(feedback)
         if source_review:
-            record["validation"]["HISTORY"] = source_review["support"]
+            record["validation"] = {
+                "BASELINE": "unmet" if baseline_checks["status"] == "failed" else "uncertain",
+                "REFERENCE": "pass" if reference_checks["status"] == "passed" else "fail",
+                "TESTS": "executable" if reference_checks.get("cases") else "unavailable",
+                "MUTATIONS": "unavailable", "COVERAGE": coverage_review["status"],
+                "VERDICT": "accept" if coverage_review["status"] == "complete" else "revise",
+                "HISTORY": source_review["support"],
+            }
+            feedback = (run / "checks-review/coverage.md").read_text()
         record["validation_evidence"] = feedback
         record["validator_status"] = validated["status"]
         record["validator_metrics"] = validated.get("metrics", {})
@@ -436,6 +457,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                            ("error_code", "error_type", "detail") if k in validated})
             save(root / "construction.json", attempts)
             break
+        if history:
+            shutil.copy2(run / "checks-review/coverage.md", validator / "workspace/checks/coverage.md")
         final_spec = validated_spec(spec, validator / "workspace/checks", run / "validated-spec")
         if final_spec is not None:
             # Never freeze model-written extra tests without executing those exact files.
@@ -454,6 +477,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 candidate, final_spec, validator / "workspace/checks",
                 run / "history-mutations", config["execution_image"],
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+            record["validation"]["MUTATIONS"] = record["history_mutations"]["status"]
         reference_acceptance = (assess_acceptance(items, reference_checks,
             validator / "workspace/checks/acceptance-review.txt",
             {"/reference/implementation": candidate,

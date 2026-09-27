@@ -187,10 +187,13 @@ rules and injected answer. Its decisions and quoted answer coverage are saved
 under `history-review/`; unsupported history or incomplete answers stop admission.
 The test author receives the fixed criteria and historical contract; source
 archives stay with qualification and independent validation.
-The OpenHands validator receives the contract, tests and reference implementation
-to check coverage and produce a historical-error mutation. It does not reread
-the dialogue. Source review and this validator share a preflight budget; the
-complete archive remains in the qualified draft and frozen task.
+For historical tasks, a second finite review checks each acceptance row and any
+additional tests against the task, contract, changed source files and executed
+results. Missing coverage or unsupported requirements return for correction.
+OpenHands then produces a historical-error mutation and any required inspection
+evidence. The host replays the patch and determines whether tests reject it.
+These reviews and the mutation agent share a preflight budget; the complete
+dialogue archive remains in the qualified draft and frozen task.
 An interrupted validator retains its error and usage and stops construction;
 it does not trigger a new task draft without a completed review.
 Use `--reuse-preparation /path/to/task-01/construction-00 --count 1` in a new

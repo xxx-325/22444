@@ -299,6 +299,36 @@ VERDICT: accept 或 revise 或 skip
 仅运行本需求及相关离线回归。完成上述文件后结束，不继续寻找新需求。
 """
 
+CHECKS_REVIEW = """审核已保存的需求、历史契约、测试、代码变化和真实执行结果。
+只判断：每项要求是否有充分检查；测试是否新增了题面或有效历史中不存在的强制要求。
+测试通过不证明测试合理。检查边界、作用范围及公开功能与历史条件的区分。
+既有行为只在题面要求兼容的范围内约束新功能；额外限定内部实现或未要求的输出布局属于 unsupported。
+已有执行结果可以直接采用，不提出重复探测。输入缺少判断所需代码则 uncertain。
+每项验收行返回一块，最后用 tests 检查额外测试是否同样有依据：
+REVIEW a1
+coverage: complete 或 gaps 或 unsupported 或 uncertain
+evidence: 引用具体测试及来源，或说明一项具体缺口
+END_REVIEW
+"""
+
+HISTORY_MUTATION = """制作一个历史规则错误补丁并保存，然后结束。
+/reference/spec 是已审核的需求、历史契约和测试，/reference/implementation 是已通过的参考实现。
+把参考实现复制到 /workspace/experiments/mutant，只改这个副本，使一条 external 规则被误用，
+新功能仍正常工作。保存相对参考实现的 /workspace/checks/m1.patch，使用 a/相对路径、b/相对路径。
+再保存 /workspace/checks/mutations.txt：
+REVIEW m1
+acceptance: 该补丁违反的历史验收行编号
+END_REVIEW
+宿主会应用补丁并执行全部固定检查：公开功能行必须通过，指定历史行必须失败。
+你的交付是上述两个文件；测试覆盖和历史来源已单独审核，无需再次逐例调查。
+若验收含 inspect 项，按固定步骤检查 /reference/implementation，写 acceptance-review.txt：
+REVIEW a1
+status: passed 或 failed 或 uncertain
+evidence: /reference/implementation/文件:行号，或 /workspace/checks/实际证据文件:行号
+END_REVIEW
+只有自动测试项时不写 acceptance-review.txt。完成文件后结束。
+"""
+
 JUDGE = """你是独立验收者。只读代码在 /workspace/candidate；
 冻结验收表在 /reference/spec/acceptance.md，程序执行结果在 /reference/checks.json。
 只检查验收表中 inspect: 项，严格执行已冻结的动作、输入和预期结果。
