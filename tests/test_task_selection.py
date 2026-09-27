@@ -101,6 +101,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_selection_reads_multitopic_history_only_when_requested(self):
         self.history["initial_events"][0]["text"] += " Unrelated rendering correction"
+        self.history["qa_source_ids"] = ["event1"]
         calls = []
         responses = [self.query(op="read", target="history", source="source1"),
                      dict(decision="pending", reason="Need repository evidence", sources="source1")]
@@ -113,6 +114,7 @@ class SelectionTests(unittest.TestCase):
                                  self.repo, {}, self.root / "on-demand", budget)
         self.assertNotIn("Unrelated rendering correction", str(calls[0]))
         self.assertEqual(calls[0]["history_sources"][0]["source"], "source1")
+        self.assertTrue(calls[0]["history_sources"][0]["answer_source"])
         self.assertEqual(calls[1]["queries"][0]["result"]["text"], "Maple rule")
         self.assertEqual(result["reason"], "Need repository evidence")
 

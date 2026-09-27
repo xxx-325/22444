@@ -276,7 +276,9 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
     from .prompts import SELECT_TASK
     output = Path(output)
     focus = _focused_history(history)
-    sources = [{"source": e.get("source", e["id"]), "role": e.get("role")}
+    cited = set((history or {}).get("qa_source_ids", []))
+    sources = [{"source": e.get("source", e["id"]), "role": e.get("role"),
+                "answer_source": e["id"] in cited}
                for e in focus]
     state = {"qa": {k: qa[k] for k in ("question", "answer_points", "type") if k in qa},
              "history_sources": sources, "queries": [],
