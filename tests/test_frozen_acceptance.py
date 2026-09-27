@@ -8,7 +8,7 @@ from unittest.mock import patch
 from dialogue_benchmark.task_eval.artifacts import save
 from dialogue_benchmark.task_eval.checks import (
     acceptance_items, assess_acceptance, check_history_mutations, pytest_result)
-from dialogue_benchmark.task_eval.history import historical_question, oracle_coverage
+from dialogue_benchmark.task_eval.history import answer_quote_supported, historical_question, oracle_coverage
 from dialogue_benchmark.task_eval.metrics import measure
 
 
@@ -96,6 +96,28 @@ class FrozenAcceptanceTests(unittest.TestCase):
                                        ("Retain other nulls", "missing", False)):
             path.write_text(f"REVIEW h1\ncoverage: {state}\nquote: {quote}\nEND_REVIEW")
             self.assertEqual(oracle_coverage(path, history), expected)
+
+    def test_one_requirement_can_reference_test_and_command(self):
+        (self.root / "commands").mkdir()
+        (self.root / "commands/export.sh").write_text("exit 0\n")
+        table = self.root / "acceptance.md"
+        table.write_text("| a1 | Export | task | test: test_export::test_batch; command: export |\n")
+        items = acceptance_items(self.root)
+        self.assertEqual(items[0]["tests"], ["test_export::test_batch", "command::export"])
+        cases = [{"id": identity, "status": "passed"} for identity in items[0]["tests"]]
+        self.assertEqual(assess_acceptance(items, {"status": "passed", "cases": cases})["status"], "passed")
+        cases[1]["status"] = "failed"
+        self.assertEqual(assess_acceptance(items, {"status": "failed", "cases": cases})["status"], "failed")
+        table.write_text("| a1 | Export | task | test: test_export::test_batch; command: absent |\n")
+        with self.assertRaisesRegex(ValueError, "Missing frozen command"):
+            acceptance_items(self.root)
+
+    def test_answer_quote_cannot_change_a_high_overlap_rule(self):
+        answer = "- Maple 的 note 字段为 null 时必须省略。\n- 其他字段保留显式 null。"
+        self.assertTrue(answer_quote_supported(
+            "Maple 的 note 字段为 null 时必须省略；其他字段保留显式 null。", answer))
+        self.assertFalse(answer_quote_supported("Maple 的 note 字段为 null 时不能省略。", answer))
+        self.assertFalse(answer_quote_supported("其他字段不保留显式 null。", answer))
 
     def test_completion_does_not_trigger_historical_responder(self):
         self.assertIsNone(historical_question("Done. All tests pass. Previous requirements preserved."))

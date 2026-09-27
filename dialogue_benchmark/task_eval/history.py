@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import re
-from difflib import SequenceMatcher
 
 from ..llm import parse_text_response
 from .artifacts import read, save
@@ -22,7 +21,7 @@ def answer_quote_supported(quote, answer):
     """Check that a short review quote is grounded in the injected answer.
 
     Models sometimes join two adjacent answer points with punctuation or omit
-    a small subject prefix.  Accept those deterministic, high-overlap forms;
+    a small subject prefix. Accept literal fragments with whitespace changes;
     a quote that only appears in the historical source still fails.
     """
     if not isinstance(quote, str) or not quote.strip() or not isinstance(answer, str):
@@ -41,10 +40,7 @@ def answer_quote_supported(quote, answer):
             continue
         if any(compact_part in re.sub(r"\s+", "", line) for line in lines):
             continue
-        if not any(SequenceMatcher(None, compact_part,
-                                   re.sub(r"\s+", "", line)).ratio() >= 0.72
-                   for line in lines):
-            return False
+        return False
     return True
 
 

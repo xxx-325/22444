@@ -156,8 +156,10 @@ python -m dialogue_benchmark.task_eval.run \
 
 The host calls the configured model once per selection decision and executes one
 structured read-only lookup/read request, retaining exact sources, ranges, and
-pagination. Initial evidence includes selected history, user messages, and related
-visible plans; full history stays on the host. Duplicate requests, errors, and
+pagination. Selection starts from the QA, repository observations, and an index
+of historical sources. Original messages are read on demand so unrelated topics
+in the same turn do not drive task selection. Full history stays on the host.
+Duplicate requests, errors, and
 exhausted budgets produce pending records, not ineligibility conclusions.
 A candidate first freezes the historical targets from the original dialogue.
 Then one tool-free call writes only the public task, and a second tool-free call
@@ -167,7 +169,8 @@ construct tests. Selection, drafting, review, and test authoring share cumulativ
 budgets, without a per-response output cap.
 The test author cannot change qualified requirements or historical rules.
 The public draft preserves the selected project's goal and uses actual repository
-observations. An unfinished test author stops with its own reason; changed draft
+observations and fixes a callable interface or command before tests are authored.
+An unfinished test author stops with its own reason; changed draft
 files are listed separately, without restarting construction automatically.
 Use `--selection-only` to stop after qualification, retaining decisions, queries,
 and usage without starting OpenHands or paired execution.

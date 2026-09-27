@@ -5,9 +5,26 @@ from unittest.mock import patch
 
 from dialogue_benchmark.task_eval.artifacts import read
 from dialogue_benchmark.task_eval.run import main
+from dialogue_benchmark.task_eval.versions import pin_baseline
 
 
 class TaskSchedulingTests(unittest.TestCase):
+    def test_explicit_baseline_records_actual_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "controlled-repo"
+            baseline.mkdir()
+            (baseline / "a.py").write_text("value = 1\n")
+            pin_baseline(baseline)
+            with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=[
+                    {"qa": {"type": "constraint_followthrough", "id": "q1"}}]), \
+                 patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \
+                 patch("dialogue_benchmark.task_eval.run.construct", return_value=None):
+                main(["--simulator-path", str(root), "--source-run", str(root / "dialogue"),
+                      "--qa-run", str(root), "--env-file", str(root / ".env"),
+                      "--baseline", str(baseline), "--output", str(root / "output"), "--count", "1"])
+            self.assertEqual(read(root / "output/baseline.json")["source"], str(baseline.resolve()))
+
     def test_failed_requirement_does_not_consume_completed_target(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

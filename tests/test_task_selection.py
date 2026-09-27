@@ -57,13 +57,13 @@ class SelectionTests(unittest.TestCase):
             text = kwargs.get("text", "-")
         query = "|".join(str(value) for value in (
             kwargs["op"], kwargs["target"], path, text, kwargs.get("offset", 0)))
-        return dict(decision="need_evidence", reason="Check rule availability", sources="source1",
+        return dict(decision="need_evidence", reason="Check rule availability", sources="qa",
                     request=query)
 
     def test_query_then_candidate_and_cost(self):
         result, budget = self.run_selection([
             self.query(op="read", target="repo", path="api.py"),
-            dict(decision="candidate", reason="New feature uses historical rule", sources="source1,query1")])
+            dict(decision="candidate", reason="New feature uses historical rule", sources="qa,query1")])
         self.assertEqual(result["status"], "candidate")
         self.assertEqual(result["query_count"], 1)
         self.assertEqual(budget.requests, 2)
@@ -92,12 +92,29 @@ class SelectionTests(unittest.TestCase):
                      self.query(op="read", target="repo", path="../secret"),
                      self.query(op="read", target="history", source="all"),
                      dict(decision="stop", reason="Claim", sources="invented"),
-                     self.query(op="read", target="history", source="event1")]
+                     dict(decision="stop", reason="Unread source", sources="source1")]
         for decision in decisions:
             with self.subTest(decision=decision):
                 result, _ = self.run_selection([decision])
                 self.assertEqual(result["status"], "pending")
                 self.assertEqual(result["query_count"], 0)
+
+    def test_selection_reads_multitopic_history_only_when_requested(self):
+        self.history["initial_events"][0]["text"] += " Unrelated rendering correction"
+        calls = []
+        responses = [self.query(op="read", target="history", source="source1"),
+                     dict(decision="pending", reason="Need repository evidence", sources="source1")]
+        budget = SelectionBudget(self.root, {})
+        def call(prompt, payload, config, output):
+            calls.append(dict(payload, queries=list(payload["queries"])))
+            return {"reviews": [responses.pop(0)]}
+        with patch.object(budget, "call", side_effect=call):
+            result = select_task({"question": "Maple rule?"}, self.history,
+                                 self.repo, {}, self.root / "on-demand", budget)
+        self.assertNotIn("Unrelated rendering correction", str(calls[0]))
+        self.assertEqual(calls[0]["history_sources"][0]["source"], "source1")
+        self.assertEqual(calls[1]["queries"][0]["result"]["text"], "Maple rule")
+        self.assertEqual(result["reason"], "Need repository evidence")
 
     def test_history_query_is_not_repository_evidence(self):
         result, _ = self.run_selection([
@@ -203,8 +220,8 @@ class SelectionTests(unittest.TestCase):
         result, budget = self.run_selection([
             self.query(op="read", target="repo", path="api.py") | {
                 "decision": "candidate", "reason": "Need one repository fact",
-                "sources": "source1"},
-            dict(decision="candidate", reason="Confirmed", sources="source1,query1")])
+                "sources": "qa"},
+            dict(decision="candidate", reason="Confirmed", sources="qa,query1")])
         self.assertEqual(result["status"], "candidate")
         self.assertEqual(result["query_count"], 1)
         self.assertEqual(budget.requests, 2)
@@ -325,6 +342,16 @@ class SelectionTests(unittest.TestCase):
                 "DECISION: need_evidence\nREASON: Check both files\n"
                 "SOURCES: source1\nQUERY: lookup|repo|.|one|0\n"
                 "QUERY: lookup|repo|.|two|0\nEND")
+
+    def test_selection_eof_requires_every_field_and_no_extra_prose(self):
+        from dialogue_benchmark.llm import parse_text_response
+        complete = ("DECISION: need_evidence\nREASON: Need the entry point\n"
+                    "SOURCES: qa\nQUERY: read|repo|api.py|-|0")
+        self.assertEqual(parse_text_response(complete), parse_text_response(complete + "\nEND"))
+        for response in (complete.rsplit("\n", 1)[0], complete + "\nHere is my analysis",
+                         complete.replace("need_evidence", "candidate")):
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                parse_text_response(response)
 
     def test_clean_review_requires_quote_from_injected_answer(self):
         from dialogue_benchmark.task_eval.runtime import review_task

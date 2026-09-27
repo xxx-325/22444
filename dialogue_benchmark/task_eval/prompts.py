@@ -10,33 +10,25 @@ def task_direction(qa_type):
         "只主题相关不算；用不到这条知识就写 NO_TASK.md。"
         "将对应可观察行为写入 acceptance.md，供参考验证和两组执行共同使用。\n")
 
-SELECT_TASK = """判断这条历史答案是否支持一个自然的新开发需求。只判断当前答案，勿寻找全仓库所有可能任务。
-QA 指定本次记忆主题。history 同一消息里的其他话题仅供核对原文，不能替换 QA 的主题。
-repository_exploration 是一个只读代码浏览 Agent 对当前快照的调查报告；它用于理解项目和选择完整功能，不是历史证据，也不能替代 QA 答案。
-repository_overview 是项目的静态概览，用来判断需求能否落到一个完整功能；它不是历史证据。
-你的工作是提出尚未实现的后续功能，不是寻找历史遗留待办。旧约定可以用于新功能。
-历史约定已经确定，不等于应用它的未来功能已经实现；两者分别核查。
-如果 history 为空但 QA 已明确给出用户侧或环境侧观测，这是 external-only 输入；
-把 QA 的 answer points 当作已批准的外部证据，不要因为没有原始历史副本而拒绝，
-只需核对当前仓库是否仍缺该行为以及它能否形成自然的新功能。
-历史仍须适用；新需求须有实际用途；至少一项必要信息未由当前仓库提供且答案准确包含它。
-新需求不能凭空增加答案没有提出的修复政策、开关、缓存或默认行为。
-如果 QA 只是记录一次用户侧/环境侧结果，优先把它延伸为可验证的诊断、报告或回归能力，
-让答案中的具体结果成为新功能的可观察输出；不能只把旧故障改写成“以后不要失败”。
-仓库可恢复的兼容要求可以同时存在。过去某次工作的要求不能扩成所有未来工作的约定。
-规则未实现不等于规则未记录。核查相关说明文档和实现；没有读过的文件不能声称其包含或不包含规则。
-只依据提供的原文。没有搜索命中不证明信息在仓库外；证据不足时查一个具体事实。
-每轮只返回下面这些行，不要输出 JSON、Markdown 或解释。每次回复只能有一行 QUERY：即使还想查两个文件，也只查最重要的一个，下一轮再查另一个；绝对不要输出第二行 QUERY：。
+SELECT_TASK = """围绕这条 QA 选择一个自然的新开发需求。
+新功能要有实际用途，且答案中的某条历史信息会改变它的可观察行为。仅主题相关不够。
+只使用 QA 的问题和答案确定记忆主题。history_sources 是原文索引，必要时查询；
+原文中其他话题不能替代 QA 的主题。历史约定已确定，不等于应用它的新功能已经实现。
+repository_overview 和 repository_exploration 帮你了解当前仓库，不是历史证据。
+先核查相关实现、测试或文档：新功能尚未实现，至少一项必要信息无法从仓库直接恢复。
+没有搜索命中不证明信息不存在；没读过的文件不能用来下结论。
+不要把一次观察扩成永久政策，也不要为测试记忆凭空增加特殊条件。
+每轮只返回一个决定和至多一个只读查询，不输出 JSON 或解释：
 DECISION: need_evidence 或 candidate 或 stop 或 pending
 REASON: 待核查事实怎样影响资格；candidate 则说明新用途、历史条件和行为影响；stop 必须有不合格证据
-SOURCES: 已提供的 source 别名、query 编号或 repository_exploration，逗号分隔；无引用写 none
+SOURCES: qa、已读取的 source、query 编号或 repository_exploration，逗号分隔；无引用写 none
 QUERY: op|target|path|text|offset；不适用的 path 或 text 写 -；无需查询写 none
 candidate 还必须给出三行：
 PUBLIC_GOAL: 不含具体历史规则的一句话新功能目标
 AGREEMENT_OBJECT: 历史约定涉及的对象
 AGREEMENT_SCOPE: 新功能中沿用该对象的范围
 END
-候选必须先实际核查相关仓库。仅想不到需求用 pending，不是 stop。
+candidate 需要实际仓库查询证据；stop 需要不合格证据；还无法判断用 pending。
 查询只有 lookup/read，不执行命令。QUERY 的五段依次是操作、目标、路径、文字、偏移量。例：
 QUERY: lookup|repo|.|export|0
 QUERY: read|repo|src/export.py|-|0
@@ -44,10 +36,8 @@ QUERY: lookup|history|-|Maple|0
 QUERY: read|history|-|source1|0
 lookup 每页20项；仓库 read 的 offset 是从0开始的行号，历史 read 是字符位置。
 续页使用结果的 next_offset。不得请求整份历史或重复已有完整原文。
-必要信息仍无法查清选 pending，说明缺什么；不要虚构规则或为制造记忆差异扩题。
-严格区分：历史已经做完的工作不是新需求。历史中的代码或文档摘录不等于当前仓库核查。
 queries 为空时不能选 candidate。需要查询只能选 need_evidence，不能同时选 candidate。
-candidate/stop/pending 的 QUERY 必须为 none。最后一行必须是 END。
+candidate/stop/pending 的 QUERY 必须为 none。
 """
 
 HISTORY_TARGETS = """从给定的原始对话中固定与当前问题直接相关、仍可能影响后续实现的历史约定。
@@ -74,7 +64,8 @@ public_input 中的历史对象和适用场景可以被提及，但其中没有�
 PUBLIC_TASK_SIMPLE = """只根据 public_input 写一项自然的新开发需求。
 沿用 public_goal 的功能目标，根据实际仓库说明接口、输入输出和兼容边界。
 repository_overview、repository_exploration、repository_evidence 都是当前公开仓库资料。
-提供可执行的入口和必要参数，形式适合项目即可，不要求一律新增函数或输出格式。
+选定一种适合项目的调用入口，写明模块与函数签名或完整命令格式、参数和返回形式。
+出题时确定入口，不能留成“CLI 或 API 均可”，否则测试者和实现者会选择不同入口。
 agreement_object 与 agreement_scope 表示要沿用的历史约定对象和范围；在需求中自然指明沿用它，
 不重述或猜测该约定的具体取值和例外。仓库当前行为不能替代该外部约定。
 仅约束新增能力及明确要求修改的行为；不要同时要求同一路径保持旧行为和改变旧行为。
@@ -198,6 +189,7 @@ acceptance.md 只可将 Check 换成具体测试或命令，不能改 ID、Requi
 | a1 | 新功能基本行为 | task | test: test_acceptance::test_feature |
 | a2 | 历史规则对应的输出 | h1 | test: test_acceptance::test_rule |
 Basis 是 task 或历史契约编号，多个用逗号分隔。测试用精确 JUnit classname::name。
+同一项多个测试用逗号分隔；同时引用测试和命令时用分号分隔，如 test: test_api::test_result; command: check_cli。
 非 pytest 检查写 command: check_name，并保存 commands/check_name.sh，
 成功返回 0、违反要求返回 1、执行异常返回 2，不依赖临时文件。
 需要 Judge 的项写 inspect: 具体动作、输入和预期结果。不能只写“检查正确”。

@@ -875,12 +875,13 @@ def parse_text_response(content):
                            "query": fields["QUERY"],
                            "evidence": fields["EVIDENCE"]}}
     if lines and lines[0].startswith("DECISION:"):
-        if not lines or lines[-1] != "END":
-            raise ValueError("Unclosed selection response")
+        # This protocol contains one record. EOF is an unambiguous boundary
+        # when every required field is present; missing fields still fail.
+        record_lines = lines[:-1] if lines[-1] == "END" else lines
         allowed = {"DECISION", "REASON", "SOURCES", "QUERY",
                    "PUBLIC_GOAL", "AGREEMENT_OBJECT", "AGREEMENT_SCOPE"}
         fields = {}
-        for line in lines[:-1]:
+        for line in record_lines:
             if ":" not in line:
                 raise ValueError("Invalid selection line")
             key, value = line.split(":", 1)

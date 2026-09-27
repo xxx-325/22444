@@ -34,12 +34,19 @@ def acceptance_items(spec, history=None):
         if (not requirement or not check or any(s != "task" and s not in contracts for s in sources)
                 or any(row["id"] == identity for row in rows)):
             raise ValueError("Invalid acceptance item: " + identity)
-        tests = [t.strip().strip("`") for t in check[5:].split(",")] if check.startswith("test:") else []
-        if check.startswith("command:"):
-            name = check[8:].strip()
-            if not re.fullmatch(r"[a-zA-Z0-9_-]+", name) or not (Path(spec) / "commands" / (name + ".sh")).is_file():
-                raise ValueError("Missing frozen command: " + name)
-            tests = ["command::" + name]
+        tests = []
+        if not check.startswith("inspect:"):
+            for part in check.split(";"):
+                part = part.strip()
+                if part.startswith("test:"):
+                    tests.extend(t.strip().strip("`") for t in part[5:].split(","))
+                elif part.startswith("command:"):
+                    name = part[8:].strip()
+                    if not re.fullmatch(r"[a-zA-Z0-9_-]+", name) or not (Path(spec) / "commands" / (name + ".sh")).is_file():
+                        raise ValueError("Missing frozen command: " + name)
+                    tests.append("command::" + name)
+                else:
+                    raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
         if not tests and not check.startswith("inspect:"):
             raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
         if tests and any(not re.fullmatch(r"[\w./-]+::[\w\[\].-]+", t) for t in tests):

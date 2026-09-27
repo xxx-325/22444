@@ -276,15 +276,16 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
     from .prompts import SELECT_TASK
     output = Path(output)
     focus = _focused_history(history)
-    evidence = [{"source": e.get("source", e["id"]), "role": e.get("role"), "text": e["text"]} for e in focus]
+    sources = [{"source": e.get("source", e["id"]), "role": e.get("role")}
+               for e in focus]
     state = {"qa": {k: qa[k] for k in ("question", "answer_points", "type") if k in qa},
-             "history": evidence, "queries": [],
+             "history_sources": sources, "queries": [],
              "repository_overview": repository_overview(baseline),
              "repository_exploration": exploration or "",
              "repository_entries": sorted(p.name + ("/" if p.is_dir() else "")
                                           for p in Path(baseline).iterdir() if not p.name.startswith("."))}
     seen = set()
-    known = {e["source"] for e in evidence}
+    known = {"qa"}
     if state["repository_exploration"]:
         # This is a host-produced repository observation, not a dialogue
         # source.  Give it one stable citation name so the selector can use
@@ -345,12 +346,6 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
             key = json.dumps(query, sort_keys=True)
             if key in seen:
                 raise ValueError("duplicate_query_no_new_evidence")
-            # A complete initial source is already present in the next model input.
-            if isinstance(query, dict) and query.get("op") == "read" and query.get("target") == "history":
-                aliases = (history or {}).get("source_aliases", {})
-                identity = aliases.get(query.get("source"), query.get("source"))
-                if identity in {e["id"] for e in focus}:
-                    raise ValueError("duplicate_query_initial_source")
             result = query_evidence(query, baseline, history)
             identity = "query%d" % (len(state["queries"]) + 1)
             receipt = dict(id=identity, query=query, result=result)
@@ -361,6 +356,8 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
                 if "source" in result:
                     known.add(result["source"])
                 known.update(row["source"] for row in result.get("matches", []))
+                aliases = (history or {}).get("source_aliases", {})
+                known.update(alias for alias, identity in aliases.items() if identity in known)
             seen.add(key)
     except Exception as error:
         status, reason = "pending", str(error)

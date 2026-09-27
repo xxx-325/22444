@@ -529,7 +529,7 @@ def main(argv=None):
         copy_tree(args.source_run / "workspace/candidate", baseline)
         version = pin_baseline(baseline)
     save(output / "baseline.json", dict(version,
-         source=str((args.source_run / "workspace/candidate").resolve())))
+         source=str(baseline if args.baseline else (args.source_run / "workspace/candidate").resolve())))
     # Prefer distinct evidence targets, using only pre-evaluation metadata.
     selected, seen = [], set()
     for item in items:
