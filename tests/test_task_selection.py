@@ -228,6 +228,14 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["query_count"], 1)
         self.assertEqual(budget.requests, 2)
 
+    def test_history_index_can_identify_a_requested_read(self):
+        request = self.query(op="read", target="history", source="source1")
+        request["sources"] = "qa,source1"
+        result, _ = self.run_selection([
+            request, dict(decision="pending", reason="Need repository evidence", sources="source1")])
+        self.assertEqual(result["query_count"], 1)
+        self.assertEqual(result["reason"], "Need repository evidence")
+
     def test_history_target_extraction_omits_answer_points(self):
         calls = []
         budget = SelectionBudget(self.root, {})

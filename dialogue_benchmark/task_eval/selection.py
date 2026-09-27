@@ -309,8 +309,6 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
             if action not in {"stop", "candidate", "need_evidence", "pending"} or not isinstance(reason, str) or not reason.strip():
                 raise ValueError("Invalid selection decision")
             refs = [s.strip() for s in str(decision.get("sources", "none")).split(",") if s.strip() != "none"]
-            if set(refs) - known:
-                raise ValueError("Selection cites evidence not provided")
             request_value = decision.get("request", "none")
             if action in {"candidate", "pending"} and request_value != "none":
                 # A useful candidate with one unresolved read is not a format
@@ -323,6 +321,11 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
                 reason = str(reason) + "; unresolved evidence requested"
             if action != "need_evidence" and request_value != "none":
                 raise ValueError("Conclusion still requests unresolved evidence")
+            # Index entries can identify the next source to read. Only sources
+            # actually read may support a conclusion.
+            allowed_refs = known | ({s["source"] for s in sources} if action == "need_evidence" else set())
+            if set(refs) - allowed_refs:
+                raise ValueError("Selection cites evidence not provided")
             if action in {"stop", "candidate"}:
                 if not refs:
                     raise ValueError("Selection conclusion needs evidence")
