@@ -6,6 +6,7 @@ the QA runner turns each bundle into one bounded evidence scope.
 """
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from .normalize import source_kind_for
@@ -28,6 +29,34 @@ EVENT_TYPE = {
     "compatibility_contract": "compatibility_preservation",
     "verification_result": "verification_reuse",
 }
+
+
+def external_review_projection(group, candidate):
+    """Review the supplied event boundary without requiring code-graph anchors."""
+    from .llm import simple_evidence_request_size
+
+    scope = deepcopy(group["scope"])
+    records = {row["id"]: row for row in scope["dialogue"]}
+    required = set(scope["external_source_ids"]) | set(scope["external_usage_ids"])
+    cited = {source for key in ("answer_points", "forbidden_points")
+             for point in candidate.get(key, []) for source in point.get("sources", [])}
+    audit = {"complete": False, "reason": "unresolved_external_source",
+             "required_source_ids": sorted(required | cited), "request_chars": None}
+    if (required | cited) - records.keys():
+        return None, audit
+    if any(row.get("order", 0) > scope["cutoff"] for row in records.values()):
+        audit["reason"] = "external_source_after_cutoff"
+        return None, audit
+    sources = sorted(records)
+    scope.update(review_guard_sources=sources, review_guard_complete=True,
+                 review_guard_reason="external_event_complete")
+    size = simple_evidence_request_size(scope, sources, group["facts"], candidate)
+    audit.update(request_chars=size, guard_source_count=len(sources))
+    if size > scope["model_request_chars"]:
+        audit["reason"] = "candidate_guard_over_budget"
+        return None, audit
+    audit.update(complete=True, reason="external_event_complete")
+    return dict(group, scope=scope, review_guard_complete=True), audit
 
 
 def _read_events(path):

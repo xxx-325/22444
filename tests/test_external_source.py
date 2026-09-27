@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark import cli
-from dialogue_benchmark.external import filter_external_facts, load_external_scopes
+from dialogue_benchmark.external import (external_review_projection, filter_external_facts,
+                                         load_external_scopes)
 
 
 class ExternalSourceTests(unittest.TestCase):
@@ -50,6 +51,29 @@ class ExternalSourceTests(unittest.TestCase):
 
         self.assertEqual([row["id"] for row in loaded["scopes"][0]["dialogue"]],
                          ["e1", "e2", "e3"])
+
+    def test_external_review_keeps_declared_context_without_code_symbols(self):
+        scope = {"external_event_id": "x1", "external_source_ids": ["e1"],
+                 "external_usage_ids": ["e3"], "dialogue": self.records,
+                 "cutoff": 3, "events": [], "versions": [], "model_request_chars": 32000}
+        group = {"scope": scope, "facts": [{"id": "f1", "sources": ["e1"],
+                                             "statement": "旧客户端必须保留空 note"}]}
+        candidate = {"id": "q1", "question": "旧客户端的空 note 如何处理？",
+                     "answer_points": [{"text": "保留空 note。", "sources": ["e1"]}]}
+        projected, audit = external_review_projection(group, candidate)
+        self.assertTrue(audit["complete"])
+        self.assertEqual(projected["scope"]["review_guard_sources"], ["e1", "e2", "e3"])
+        self.assertNotIn("review_guard_complete", scope)
+
+        candidate["answer_points"][0]["sources"] = ["unprovided"]
+        projected, audit = external_review_projection(group, candidate)
+        self.assertIsNone(projected)
+        self.assertFalse(audit["complete"])
+        candidate["answer_points"][0]["sources"] = ["e1"]
+        scope["model_request_chars"] = 10
+        projected, audit = external_review_projection(group, candidate)
+        self.assertIsNone(projected)
+        self.assertEqual(audit["reason"], "candidate_guard_over_budget")
 
     def test_external_event_requires_public_source_and_usage(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -16,7 +16,7 @@ from .fact_index import (build_evidence_groups, build_evidence_index,
                          expand_evidence_group_once,
                          static_candidate_labels, static_candidate_types,
                          static_evidence_check)
-from .external import filter_external_facts, load_external_scopes
+from .external import external_review_projection, filter_external_facts, load_external_scopes
 from .general import build_general_scope, identify_stages
 from .graph import build_graph, graph_at, query_scope_adaptive
 from .llm import (ChatClient, extract_facts, generate_from_facts,
@@ -691,8 +691,12 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     repair_state = {"remaining": 1}
                     generation_context = generation.get("repair_context")
                     def resolve_review_scope(review_candidate):
-                        projected_group, guard_audit = candidate_review_projection(
-                            active_group, evidence_index, review_candidate)
+                        if active_group["scope"].get("external_event_id"):
+                            projected_group, guard_audit = external_review_projection(
+                                active_group, review_candidate)
+                        else:
+                            projected_group, guard_audit = candidate_review_projection(
+                                active_group, evidence_index, review_candidate)
                         guard_audit.update(
                             candidate_id=review_candidate.get("id"),
                             target_type=review_candidate.get("type", target_type),
