@@ -68,8 +68,9 @@ def write_report(output, manifest):
         lines += ["", "Pass-rate difference (with − without): %.1f percentage points." %
                   (100 * (rates["with_memory"] - rates["without_memory"]))]
     lines += ["", "## Paired differences", "",
-              "Differences are with memory minus without memory. Cost differences require both to pass.",
-              "", "| Task | Both passed | History questions | Development tools | File views | Reads/searches | Tokens |",
+              "Differences are with memory minus without memory. Cost differences require both to pass. "
+              "Token differences cover the solver; responder tokens are listed separately above.",
+              "", "| Task | Both passed | History questions | Development tools | File views | Reads/searches | Solver tokens |",
               "|---|---|---|---|---|---|---|"]
     for task in tasks:
         pair = compare_trials(task.get("comparison", {}))

@@ -253,6 +253,7 @@ score. Reports retain every pair's correctness, per-rule outcomes, history reque
 development calls, reads/searches and tokens. Development calls exclude think and
 finish; actual failed tool calls still count. `paired-differences.json` contains
 with-minus-without differences; cost deltas are computed only when both pass.
+Paired token differences count solver tokens; history-responder tokens are reported separately.
 Old run files remain readable without creating missing evidence.
 
 Metrics include tool calls,
