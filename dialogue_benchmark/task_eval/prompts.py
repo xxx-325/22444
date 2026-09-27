@@ -63,16 +63,14 @@ public_input 中的历史对象和适用场景可以被提及，但其中没有�
 不要写 memory-use、验收标准、答案、历史条款、来源编号或“为了测试记忆”。
 """
 
-PUBLIC_TASK_SIMPLE = """只根据 public_input 写一项自然的新开发需求。
-沿用 public_goal 的功能目标，根据实际仓库说明接口、输入输出和兼容边界。
-repository_overview、repository_exploration、repository_evidence 都是当前公开仓库资料。
-选定一种适合项目的调用入口，写明模块与函数签名或完整命令格式、参数和返回形式。
-出题时确定入口，不能留成“CLI 或 API 均可”，否则测试者和实现者会选择不同入口。
-agreement_object 与 agreement_scope 表示要沿用的历史约定对象和范围；在需求中自然指明沿用它，
-不重述或猜测该约定的具体取值和例外。仓库当前行为不能替代该外部约定。
-新入口负责应用该对象的约定；不要添加参数让调用者再填写这个约定的映射或取值。
-仅约束新增能力及明确要求修改的行为；不要同时要求同一路径保持旧行为和改变旧行为。
-不额外增加功能、内部实现步骤、来源编号或“为了测试记忆”。
+PUBLIC_TASK_SIMPLE = """根据 public_input 写一项简短、自然的新开发需求，包含四部分：
+1. public_goal 中的新用途。
+2. 一个确定的调用入口：模块与函数签名，或完整命令；说明输入和返回形式。
+3. 自然要求该入口沿用 agreement_object 在 agreement_scope 下已确认的约定。
+4. 哪些既有入口仍保持原行为。
+仓库资料用于了解项目及已有接口，不代表新入口应采用的客户规则。
+具体字段处理、参数取值和状态映射由历史约定决定，本次不要猜测或补写；也不要让调用者再传这些规则。
+只说明交付行为，不指定必须调用哪个内部函数或复用哪段算法，不添加其他功能。
 严格只输出：
 TASK
 任务正文
@@ -135,6 +133,7 @@ public 只表示题面或实际仓库是否已提供该目标；实现是否完�
 public=full 时必须引用 task 或 query；public=partial 可以引用 task/query，也可以在没有可引用查询时写 none；完全没有公开部分才写 none。
 answer 只表示实际注入答案是否补足题面和仓库尚未提供的必要部分。
 若公开需求只要求通用可配置接口，具体历史取值由调用者提供，历史目标并不适用，applicable 填 no。
+若题面与任一固定历史目标的行为冲突，最后写 TASK | uncertain，不能按只有部分规则未公开来判 clean。
 answer=sufficient 时，最后一列必须逐字复制 historical_answer 中的一段文字；不能从 history/source 改写或引用，不能因为来源中有同义句就填 sufficient。
 如果某个目标的规则没有出现在 historical_answer 中，必须填 answer=insufficient、answer_quote=none；不能用历史来源替答案补齐。
 公开需求故意不重复具体历史映射时，只要该映射会改变新增功能的可观察行为，historical_answer 对这条映射就是必要且 sufficient；不要要求题面先写出答案才承认缺口。
@@ -187,9 +186,8 @@ AUTHOR_TESTS = """选题资格已通过，现在完成测试构造。
 只为 task.md 中的公开功能写检查。
 acceptance.md 只可将 Check 换成具体测试或命令，不能改 ID、Requirement、Basis 或增加要求。
 如发现需求必须修改，请说明问题并结束，不自行改题。
-读取 /reference/qa.json 和 /reference/qa-input.json，
-后者是生成该 QA 时实际提供的材料。自主查看只读的 /workspace/candidate。
-若这两个参考文件无法读取，立即报告输入错误并结束，不猜测历史，不另选主题出题。
+历史依据使用同目录 history.json 中已冻结的条款；自主查看只读的 /workspace/candidate。
+/reference/qa.json 和 qa-input.json 保存追溯材料，仅在当前条款确有疑问时按需查看。
 在 /workspace/checks 实现已有验收表的检查：
 | ID | Requirement | Basis | Check |
 | a1 | 新功能基本行为 | task | test: test_acceptance::test_feature |
