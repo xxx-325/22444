@@ -247,7 +247,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 return {"selection_only": True, "status": "qualified"}
             remaining = budget.remaining()
             prepare(author, baseline)
-            authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS,
+            authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS + feedback,
                                  reference=reference, **remaining)
             metrics = authored.get("metrics", {})
             budget.record([dict(request_count=metrics.get("attempted_requests", 0),
@@ -317,6 +317,14 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             continue
         baseline_checks = run_checks(baseline, spec, run / "baseline-checks", config["execution_image"],
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+        if baseline_checks["status"] == "error":
+            record.update(accepted=False, reason="baseline_check_error", baseline_checks=baseline_checks)
+            copy_tree(spec, reference / ("previous-%02d" % attempt))
+            feedback = ("\n上一轮检查未正常执行。已有测试保存在 /reference/previous-%02d。"
+                        "修正测试收集、依赖或路径问题，保留要求和历史规则。"
+                        "尚不存在的新接口须在测试函数内导入。执行结果：%s" % (attempt, baseline_checks))
+            save(root / "construction.json", attempts)
+            continue
         implementation = run / "reference-solver"
         prepare(implementation, baseline)
         print(root.name, "reference implementation", attempt, flush=True)

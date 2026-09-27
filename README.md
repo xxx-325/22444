@@ -177,6 +177,9 @@ and usage without starting OpenHands or paired execution.
 An independent Code Agent implements the requirement; a validator checks the
 baseline, reference implementation, and test quality. Failed attempts remain
 available for inspection, with up to five revisions by default.
+Collection and execution errors return to the test author before starting a
+reference solver. Tests separate public functionality from historical rules;
+compatibility assertions compare only the behavior required by the task.
 `count` targets completed task pairs. Distinct QA-derived requirements are tried
 in bounded batches until the target, QA pool, or `task-budget` is exhausted.
 The default task budget is twice the target; failure records are retained.
@@ -185,6 +188,15 @@ The default task budget is twice the target; failure records are retained.
 scripted customer-protocol dialogue for testing this pipeline. It is a synthetic
 mechanism fixture, not an automatically generated collaboration episode. Real
 episodes use the same QA and task stages after dialogue generation.
+
+`examples/batchsync_seed.py --repository runs/suite/seed --receipt runs/suite/seed.json`
+creates a standard-library project with three adjacent reference commits for
+projection, byte-bounded batches and receipt classification. Each revision runs
+its offline tests before being committed. Feed these commits to the dialogue
+simulator; the builder itself creates no messages or customer agreements.
+For the full pipeline, pass `--qa-source external --external-events /path/to/external-events.json`
+to `run_episode.py`. This also probes the pinned final repository for answer
+recoverability before deriving tasks.
 
 The dialogue-end code is pinned as an independent local Git baseline, with no
 upstream remote. `--baseline` can reuse an already pinned clean repository.

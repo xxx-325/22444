@@ -23,6 +23,8 @@ def main(argv=None):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--source-run", type=Path)
     source.add_argument("--episode-manifest", type=Path)
+    parser.add_argument("--qa-source", choices=("graph", "external"), default="graph")
+    parser.add_argument("--external-events", type=Path)
     parser.add_argument("--source-event", action="append", default=[])
     parser.add_argument("--source-object", action="append", default=[])
     parser.add_argument("--design-probe", action="store_true")
@@ -37,6 +39,10 @@ def main(argv=None):
     parser.add_argument("--resume-tasks", action="store_true",
                         help="Reuse completed QA and start repository tasks in an empty tasks directory")
     args = parser.parse_args(argv)
+    if (args.qa_source == "external") != (args.external_events is not None):
+        parser.error("External QA requires --qa-source external and --external-events together")
+    if args.external_events is not None and not args.external_events.is_file():
+        parser.error("External event file does not exist")
     package = load_episode_manifest(args.episode_manifest) if args.episode_manifest else None
     source_run = args.source_run or args.episode_manifest.resolve().parent
     dialogue_path = package["dialogue"] if package else source_run / "session.jsonl"
@@ -90,6 +96,9 @@ def main(argv=None):
         ]
         if args.reuse_facts:
             qa_args += ["--reuse-facts", str(args.reuse_facts)]
+        if args.qa_source == "external":
+            qa_args += ["--qa-source", "external", "--external-events", str(args.external_events),
+                        "--repository", str(root / "baseline")]
         for event_id in args.source_event:
             qa_args += ["--source-event", event_id]
         for name in args.source_object:
@@ -97,6 +106,8 @@ def main(argv=None):
         if args.resume_tasks:
             if read(root / "qa/manifest.json")["input_sha256"] != conversion["output_sha256"]:
                 raise ValueError("Completed QA belongs to a different converted dialogue")
+            if read(root / "qa/manifest.json").get("qa_source", "graph") != args.qa_source:
+                raise ValueError("Completed QA uses a different source mode")
         else:
             status = generate_qa(qa_args)
             if status:

@@ -99,6 +99,25 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertIsNone(receipt)
         self.assertEqual(checks.call_count, 2)
 
+    def test_baseline_collection_error_is_repaired_before_reference_execution(self):
+        checks = [dict(status="error", errors=1, cases=[dict(
+            id="test_acceptance::collection", status="error", detail="No module named new_api")])]
+        checks.extend(dict(status=status, cases=[dict(id="test_acceptance::test_feature", status=status)])
+                      for status in ("failed", "passed", "failed", "passed"))
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent) as agent, \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks):
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 1, {})
+        self.assertIsNotNone(receipt)
+        calls = agent.call_args_list
+        self.assertEqual([call.args[0].name for call in calls],
+                         ["author", "author", "reference-solver", "validator"])
+        self.assertIn("No module named new_api", calls[1].args[3])
+        self.assertTrue((self.root / "author-reference/previous-00/test_acceptance.py").is_file())
+        records = read(self.root / "construction.json")
+        self.assertEqual(records[0]["reason"], "baseline_check_error")
+        self.assertTrue(records[1]["accepted"])
+
     def test_interrupted_validator_cannot_admit_with_earlier_accept_report(self):
         self.validator_status = "ConversationExecutionStatus.STUCK"
         receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},

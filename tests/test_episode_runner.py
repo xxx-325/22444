@@ -10,6 +10,29 @@ from run_episode import main
 
 
 class EpisodeRunnerTests(unittest.TestCase):
+    def test_external_mode_uses_sidecar_and_probes_the_pinned_final_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            candidate = source / "workspace/candidate"
+            candidate.mkdir(parents=True)
+            (candidate / "a.py").write_text("final_code = True\n")
+            (source / "session.jsonl").write_text(json.dumps({"kind": "user", "content": "Customer rule"}) + "\n")
+            events = source / "external-events.json"
+            save(events, {"version": 1, "events": []})
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.generate_qa", return_value=0) as qa, \
+                 patch("run_episode.run_tasks", return_value=0), \
+                 patch("run_episode.render"), patch("run_episode.compact_run"):
+                self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
+                                       "--env-file", str(root / ".env"), "--output", str(root / "run"),
+                                       "--qa-source", "external", "--external-events", str(events)]), 0)
+            args = qa.call_args.args[0]
+            self.assertEqual(args[args.index("--qa-source") + 1], "external")
+            self.assertEqual(args[args.index("--external-events") + 1], str(events))
+            self.assertEqual(args[args.index("--repository") + 1], str((root / "run/baseline").resolve()))
+
     def test_all_stages_use_converted_input_and_same_frozen_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

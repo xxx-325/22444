@@ -208,10 +208,10 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
                                         "status": state, "detail": executed["stdout"] + executed["stderr"]})
                 result["tests"] += 1
                 result[{"passed": "passed", "failed": "failed", "error": "errors"}[state]] += 1
-            if result["failed"]:
-                result["status"] = "failed"
-            elif result["errors"]:
+            if result["errors"]:
                 result["status"] = "error"
+            elif result["failed"]:
+                result["status"] = "failed"
         finally:
             sandbox.pause()
         save(output / "execution.json", {"executions": executions})
