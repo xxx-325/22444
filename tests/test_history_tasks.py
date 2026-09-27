@@ -468,7 +468,8 @@ class CheckReviewTests(unittest.TestCase):
                 rows = [dict(id=identity, coverage=decision, evidence="test_acceptance.py")
                         for identity in ("a1", "tests")]
                 with patch("dialogue_benchmark.task_eval.selection.ask_model", return_value={"reviews": rows}) as call:
-                    result = review_checks(spec, baseline, candidate, ["entry.py"], {"reference": "passed"},
+                    result = review_checks(spec, baseline, candidate, ["entry.py"], {"reference": {
+                        "status": "passed", "cases": [{"id": "test::case", "status": "passed", "detail": "Large log"}]}},
                                            {}, root / "review", SimpleNamespace(call=call))
                 self.assertEqual(result["status"], expected)
                 payload = call.call_args.args[1]
@@ -476,6 +477,8 @@ class CheckReviewTests(unittest.TestCase):
                 self.assertNotIn("history-review.md", payload["criteria_and_tests"])
                 self.assertEqual(payload["changed_sources"], {"entry.py": {
                     "baseline": "Old implementation", "reference": "New implementation"}})
+                self.assertEqual(payload["executed_checks"], {"reference": {"status": "passed",
+                                  "cases": [{"id": "test::case", "status": "passed"}]}})
             result = review_checks(spec, baseline, candidate, [], {}, {}, root / "missing",
                 SimpleNamespace(call=lambda *args: {"reviews": [rows[0]]}))
             self.assertEqual(result["status"], "uncertain")

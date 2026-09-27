@@ -42,8 +42,13 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
         sources = {name: {label: (root / name).read_text() if (root / name).is_file() else None
                           for label, root in (("baseline", Path(baseline)), ("reference", Path(candidate)))}
                    for name in changed_files}
+        outcomes = {role: {**{key: result[key] for key in
+                             ("status", "tests", "passed", "failed", "errors", "skipped") if key in result},
+                          "cases": [{"id": case["id"], "status": case["status"]}
+                                    for case in result.get("cases", [])]}
+                    for role, result in checks.items()}
         response = budget.call(CHECKS_REVIEW, {"criteria_and_tests": files, "changed_sources": sources,
-                              "executed_checks": checks}, config, output)
+                              "executed_checks": outcomes}, config, output)
         rows = response.get("reviews", [])
         expected = {row["id"] for row in criteria} | {"tests"}
         if len(rows) != len(expected) or {row.get("id") for row in rows} != expected:
