@@ -355,10 +355,11 @@ class HistoryTests(unittest.TestCase):
 
 class HistoryConstructionTests(unittest.TestCase):
     def test_oracle_and_replayed_mutation_are_both_admission_gates(self):
-        for coverage, mutation, accepted in (("complete", "caught", True),
-                                              ("missing", "caught", False),
-                                              ("complete", "unverified", False)):
-            with self.subTest(coverage=coverage, mutation=mutation):
+        for coverage, checks_coverage, mutation, accepted in (("complete", "complete", "caught", True),
+                                              ("missing", "complete", "caught", False),
+                                              ("complete", "complete", "unverified", False),
+                                              ("complete", "unsupported", "caught", False)):
+            with self.subTest(coverage=coverage, checks_coverage=checks_coverage, mutation=mutation):
                 fixture = test_task_eval_flow.TaskPreflightTests()
                 fixture.setUp()
                 self.addCleanup(fixture.doCleanups)
@@ -398,7 +399,7 @@ class HistoryConstructionTests(unittest.TestCase):
                 def coverage_review(spec, baseline, candidate, changed, results, config, output, budget):
                     output.mkdir(parents=True)
                     (output / "coverage.md").write_text("Each acceptance row is covered.")
-                    return {"status": "complete", "rows": []}
+                    return {"status": "complete" if checks_coverage == "complete" else "revise", "rows": []}
                 with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
                      patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
                      patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean", "issue": "none"}), \
@@ -411,9 +412,10 @@ class HistoryConstructionTests(unittest.TestCase):
                     receipt = construct(fixture.item, fixture.root, fixture.baseline,
                                         {"execution_image": "image"}, 0, {})
                 self.assertEqual(receipt is not None, accepted)
-                self.assertEqual(replay.call_count, int(coverage == "complete"))
+                self.assertEqual(replay.call_count, int(coverage == "complete" and checks_coverage == "complete"))
                 if accepted:
                     self.assertFalse((fixture.root / "frozen/checkpoints.json").exists())
+                    self.assertFalse((fixture.root / "frozen/test_interactions.py").exists())
                     self.assertEqual(receipt["oracle_sufficiency"], "validated_against_external_rules")
 
 

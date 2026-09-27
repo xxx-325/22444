@@ -120,13 +120,13 @@ def admission(validation, baseline_checks, reference_checks):
             and validation.get("MUTATIONS") in {"caught", "unavailable"})
 
 
-def validated_spec(spec, validator_checks, output):
+def validated_spec(spec, validator_checks, output, *, allow_new_tests=True):
     """Persist the validator's checks in the exact spec used by both trials."""
     coverage = Path(validator_checks) / "coverage.md"
     if not coverage.is_file() or not coverage.read_text().strip():
         return None
     copy_tree(spec, output)
-    for name in ("coverage.md", "test_interactions.py"):
+    for name in (("coverage.md", "test_interactions.py") if allow_new_tests else ("coverage.md",)):
         source = Path(validator_checks) / name
         if source.is_file():
             shutil.copy2(source, Path(output) / name)
@@ -459,7 +459,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             break
         if history:
             shutil.copy2(run / "checks-review/coverage.md", validator / "workspace/checks/coverage.md")
-        final_spec = validated_spec(spec, validator / "workspace/checks", run / "validated-spec")
+        final_spec = validated_spec(spec, validator / "workspace/checks", run / "validated-spec",
+                                    allow_new_tests=not history)
         if final_spec is not None:
             # Never freeze model-written extra tests without executing those exact files.
             baseline_checks = run_checks(baseline, final_spec, run / "final-baseline-checks",
