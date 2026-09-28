@@ -21,16 +21,17 @@ def task_direction(qa_type):
         "只主题相关不算；用不到这条知识就写 NO_TASK.md。"
         "将对应可观察行为写入 acceptance.md，供参考验证和两组执行共同使用。\n")
 
-SELECT_TASK = """围绕这条 QA 选择一个自然的新开发需求。
-给出 development_workflow 时，沿用这条业务链路细化需求，并核查它在当前仓库中是否仍是新功能。
-这条链路是出题方向，不是历史证据。不能换成另一项方便的小功能；无法成立就 stop 或 pending。
-新功能要有实际用途，且答案中的某条历史信息会改变它的可观察行为。仅主题相关不够。
-新入口必须实际应用历史约定；若调用者还得把这条约定作为参数传进来，就没有测试到记忆的作用。
+SELECT_TASK = """围绕这条 QA 选择一项尚未完成、可验收的后续业务工作。
+给出 development_workflow 时，保留其业务输入、处理和交付结果，结合当前仓库细化需求。
+这条链路只确定业务目标，不是历史证据；不能从中抄入具体历史取值，也不能缩减或更换交付目标。
+可以复用已有接口、命令或流程完成工作；只有缺少必要能力时才新增入口。无法成立就 stop 或 pending。
+答案中的某条历史信息必须改变本次处理或交付结果。仅主题相关、换函数名或包装固定配置不够。
+作答者应依据历史应用约定，不能要求调用者再次提供待考规则；可将已知规则传给已有函数。
 只使用 QA 的问题和答案确定记忆主题。history_sources 是原文索引，必要时查询；
 answer_source=true 的条目是 QA 答案实际引用的来源；核对历史规则时优先读取这些条目。
-原文中其他话题不能替代 QA 的主题。历史约定已确定，不等于应用它的新功能已经实现。
+原文中其他话题不能替代 QA 的主题。已有处理能力不等于本次业务工作已经完成。
 repository_overview 和 repository_exploration 帮你了解当前仓库，不是历史证据。
-先核查相关实现、测试或文档：新功能尚未实现，至少一项必要信息无法从仓库直接恢复。
+先核查相关实现、测试、文档或产物：本次工作尚未完成，至少一项必要信息无法从仓库直接恢复。
 没有搜索命中不证明信息不存在；没读过的文件不能用来下结论。
 不要把一次观察扩成永久政策，也不要为测试记忆凭空增加特殊条件。
 每轮只返回一个决定和至多一个只读查询，不输出 JSON 或解释：
@@ -39,9 +40,9 @@ REASON: 待核查事实怎样影响资格；candidate 则说明新用途、历�
 SOURCES: qa、已读取的 source、query 编号或 repository_exploration，逗号分隔；无引用写 none
 QUERY: op|target|path|text|offset；不适用的 path 或 text 写 -；无需查询写 none
 candidate 还必须给出三行：
-PUBLIC_GOAL: 指明适用客户或系统的新功能目标，不包含具体历史取值
+PUBLIC_GOAL: 指明客户或系统、业务输入、处理和完整交付目标，不包含具体历史取值
 AGREEMENT_OBJECT: 历史约定涉及的对象
-AGREEMENT_SCOPE: 新功能中沿用该对象的范围
+AGREEMENT_SCOPE: 本次工作中沿用该对象的范围
 END
 candidate 需要实际仓库查询证据；stop 需要不合格证据；还无法判断用 pending。
 查询只有 lookup/read，不执行命令。QUERY 的五段依次是操作、目标、路径、文字、偏移量。例：
@@ -81,19 +82,21 @@ public_input 中的历史对象和适用场景可以被提及，但其中没有�
 不要写 memory-use、验收标准、答案、历史条款、来源编号或“为了测试记忆”。
 """
 
-PUBLIC_TASK_SIMPLE = """根据给定的新用途和当前仓库，写一项简短、自然的新开发需求，包含四部分：
-1. public_goal 中的新用途。
-2. 一个确定的调用入口：模块与函数签名，或完整命令；说明输入和返回形式。
-3. 要求该入口沿用新用途所指客户或系统之前已确认的约定。
-4. 哪些既有入口仍保持原行为。
-新入口使用当前仓库未占用的名称；现有函数和别名保持其签名与调用行为。
-public_goal 若要求处理业务数据，新入口就接收这些数据并返回处理结果，不能退化成只返回配置值的查询函数。
-historical_question 指出需要从历史确定的内容。新入口的必需参数只接收本次业务数据；
-历史规则是实现应当知道的既定条件，不是函数参数、配置文件或额外的调用者输入。
+PUBLIC_TASK_SIMPLE = """根据给定的业务目标和当前仓库，写一项简短、自然的后续工作需求，包含四部分：
+1. 本次客户或系统的业务目标。
+2. 业务输入及取得方式、需要完成的处理、交付结果的形式与位置。
+3. 要求作答者沿用该客户或系统之前已确认的约定。
+4. 本次涉及的既有行为应保持的兼容边界。
+交付优先使用已有类型或格式；需要新结果类型时写清必要字段、结构和含义，不能只给类型名。
+development_workflow 若有，保留其完整输入→处理→交付目标；public_goal 用于细化，不能把报告等交付缩减为映射包装函数。
+workflow 只说明业务目标，不是历史证据；不要把其中的具体历史取值、例外或处理结论抄入公开需求。
+优先复用已有能力，已有接口或命令足以完成工作时直接交付业务结果。确需新能力时才定义调用入口及输入输出。
+客户、日期等普通业务上下文可以作为参数。historical_question 指出需从历史找回的规则；不能要求调用者再次提供这些规则。
+作答者可以把已知规则传给已有函数，也可在实现内部保存配置；不要强制硬编码或指定规则的存储方式。
 用实际项目和对象名称写正文，不把 public_goal 这样的字段名写进需求。
-仓库资料用于了解项目及已有接口，不代表新入口应采用的客户规则。
+仓库资料用于了解项目及已有接口，不代表本次工作应采用的客户规则。
 具体字段处理、参数取值和状态映射由历史约定决定，本次不要猜测或补写；也不要让调用者再传这些规则。
-只说明交付行为，不指定必须调用哪个内部函数或复用哪段算法，不添加其他功能。
+只说明交付行为，不指定内部实现路线；保留完成这项工作所需的衔接步骤，不添加无关目标。
 严格只输出：
 TASK
 任务正文
@@ -104,9 +107,9 @@ END_TASK
 REPOSITORY_EXPLORER = """你是需求构造前的只读代码探索 Agent。当前仓库是最终对话快照。
 你可以查看源码、测试、文档和配置，但不要修改候选仓库，不要生成补丁，不要运行会改变文件的命令。
 围绕问题中的对象查看仓库。问题用来定位，不证明过去发生过什么；报告只写实际读到的当前仓库内容。
-据此提出自然的功能扩展方向，不推测历史答案或编造历史约定。
-扩展方向只写缺少的能力和可复用接口；客户的字段规则、参数取值和状态含义交由历史确认。
-优先阅读入口、相关实现、相关测试和文档，确认已有能力、缺失能力、输入输出边界和可验证位置。
+据此提出自然的后续业务方向，不推测历史答案或编造历史约定。
+说明哪些工作可复用已有能力、哪些确需开发；客户的字段规则、参数取值和状态含义交由历史确认。
+优先阅读入口、相关实现、相关测试、文档和产物，确认已有能力、待完成工作、输入输出边界和可验证位置。
 如果历史信息只适合做兼容约束，也要指出它会影响哪个未来行为。
 完成后在 /workspace/checks/repository-exploration.md 写入以下五段，每段简短：
 PROJECT_AREA:
@@ -133,14 +136,14 @@ PRIVATE_DRAFT_SIMPLE = """task.md 已固定。根据固定历史目标、原始�
 先输出一段说明实际答案如何帮助本任务，格式为 USE、正文、END_USE。
 然后输出验收行，格式固定为：
 ACCEPT
-ACCEPT a1 | task | <本次入口必须实现的一项具体行为> | inspect: <输入、动作、预期结果>
-ACCEPT a2 | h1 | <该历史规则在新入口中决定的具体行为> | inspect: <输入、动作、预期结果>
+ACCEPT a1 | task | <本次工作必须交付的一项具体结果> | inspect: <输入、动作、预期结果>
+ACCEPT a2 | h1 | <该历史规则在本次工作中决定的具体行为> | inspect: <输入、动作、预期结果>
 END_ACCEPT
 尖括号内容全部换成实际要求。每行只写一个可观察要求，覆盖题面明确的兼容要求。
 旧接口保持行为的要求只检查旧接口，不能自动变成新接口的输入不变性、异常或空输入要求。
-所有行的 ID 都用 a1、a2、a3 这样的格式；新功能至少一行 task，
+所有行的 ID 都用 a1、a2、a3 这样的格式；本次交付至少一行 task，
 每个适用历史目标单独一行，并把对应的 h id 写在第二列。不要把 h1 直接写成行 ID。
-历史行为应由新入口确定；验收输入不能先把对应历史规则当成配置参数传给实现。
+历史规则应由作答者应用；验收检查交付结果，不能先把待考规则作为额外输入交给作答者。
 task 行的要求和 Check 都只能使用公开信息。例如分组功能可检查分组键、记录覆盖和顺序，
 不能在 task 行断言某个私有状态码属于哪组；具体取值、条件和映射只在对应 h 行验收。
 不要输出 history-contract、JSON、Markdown 表格、FILE 头或其他文字。
@@ -150,12 +153,13 @@ HISTORY_QUALIFY = """检查新需求是否需要给定的历史信息。输入�
 public_task 和 public_repository：两组都能获得的需求与仓库信息。
 private_history_targets：已经核实的历史规则，只供你核对；无记忆组看不到。
 injected_answer：仅有记忆组收到的答案。不要把这两种私有材料算成公开信息。
-development_workflow 若有，是 QA 对应的未来业务目标；需求换成另一条业务链路时 TASK 选 uncertain。
+development_workflow 若有，只说明完整业务目标，不是历史证据；需求缩减或更换其交付目标时 TASK 选 uncertain。
 
 对每条固定规则依次判断：
-applicable：新功能必须用这条规则吗？yes/no/uncertain。接口若要求调用者传入这条规则的取值或映射，选 no。
-若签名要求传映射，正文又禁止传映射，属于题面矛盾，TASK 选 uncertain；不能只按正文忽略必填参数。
-public：仅看公开信息，具体规则已明确多少？full/partial/none/uncertain。
+applicable：完成本次工作必须用这条规则吗？yes/no/uncertain。若任务要求调用者再次提供待考规则，选 no。
+作答者依据历史选择参数并调用已有函数仍属于应用规则；客户、日期等普通上下文参数不等于规则本身。
+若公开交付入口要求调用者传映射，正文又禁止传映射，属于题面矛盾，TASK 选 uncertain。
+public：仅看公开信息，具体规则已明确多少？full/partial/none/uncertain。题面从 workflow 抄入的规则也属于公开信息。
 “沿用以前的约定”只指明对象，不提供具体规则；同一通用函数支持多个选项，也没有说明客户选哪个。
 full 必须引用 task 或 public_repository 中的真实来源；不能引用私有规则或答案。
 公开信息已给出全部必要取值与适用条件时选 full，不要求它重复历史的叙述或理由。
@@ -211,13 +215,13 @@ Check 只用 inspect: 或精确的 test: classname::name；不要把完整 shell
 AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你负责读材料、写测试文件，程序随后执行。
 不要运行测试、收集测试或探测环境；测试目录当前为空是正常的，先完成文件。
 1. 读 /workspace/checks/task.md、acceptance.md，以及同目录已有的 history-contract.txt。
-   它们定义新功能和历史规则。/workspace/candidate 是只读基线，按需读相关源码和测试。
-   新入口和接口由 task.md 定义，不需要在历史对话中出现；历史只确定客户的规则。
+   它们定义本次工作和历史规则。/workspace/candidate 是只读基线，按需读相关源码和测试。
+   交付结果和所需接口由 task.md 定义，不需要在历史对话中出现；历史只确定客户的规则。
    历史资格已另行审核，本轮依据固定条款写测试，不重新调查整份对话。
    题面或接口有具体矛盾时，写 NO_TASK.md 说明并结束；不自行改题。
 2. 在 /workspace/checks/test_acceptance.py 写 pytest 用例，检查题面行为与历史规则。
-   新功能的基本行为与客户历史规则分开测试；只用公开行为，不限定内部实现。
-   历史规则由新入口应用，不在调用时把待考查的规则作为参数告诉实现。
+   本次交付的基本要求与客户历史规则分开测试；可检查业务产物，不限定新增接口或内部实现。
+   历史规则由作答者应用，不在验收时把待考查的规则作为额外输入提供给作答者。
    兼容性只检查要求的维度；同时覆盖已要求条件的组合，不增加新要求。
    旧接口的兼容要求只约束旧接口。新接口仅要求 JSON 数据正确时，用解析后的值断言。
    未约定的编码布局、装批策略、异常类型、空输入形式和输入可变性，不添加为必过断言。
@@ -234,7 +238,7 @@ AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你�
 执行约定：
 - task.md、memory-use.md、history-contract.txt 已冻结，不改内容；没有 history.json 就没有历史条款。
 - 已有 conftest.py 提供 candidate_root fixture，不修改它；辅助 fixture 放测试模块。
-- 新增接口在测试函数内导入，让缺功能产生测试失败，不阻断测试收集。
+- 若调用新增接口，在测试函数内导入，让缺功能产生测试失败，不阻断测试收集。
 - 沿用环境的项目路径配置，不自行设置 PYTHONPATH 或假定 src 布局。
 - 使用本地自包含输入和已安装依赖。测试只围绕当前验收，不寻找第二个新需求。
 完成后列出写入的文件并结束；实际结果由后续执行产生。"""
@@ -249,9 +253,10 @@ acceptance.md 只改 Check 列引用，其他列原样保留。现有冻结回�
 """
 
 TEST_FILES = """根据固定需求和完整的小型 Python 仓库写验收测试，没有工具调用。
-requirements 定义新功能及适用历史，repository 是当前代码、测试和文档。
+requirements 定义本次交付及适用历史，repository 是当前代码、测试和文档。
 输出 FILE test_acceptance.py 和 FILE acceptance.md 两个完整文件，每个以 END_FILE 结束。
-用顶层 def test_* 函数，每个函数内部导入被测入口，基线缺少新入口时应是用例失败而非收集失败。
+用顶层 def test_* 函数，可通过 candidate_root 检查已交付的业务产物；若调用新增入口，在函数内部导入。
+基线尚未完成交付时应是用例失败而非收集失败，不因使用已有接口而新增接口要求。
 测试只检查需求约定的可观察行为，不要求某种实现路线。
 旧接口的约束只测旧接口；新接口未约定的异常类型、输入不变性和编码布局不加入要求。
 从调用前独立副本计算输出预期。task 行测试公开功能，历史状态码和阈值只在对应 h 行测试。
@@ -264,7 +269,7 @@ acceptance.md 只替换 Check 列，其他列原样保留。Check 使用 test: t
 """
 
 TASK_REVIEW = """核对这个候选能否测试历史答案的帮助。先找信息缺口，再给结论。
-给出 development_workflow 时，需求必须实现该业务目标；换成另一条链路选 ineligible。
+给出 development_workflow 时，需求须保留完整业务交付；缩减或更换目标选 ineligible。
 public_task 是两组都能看到的需求；historical_answer 才是有记忆组收到的答案。
 evidence.sources 是审查依据，不会额外注入给有记忆组；不能拿它替代 historical_answer。
 必要历史规则若已全部写进 public_task 或仓库，选 ineligible，即使代码还未实现。
@@ -284,13 +289,13 @@ END_REVIEW
 """
 
 EXTERNAL_TASK_REVIEW = """核对这个候选是否真的需要 QA 提供的外部规则、状态或观测。
-给出 development_workflow 时，需求必须实现该业务目标；换成另一条链路选 ineligible。
+给出 development_workflow 时，需求须保留完整业务交付；缩减或更换目标选 ineligible。
 public_task 是两组都能看到的自然需求；historical_answer 是有记忆组收到的历史答案。
 repository_exploration 和 repository_queries 只说明当前快照，不能替代历史中明确披露的外部约定、状态或实际观测。
 如果 public_task 或当前仓库已经完整写出所需历史事实，选 ineligible；不要把“仓库里没有搜到”当成外部事实。
-如果需求是自然的新功能，完成它必须依据 historical_answer 中题面未重述的有效规则或观测，选 clean。
+如果需求是尚未完成的自然业务工作，完成它必须依据 historical_answer 中题面未重述的有效规则或观测，选 clean。
 memory_gap 必须写出题面与仓库缺少、会改变实现或验收的具体规则、状态或观测；answer_quote 必须逐字摘自 historical_answer。
-如果需求只是主题相关、只要求复述旧结果，或答案不能改变新功能行为，选 ineligible 或 uncertain。
+如果需求只是主题相关、只要求复述旧结果，或答案不能改变本次处理和交付，选 ineligible 或 uncertain。
 只返回：
 REVIEW
 leakage: clean|ineligible|uncertain
@@ -300,8 +305,8 @@ issue: clean 时写 none，否则简短说明具体问题
 END_REVIEW
 """
 
-SOLVER = """请完成下面的开发需求。代码在 /workspace/candidate，依赖已安装，
-环境无外网。自主查看仓库、修改并运行必要测试。不要修改无关行为。
+SOLVER = """请完成下面的后续工作。代码与业务文件在 /workspace/candidate，依赖已安装，
+环境无外网。自主查看仓库，复用已有能力，按需开发并交付要求的业务产物，运行必要检查。不要修改无关行为。
 若需求是日志解析或诊断脚本，不要执行 tox/uv 安装、完整 Sphinx 构建或联网等待；用短的本地日志夹具验证入口。
 不要把 .tox、虚拟环境或 docs/_build 产物当作代码提交，完成后清理这类临时目录。
 完成后报告实际修改和测试结果，不仅给计划。"""
@@ -316,7 +321,7 @@ VALIDATOR = """审核候选需求、测试和参考实现，完成后保存审�
 输出都放 /workspace/checks。实验修改只放 /workspace/experiments 的副本。
 
 按顺序完成：
-1. 阅读上述输入，确认基线缺少新功能，参考实现满足题面与引用的历史规则。
+1. 阅读上述输入，确认基线尚未完成本次交付，参考结果满足题面与引用的历史规则。
    测试必须依据公开功能或冻结历史，不得增加要求、限定内部实现或改变原验收。
    直接采用 checks.json 的逐测试结果；无需重新枚举测试已覆盖的输入。
 2. 在 coverage.md 对应验收项说明覆盖和具体缺口。缺组合用例时写自包含的
@@ -363,9 +368,9 @@ END_REVIEW
 """
 
 HISTORY_MUTATION = """制作一个历史规则错误补丁并保存，然后结束。
-/reference/spec 是已审核的需求、历史契约和测试，/reference/implementation 是已通过的参考实现。
+/reference/spec 是已审核的需求、历史契约和测试，/reference/implementation 是已通过的参考交付（代码或业务产物）。
 把参考实现复制到 /workspace/experiments/mutant，只改这个副本，使一条 external 规则被误用，
-新功能仍正常工作。保存相对参考实现的 /workspace/checks/m1.patch，使用 a/相对路径、b/相对路径。
+公开交付要求仍满足，不改 QA、历史来源、私有验收材料或测试。保存相对参考实现的 /workspace/checks/m1.patch，使用 a/相对路径、b/相对路径。
 再保存 /workspace/checks/mutations.txt：
 REVIEW m1
 acceptance: 该补丁违反的历史验收行编号
@@ -380,9 +385,10 @@ END_REVIEW
 只有自动测试项时不写 acceptance-review.txt。完成文件后结束。
 """
 
-MUTATION_FILES = """故意把参考实现的一条 external 历史规则改错，制作测试用的错误实现。
-选择 reference_sources 中一个实现文件，替换一段代码，使该历史条件取错误的值或判断。
-新功能仍可用。before.txt 原样摘取只出现一次的代码；after.txt 写不同的错误代码。
+MUTATION_FILES = """故意把参考交付中的一条 external 历史规则应用错误，制作测试用的错误变体。
+选择 reference_sources 中本次改动的代码或业务产物（如报告），使一项历史条件对应的行为或结果出错。
+公开交付要求仍满足，不改 QA、历史来源、私有验收材料或测试。
+before.txt 原样摘取只出现一次的文本；after.txt 写不同的错误文本。
 程序会精确替换、生成补丁，并验证公开功能行通过而指定历史行失败。只输出这三个文件：
 FILE mutations.txt
 REVIEW m1
@@ -391,10 +397,10 @@ file: reference_sources 中的实际路径
 END_REVIEW
 END_FILE
 FILE before.txt
-要替换的原代码
+要替换的原文本
 END_FILE
 FILE after.txt
-替换后的错误代码
+替换后的错误文本
 END_FILE
 """
 
@@ -434,20 +440,17 @@ external 规则中未由题面和仓库提供的必要信息必须由实际 ans 
 acceptance.md 的行为只来自新需求和这里明确引用的历史契约。
 """
 
-HISTORY_SOURCE_REVIEW = """核对已提供的公开历史与实际注入答案。全部需核对的原文已在输入中。
-对每条 active 规则判断两件事：
-1. 公开原文是否支持这条事实、适用范围及截止时的有效性，包括后来的纠正。
-2. external 规则中题面未提供的必要信息，是否已由 oracle_answer 准确覆盖。
-新接口来自 public_task，不要求历史曾实现它；建议不等于确认事实。
-recoverable 规则的 coverage 填 not_applicable。external 规则全部已在题面提供才填 provided。
+HISTORY_SOURCE_REVIEW = """只核对固定历史规则的来源、范围及截止时的有效性。全部需核对的原文已在输入中。
+对每条 active 规则，判断公开原文是否支持其 statement、scope 和 supersedes，包括截止前的纠正。
+建议不等于确认事实；局部替代不扩大到其他对象或周期。不要反转新旧关系或沿用已失效的范围。
+原文明确支持选 supported，明确冲突选 unsupported，范围或有效性无法确认选 uncertain。
+不要求历史曾实现未来接口，也不审查答案覆盖、代码实现或验收方式。
 只返回每条 active 规则的一个文本块：
 REVIEW h1
 support: supported 或 unsupported 或 uncertain
-coverage: complete 或 provided 或 missing 或 stale 或 uncertain 或 not_applicable
-quote: complete 时为 oracle_answer 中覆盖剩余缺口的原文；provided 时为题面完整给出该规则的原文
 issue: none 或一个具体问题
 END_REVIEW
-其他 coverage 的 quote 填 none。不要从验收行为中补充历史事实或答案。
+unsupported 或 uncertain 必须写明原文支持上的具体问题。不要输出 coverage 或 quote。
 """
 CLARIFY = """只判断开发者最后的公开回复是否有尚待回答的历史/外部信息问题。
 只从 supplied_history 回答实际问到的内容，遵守对象、条件和替代关系。

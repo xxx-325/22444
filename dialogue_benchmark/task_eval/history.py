@@ -245,8 +245,11 @@ def freeze_contract(spec, history, oracle, *, require_external=True, targets=Non
 def review_history(history):
     """Project cited tool evidence and every visible message for source review."""
     cited = {source for row in history["contracts"] for source in row["sources"]}
-    return dict(history, events=[event for event in history["events"]
-                                if event["id"] in cited or event.get("kind") == "message"])
+    return {"cutoff_event_id": history["cutoff_event_id"],
+            "contracts": [{key: row[key] for key in ("id", "statement", "scope", "sources", "supersedes", "active")}
+                          for row in history["contracts"]],
+            "events": [event for event in history["events"]
+                       if event["id"] in cited or event.get("kind") == "message"]}
 
 
 def write_history_review(path, history):
@@ -292,33 +295,36 @@ def read_history_review(acceptance, history):
     return {"rows": rows, "counts": {s: sum(r["status"] == s for r in rows) for s in sorted(states)}}
 
 
-def oracle_coverage(path, history):
-    """Require an exact answer excerpt for each external rule used in acceptance."""
-    if not Path(path).is_file():
+def qualified_oracle_complete(history, review):
+    """Reuse complete per-target qualification, checking the actual answer excerpts."""
+    contracts = history["contracts"]
+    rows = review.get("history_rows", [])
+    if (review.get("status") != "clean"
+            or review.get("task_review", {}).get("leakage") != "clean"
+            or len(rows) != len(contracts)
+            or {row.get("id") for row in rows} != {rule["id"] for rule in contracts}):
         return False
-    rows = parse_text_response(Path(path).read_text()).get("reviews", [])
-    missing_information = 0
-    for rule in history["contracts"]:
-        if not rule["active"] or rule["repository"] != "external":
-            continue
-        matched = [r for r in rows if r.get("id") == rule["id"]]
-        if len(matched) != 1:
+    by_id = {row["id"]: row for row in rows}
+    external = []
+    for rule in contracts:
+        row = by_id[rule["id"]]
+        if (row.get("applicable") != ("yes" if rule["active"] else "no")
+                or row.get("public") not in {"full", "partial", "none"}
+                or (row["public"] == "full") != (rule["repository"] == "recoverable")):
             return False
-        row = matched[0]
-        quote = row.get("quote", "")
-        if row.get("coverage") == "provided":
-            if not quote.strip() or quote not in history.get("public_task", ""):
+        if rule["active"] and rule["repository"] == "external":
+            refs = row.get("historical_sources", [])
+            quote = row.get("answer_quote", "none")
+            if (row.get("answer") != "sufficient" or not refs
+                    or set(refs) - set(rule["sources"]) or quote == "none"
+                    or not answer_quote_supported(quote, history["oracle_answer"])):
                 return False
-            continue
-        if row.get("coverage") != "complete" or not quote.strip() \
-                or not answer_quote_supported(quote, history["oracle_answer"]):
-            return False
-        missing_information += 1
-    return missing_information > 0
+            external.append(rule["id"])
+    return bool(external)
 
 
 def review_sources(history, config, output, budget):
-    """Review source meaning and answer coverage once, without an agent loop."""
+    """Review only source meaning, scope and validity at the historical cutoff."""
     from .prompts import HISTORY_SOURCE_REVIEW
 
     output = Path(output)
@@ -330,19 +336,15 @@ def review_sources(history, config, output, budget):
         if len(rows) != len(active) or {row.get("id") for row in rows} != set(active):
             raise ValueError("Historical source review must cover each active rule exactly once")
         if any(row.get("support") not in {"supported", "unsupported", "uncertain"}
-               or row.get("coverage") not in {"complete", "provided", "missing", "stale", "uncertain", "not_applicable"}
+               or not isinstance(row.get("issue"), str) or not row["issue"].strip()
+               or (row["support"] != "supported" and row["issue"] == "none")
                for row in rows):
             raise ValueError("Invalid historical source review decision")
-        oracle = output / "oracle-review.txt"
-        oracle.write_text("\n".join(
-            "REVIEW %s\ncoverage: %s\nquote: %s\nEND_REVIEW" % (
-                row["id"], row["coverage"], row.get("quote", "none")) for row in rows), encoding="utf-8")
         support = ("unsupported" if any(row["support"] == "unsupported" for row in rows) else
                    "supported" if all(row["support"] == "supported" for row in rows) else "uncertain")
-        result = {"support": support, "oracle_complete": oracle_coverage(oracle, history), "rows": rows}
+        result = {"support": support, "rows": rows}
     except Exception as error:
-        result = {"support": "uncertain", "oracle_complete": False,
-                  "error_type": type(error).__name__, "detail": str(error)}
+        result = {"support": "uncertain", "error_type": type(error).__name__, "detail": str(error)}
     save(output / "result.json", result)
     return result
 

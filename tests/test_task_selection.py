@@ -7,9 +7,9 @@ from unittest.mock import patch
 from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval.selection import (SelectionBudget, extract_history_targets,
                                                      query_evidence, repository_overview,
-                                                     select_task, write_draft, write_private_draft)
+                                                     select_task, write_draft, write_private_draft,
+                                                     write_public_task)
 from dialogue_benchmark.task_eval.run import construct
-from dialogue_benchmark.task_eval.history import oracle_coverage
 
 
 class SelectionTests(unittest.TestCase):
@@ -84,6 +84,46 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["evidence"]["development_workflow"], direction)
         self.assertEqual(result["evidence"]["history_sources"],
                          [{"source": "source1", "role": None, "answer_source": False}])
+
+    def test_saved_workflow_reaches_public_author_without_private_agreement(self):
+        workflow = "Process Maple orders: read orders.json → export accepted records → deliver report.json"
+        answer = "Maple exports omit null note."
+        self.history["initial_events"][0]["text"] = answer
+        self.history["events"][0]["text"] = answer
+        question = {"question": "Which Maple export rule still applies?", "type": "M1",
+                    "answer_points": [{"text": answer}]}
+        task = ("Process orders.json under Maple's confirmed rules using the existing exporter. "
+                "Deliver report.json containing the exported records and their count.")
+        responses = [
+            {"reviews": [self.query(op="read", target="repo", path="api.py")]},
+            {"reviews": [{"decision": "candidate", "reason": "The customer report is not delivered",
+                          "sources": "qa,query1", "request": "none",
+                          "public_goal": "Prepare the Maple export",
+                          "agreement_object": "omit null note",
+                          "agreement_scope": "Maple exports: omit null note"}]},
+            {"reviews": [{"id": "h1", "statement": answer, "scope": "Maple exports",
+                          "behavior": "Omit null note from exported records",
+                          "sources": "source1", "supersedes": "none"}]},
+            {"task": task},
+        ]
+        budget = SelectionBudget(self.root, {})
+        with patch.object(budget, "call", side_effect=responses) as call:
+            result = select_task(question, self.history, self.repo, {}, self.root / "selected",
+                                 budget, workflow=workflow)
+            self.assertEqual(result["status"], "candidate")
+            saved = read(self.root / "selected/result.json")
+            saved["historical_question"] = question["question"]
+            write_public_task(saved, {}, self.root / "public", self.root / "spec", budget)
+        self.assertEqual(call.call_count, 4)
+        payload = call.call_args.args[1]
+        self.assertEqual(payload["development_workflow"], workflow)
+        self.assertEqual(payload["public_goal"], "Prepare the Maple export")
+        self.assertEqual(payload["repository_evidence"], saved["public_repository_evidence"])
+        self.assertNotIn("omit null note", str(payload))
+        for private in ("agreement_object", "agreement_scope", "history_targets",
+                        "historical_answer", "evidence"):
+            self.assertNotIn(private, payload)
+        self.assertEqual((self.root / "spec/task.md").read_text(), task)
 
     def test_duplicate_default_offset_stops_pending(self):
         result, _ = self.run_selection([
@@ -171,20 +211,6 @@ class SelectionTests(unittest.TestCase):
         page = query_evidence(dict(op="read", target="history", source="source2"), self.repo, self.history)
         self.assertEqual(page["source"], "event2")
         self.assertEqual(page["next_offset"], 6000)
-
-    def test_public_rule_still_checked_but_answer_only_covers_gap(self):
-        history = {"public_task": "Preserve order.", "oracle_answer": "Maple omits null note.",
-                   "contracts": [{"id": name, "active": True, "repository": "external"}
-                                 for name in ("h1", "h2")]}
-        path = self.root / "oracle.txt"
-        path.write_text("REVIEW h1\ncoverage: provided\nquote: Preserve order.\nEND_REVIEW\n"
-                        "REVIEW h2\ncoverage: complete\nquote: Maple omits null note.\nEND_REVIEW")
-        self.assertTrue(oracle_coverage(path, history))
-        history["oracle_answer"] = "Maple exports."
-        self.assertFalse(oracle_coverage(path, history))
-        path.write_text("REVIEW h1\ncoverage: provided\nquote: Preserve order.\nEND_REVIEW\n"
-                        "REVIEW h2\ncoverage: provided\nquote: Preserve order.\nEND_REVIEW")
-        self.assertFalse(oracle_coverage(path, history))
 
     def test_tool_free_draft_parses_all_files_before_writing(self):
         selection = {"decision": {}, "evidence": {}}

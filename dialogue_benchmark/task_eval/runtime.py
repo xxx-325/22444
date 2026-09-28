@@ -1,6 +1,7 @@
 """Thin adapter over the existing simulator's isolated OpenHands runtime."""
 
 from pathlib import Path
+from difflib import unified_diff
 import os
 import sys
 import time
@@ -41,9 +42,18 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
         files = {str(path.relative_to(spec)): path.read_text() for path in spec.rglob("*")
                  if path.is_file() and path.suffix in {".py", ".md", ".txt", ".sh", ".json"}
                  and path.name not in {"history.json", "history-review.md", "acceptance.json"}}
-        sources = {name: {label: (root / name).read_text() if (root / name).is_file() else None
-                          for label, root in (("baseline", Path(baseline)), ("reference", Path(candidate)))}
-                   for name in changed_files}
+        sources = {}
+        for name in changed_files:
+            before, after = Path(baseline) / name, Path(candidate) / name
+            diff = unified_diff(
+                before.read_text().splitlines(keepends=True) if before.is_file() else [],
+                after.read_text().splitlines(keepends=True) if after.is_file() else [],
+                fromfile="baseline/" + name if before.is_file() else "/dev/null",
+                tofile="reference/" + name if after.is_file() else "/dev/null")
+            text = "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                           for line in diff)
+            if text:
+                sources[name] = text
         outcomes = {role: {**{key: result[key] for key in
                              ("status", "tests", "passed", "failed", "errors", "skipped") if key in result},
                           "cases": [{"id": case["id"], "status": case["status"]}
@@ -69,7 +79,7 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
 
 
 def write_history_mutation(spec, candidate, changed_files, config, output, budget):
-    """Generate a source variant, export its exact patch, and leave replay to the host."""
+    """Mutate changed code or business output and export its exact patch for replay."""
     import shutil
     import tempfile
     from .prompts import MUTATION_FILES
@@ -79,12 +89,13 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
 
     spec, candidate, output = Path(spec), Path(candidate), Path(output)
     try:
+        protected = {path.name for path in spec.iterdir() if path.is_file()} | {"qa-input.json"}
         sources = {name: (candidate / name).read_text() for name in changed_files
-                   if (candidate / name).is_file() and Path(name).suffix not in {".md", ".rst", ".txt"}
-                   and not any(part in {"tests", "test", "docs"} or part.startswith("test_")
+                   if (candidate / name).is_file() and Path(name).name not in protected
+                   and not any(part in {"tests", "test"} or part.startswith("test_")
                                for part in Path(name).parts)}
         if not sources:
-            raise ValueError("No changed implementation source available for historical mutation")
+            raise ValueError("No changed code or business output available for historical mutation")
         response = budget.call(MUTATION_FILES, {
             "task": (spec / "task.md").read_text(),
             "contract": (spec / "history-contract.txt").read_text(),
@@ -95,7 +106,7 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
         name = rows[0].get("file") if len(rows) == 1 and rows[0].get("id") == "m1" else None
         before, after = files["before.txt"], files["after.txt"]
         if name not in sources or before == after or sources[name].count(before) != 1:
-            raise ValueError("Mutation must change one exact, unique implementation fragment")
+            raise ValueError("Mutation must change one exact, unique reference fragment")
         checks = output / "workspace/checks"
         checks.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="qa-mutation-") as directory:
@@ -157,8 +168,8 @@ def write_tests(spec, baseline, config, output, budget, feedback=""):
             commands = spec / "commands"
             commands.mkdir(exist_ok=True)
             (commands / "existing_suite.sh").write_text(
-                "python -m pytest -c /dev/null --rootdir=/workspace/checks "
-                "-p no:cacheprovider -q /workspace/checks/regression/tests\n", encoding="utf-8")
+                "python -m pytest -c /dev/null --rootdir=/workspace/candidate "
+                "-p no:cacheprovider -q /workspace/candidate/tests\n", encoding="utf-8")
         result = {"status": "finished"}
     except Exception as error:
         result = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}

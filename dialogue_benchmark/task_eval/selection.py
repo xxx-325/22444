@@ -464,13 +464,16 @@ def write_public_task(selection, config, output, spec, budget, feedback=""):
     if not isinstance(public.get("public_goal"), str) or not public["public_goal"].strip():
         raise ValueError("public_task_input_missing")
     # The selector sees the answer and may repeat it in its agreement fields.
-    # Use the selected goal and actual repository evidence. The explorer's
+    # Keep the original workflow with the goal and repository evidence. The explorer's
     # proposed interfaces are suggestions, not additional task requirements.
     payload = {"public_goal": public["public_goal"],
                "historical_question": selection.get("historical_question", ""),
                "repository_overview": selection.get("repository_overview", {}),
                "repository_evidence": selection.get("public_repository_evidence", []),
                "feedback": feedback}
+    workflow = selection.get("evidence", {}).get("development_workflow")
+    if workflow:
+        payload["development_workflow"] = workflow
     response = budget.call(PUBLIC_TASK_SIMPLE, payload, config, output)
     task = response.get("task")
     if not isinstance(task, str) or not task.strip():

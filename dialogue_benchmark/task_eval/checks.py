@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import uuid
 import xml.etree.ElementTree as ET
@@ -168,6 +169,19 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
         workspace = output / "workspace"
         copy_tree(candidate, workspace / "candidate")
         copy_tree(spec, workspace / "checks")
+        regression = workspace / "checks/regression/tests"
+        if regression.is_dir():
+            # Restore only frozen tests, at their original repository paths.
+            # Their imports and repository-relative data belong to the candidate.
+            candidate_tests = workspace / "candidate/tests"
+            if candidate_tests.is_dir():
+                shutil.rmtree(candidate_tests)
+            elif candidate_tests.exists():
+                candidate_tests.unlink()
+            copy_tree(regression, candidate_tests)
+        test_paths = ["/workspace/candidate/" + name.removeprefix("regression/")
+                      if name.startswith("regression/tests/") else "/workspace/checks/" + name
+                      for name in tests]
         install_candidate_fixture(workspace / "checks")
         sandbox = ExecutionSandbox(output / "private", workspace, image, "judge",
                                    uuid.uuid4().hex, reference=spec)
@@ -178,9 +192,9 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
         command = ["docker", "exec", "-t", "--user", "1000", "-w", "/workspace/candidate",
                    "-e", "PYTHONDONTWRITEBYTECODE=1",
                    sandbox.name, "python", "-m", "pytest", "-c", "/dev/null",
-                   "--rootdir=/workspace/checks",
+                   "--rootdir=/workspace" if regression.is_dir() else "--rootdir=/workspace/checks",
                    "-p", "no:cacheprovider", "-q",
-                   *["/workspace/checks/" + name for name in tests],
+                   *test_paths,
                    "--junitxml=/workspace/experiments/receipt.xml"]
         if candidate_pythonpath:
             command[command.index(sandbox.name):command.index(sandbox.name)] = ["-e", "PYTHONPATH=" + candidate_pythonpath]
@@ -197,6 +211,13 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
             run = execute(command) if tests else {"exit_code": 0}
             result = (pytest_result(run["exit_code"], workspace / "experiments/receipt.xml") if tests else
                       {"status": "passed", "cases": [], "tests": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0})
+            if regression.is_dir():
+                # Keep acceptance IDs tied to the frozen spec despite relocation.
+                for case in result["cases"]:
+                    if case["id"].startswith("checks."):
+                        case["id"] = case["id"].removeprefix("checks.")
+                    elif case["id"].startswith("candidate.tests."):
+                        case["id"] = "regression.tests." + case["id"].removeprefix("candidate.tests.")
             for script in scripts:
                 # Generated command checks are shell scripts.  Run them with
                 # bash so arrays, pipefail, and parameter expansion work

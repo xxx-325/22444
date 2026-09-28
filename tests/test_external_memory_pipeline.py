@@ -51,7 +51,7 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             client, qa_mode="memory", target_type="M6")
         workflow_prompt, focus_prompt, qa_prompt = [prompt for prompt, _ in client.calls]
         self.assertIn("在给定历史已确认的客户、对象、周期和条件内", workflow_prompt)
-        self.assertIn("新开发能力及其业务链路", workflow_prompt)
+        self.assertIn("尚未完成、可验收的后续业务工作", workflow_prompt)
         self.assertIn("所需历史决定必须已经能从材料找回", workflow_prompt)
         self.assertIn("不以取得未记录的新批准或新确认为前提", workflow_prompt)
         self.assertIn("假设中的后续批准不是已经发生的更新或局部纠正", workflow_prompt)

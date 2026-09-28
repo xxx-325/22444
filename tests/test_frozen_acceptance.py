@@ -8,7 +8,7 @@ from unittest.mock import patch
 from dialogue_benchmark.task_eval.artifacts import save
 from dialogue_benchmark.task_eval.checks import (
     acceptance_items, assess_acceptance, check_history_mutations, pytest_result)
-from dialogue_benchmark.task_eval.history import answer_quote_supported, historical_question, oracle_coverage
+from dialogue_benchmark.task_eval.history import answer_quote_supported, historical_question, qualified_oracle_complete
 from dialogue_benchmark.task_eval.metrics import measure
 
 
@@ -103,13 +103,16 @@ class FrozenAcceptanceTests(unittest.TestCase):
         self.assertEqual(acceptance_items(self.root, history)[0]["tests"], ["command::export"])
 
     def test_oracle_requires_actual_answer_excerpt_for_all_active_rules(self):
-        history = {"oracle_answer": "Retain other nulls", "contracts": [{"id": "h1", "active": True, "repository": "external"}]}
-        path = self.root / "oracle.txt"
-        for quote, state, expected in (("Retain other nulls", "complete", True),
-                                       ("Private criterion", "complete", False),
-                                       ("Retain other nulls", "missing", False)):
-            path.write_text(f"REVIEW h1\ncoverage: {state}\nquote: {quote}\nEND_REVIEW")
-            self.assertEqual(oracle_coverage(path, history), expected)
+        history = {"oracle_answer": "Retain other nulls", "contracts": [
+            {"id": "h1", "active": True, "repository": "external", "sources": ["event1"]}]}
+        for quote, state, expected in (("Retain other nulls", "sufficient", True),
+                                       ("Private criterion", "sufficient", False),
+                                       ("Retain other nulls", "insufficient", False),
+                                       ("Retain other nulls", "uncertain", False)):
+            review = {"status": "clean", "task_review": {"leakage": "clean"}, "history_rows": [
+                {"id": "h1", "applicable": "yes", "public": "none", "answer": state,
+                 "historical_sources": ["event1"], "answer_quote": quote}]}
+            self.assertEqual(qualified_oracle_complete(history, review), expected)
 
     def test_one_requirement_can_reference_test_and_command(self):
         (self.root / "commands").mkdir()

@@ -1,16 +1,46 @@
 """Offline orchestration contracts for task preflight and paired evaluation."""
 
+import runpy
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
-from dialogue_benchmark.task_eval.artifacts import read, save, fingerprint
-from dialogue_benchmark.task_eval.checks import run_checks
+from dialogue_benchmark.llm import parse_text_response
+from dialogue_benchmark.task_eval.artifacts import copy_tree, read, save, fingerprint
+from dialogue_benchmark.task_eval.checks import acceptance_items, assess_acceptance, check_history_mutations, run_checks
 from dialogue_benchmark.task_eval.run import construct, prepare_test_reference
-from dialogue_benchmark.task_eval.runtime import review_task
-from dialogue_benchmark.task_eval.versions import pin_baseline
+from dialogue_benchmark.task_eval.runtime import review_task, write_history_mutation
+from dialogue_benchmark.task_eval.versions import export_change, pin_baseline
+
+
+@contextmanager
+def local_command_checks():
+    """Run frozen shell checks locally while preserving real Git patch operations."""
+    real_run = subprocess.run
+    workspaces = []
+
+    def sandbox(directory, workspace, image, role, identity, reference):
+        workspaces.append(workspace)
+        return SimpleNamespace(name="local-checks", record={}, prepare=lambda: None,
+                               unpause=lambda: None, pause=lambda: None)
+
+    def execute(argv, **kwargs):
+        if argv[0] != "docker":
+            return real_run(argv, **kwargs)
+        workspace = workspaces[-1]
+        script = workspace / "checks/commands" / Path(argv[-1]).name
+        return real_run(["bash", str(script)], cwd=workspace / "candidate", **kwargs)
+
+    with patch.dict("sys.modules", {"simulator.openhands.sandbox": SimpleNamespace(ExecutionSandbox=sandbox)}), \
+         patch("dialogue_benchmark.task_eval.checks.release_completed_execution"), \
+         patch("dialogue_benchmark.task_eval.checks.subprocess.run", side_effect=execute):
+        yield
 
 
 class TaskPreflightTests(unittest.TestCase):
@@ -309,6 +339,129 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(result["status"], "uncertain")
         payload = client.return_value.ask.call_args.args[1]
         self.assertEqual(set(payload), {"public_task", "historical_answer"})
+
+    def test_existing_api_delivery_uses_history_qualification_and_frozen_checks(self):
+        workflow = "Read input.json → apply Maple's confirmed status rules → deliver report.json"
+        task = ("Complete Maple's pending report for input.json with its confirmed status rules. "
+                "Reuse the existing write_report API and preserve its behavior. Deliver report.json "
+                "as an ordered JSON array of records with order_id and canonical status fields.")
+        answer = "For Maple, code 7 means DELIVERED and code 9 means FAILED."
+        evidence = {"development_workflow": workflow,
+                    "history_targets": [{"id": "h1", "statement": answer, "sources": ["event1"]}],
+                    "repository_queries": [{"id": "query1", "result": {
+                        "lines": [{"text": "def write_report(records, rules, destination):"}]}}]}
+        response = parse_text_response(
+            "H h1 | yes | none | sufficient | event1 | none | " + answer + "\nTASK | clean")
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response) as ask:
+            qualified = review_task(task, answer, {}, self.base / "delivery-review", evidence=evidence)
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(qualified["status"], "clean")
+        self.assertEqual(ask.call_args.args[1]["development_workflow"], workflow)
+        self.assertNotIn(answer, str(ask.call_args.args[1]["public_repository"]))
+        response = parse_text_response(
+            "H h1 | yes | full | not_applicable | event1 | task | none\nTASK | clean")
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response):
+            leaked = review_task(task + answer, answer, {}, self.base / "disclosed-review", evidence=evidence)
+        self.assertEqual(leaked["status"], "ineligible")
+        self.assertEqual(leaked["issue"], "no_memory_gap")
+
+        source = ("import json\n\ndef write_report(records, rules, destination):\n"
+                  "    result = [dict(order_id=row['order_id'], status=rules[row['status']]) for row in records]\n"
+                  "    destination.write_text(json.dumps(result))\n")
+        (self.baseline / "a.py").write_text(source)
+        records = [{"order_id": "one", "status": 9}, {"order_id": "two", "status": 7}]
+        save(self.baseline / "input.json", records)
+        candidates = [self.baseline]
+        for name, rules in (("completed", {7: "DELIVERED", 9: "FAILED"}),
+                            ("wrong-rule", {7: "FAILED", 9: "DELIVERED"})):
+            candidate = self.base / name
+            copy_tree(self.baseline, candidate)
+            runpy.run_path(str(candidate / "a.py"))["write_report"](
+                read(candidate / "input.json"), rules, candidate / "report.json")
+            self.assertEqual((candidate / "a.py").read_text(), source)
+            candidates.append(candidate)
+        spec = self.base / "delivery-spec"
+        (spec / "commands").mkdir(parents=True)
+        (spec / "task.md").write_text(task)
+        (spec / "acceptance.md").write_text(
+            "| a1 | Deliver all records in input order | task | command: records |\n"
+            "| a2 | Apply Maple's status rules | h1 | command: statuses |\n")
+        conditions = {"records": "[row['order_id'] for row in records] == ['one', 'two']",
+                      "statuses": "[row['status'] for row in records] == ['FAILED', 'DELIVERED']"}
+        for name, condition in conditions.items():
+            check = ("import json, sys; records = json.load(open('report.json')); "
+                     "sys.exit(0 if " + condition + " else 1)")
+            (spec / "commands" / (name + ".sh")).write_text(
+                "test -f report.json || exit 1\n" + shlex.quote(sys.executable) + " -c " + shlex.quote(check) + "\n")
+        items = acceptance_items(spec, {"contracts": [{"id": "h1", "active": True}]})
+        with local_command_checks():
+            results = [run_checks(candidate, spec, self.base / ("delivery-checks-%d" % index), "image")
+                       for index, candidate in enumerate(candidates)]
+        self.assertEqual([result["status"] for result in results], ["failed", "passed", "failed"])
+        self.assertEqual(assess_acceptance(items, results[1])["status"], "passed")
+        wrong = assess_acceptance(items, results[2])
+        self.assertEqual([(row["id"], row["status"]) for row in wrong["rows"]],
+                         [("a1", "passed"), ("a2", "failed")])
+
+    def test_report_mutation_replays_patch_and_fails_only_historical_requirement(self):
+        report = "one: FAILED\ntwo: DELIVERED\n"
+        for index, name in enumerate(("docs/report.md", "report.txt", "report.rst")):
+            with self.subTest(report=name):
+                root = self.base / ("report-mutation-%d" % index)
+                spec, candidate = root / "spec", root / "candidate"
+                (spec / "commands").mkdir(parents=True)
+                copy_tree(self.baseline, candidate)
+                (candidate / name).parent.mkdir(parents=True, exist_ok=True)
+                (candidate / name).write_text(report)
+                (spec / "task.md").write_text("Deliver Maple's order status report at " + name)
+                (spec / "history-contract.txt").write_text("Maple: one failed; two delivered.")
+                (spec / "memory-use.md").write_text("Private historical agreement")
+                history = {"contracts": [{"id": "h1", "active": True, "repository": "external"}]}
+                save(spec / "history.json", history)
+                (spec / "acceptance.md").write_text(
+                    "| a1 | Report all orders in order | task | command: records |\n"
+                    "| a2 | Apply Maple's confirmed statuses | h1 | command: statuses |\n")
+                conditions = {"records": "[row[0] for row in rows] == ['one', 'two']",
+                              "statuses": "[row[1] for row in rows] == ['FAILED', 'DELIVERED']"}
+                for check_name, condition in conditions.items():
+                    script = ("from pathlib import Path; import sys; "
+                              "rows = [line.split(': ') for line in Path(" + repr(name) + ").read_text().splitlines()]; "
+                              "sys.exit(0 if " + condition + " else 1)")
+                    (spec / "commands" / (check_name + ".sh")).write_text(
+                        shlex.quote(sys.executable) + " -c " + shlex.quote(script) + "\n")
+                items = acceptance_items(spec, history)
+                save(spec / "acceptance.json", items)
+                # Accidental copies of evaluation material are never mutation targets.
+                for private in ("qa-input.json", "memory-use.md", "history.json", "task.md",
+                                "docs/history-contract.txt", "tests/test_report.py"):
+                    (candidate / private).parent.mkdir(parents=True, exist_ok=True)
+                    (candidate / private).write_text("Private material or tests\n")
+                version = export_change(self.baseline, candidate, root / "reference-version")
+                before_reference, before_spec = fingerprint(candidate), fingerprint(spec)
+                files = [{"name": "mutations.txt", "content":
+                          "REVIEW m1\nacceptance: a2\nfile: " + name + "\nEND_REVIEW"},
+                         {"name": "before.txt", "content": "one: FAILED"},
+                         {"name": "after.txt", "content": "one: DELIVERED"}]
+                budget = SimpleNamespace(call=Mock(return_value={"files": files}))
+                authored = write_history_mutation(spec, candidate, version["changed_files"], {},
+                                                  root / "validator", budget)
+                self.assertEqual(authored["status"], "finished", authored)
+                self.assertEqual(budget.call.call_count, 1)
+                self.assertEqual(budget.call.call_args.args[1]["reference_sources"], {name: report})
+                self.assertTrue(read(root / "validator/version/version.json")["replay_verified"])
+                with local_command_checks():
+                    correct = run_checks(candidate, spec, root / "reference-checks", "image")
+                    result = check_history_mutations(candidate, spec, root / "validator/workspace/checks",
+                                                     root / "replay", "image")
+                self.assertEqual(assess_acceptance(items, correct)["status"], "passed")
+                self.assertEqual(result["status"], "caught", result)
+                variant = result["variants"][0]
+                self.assertTrue(variant["patch_applied"])
+                self.assertEqual([(row["id"], row["status"]) for row in variant["acceptance"]["rows"]],
+                                 [("a1", "passed"), ("a2", "failed")])
+                self.assertIn("one: DELIVERED", (root / "replay/m1/candidate" / name).read_text())
+                self.assertEqual(fingerprint(candidate), before_reference)
+                self.assertEqual(fingerprint(spec), before_spec)
 
     def test_test_runner_executes_frozen_combinations_with_terminal_parity(self):
         spec, output = self.base / "spec", self.base / "checks-run"

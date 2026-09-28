@@ -346,9 +346,19 @@ The test author cannot change qualified requirements or historical rules.
 Test repairs reuse the qualified draft. Compatibility tests apply to the named
 old APIs; new APIs are checked by their stated behavior. Regression commands use
 baseline tests copied into the frozen specification, so solver-authored tests do
-not change the scored regression set.
-The public draft preserves the selected project's goal and uses actual repository
-observations and fixes a callable interface or command before tests are authored.
+not change the scored regression set. During checks, these tests run at their
+original paths in a disposable candidate copy, using the candidate's code and
+repository-relative data.
+The public draft preserves the original QA workflow's inputs, processing and
+deliverables, using actual repository observations. A task may complete pending
+business work through existing APIs or commands; new entry points are required
+only when a necessary capability is missing. Results use an existing format or
+define their required fields and structure before tests are authored.
+Customer and date parameters are ordinary business inputs. The solver applies
+the historical rules, including through existing APIs or internal configuration;
+the caller is not asked to supply those rules again. Workflow text guides the
+business goal, while historical answers and agreement details remain private.
+The existing qualification review checks that a necessary information gap remains.
 An unfinished test author stops with its own reason; changed draft
 files are listed separately, without restarting construction automatically.
 Use `--selection-only` to stop after qualification, retaining decisions, queries,
@@ -356,9 +366,11 @@ and usage without starting OpenHands or paired execution.
 An independent Code Agent implements the requirement; a validator checks the
 baseline, reference implementation, and test quality. Failed attempts remain
 available for inspection, with up to five revisions by default.
-One model request reviews the exact cited evidence, visible dialogue, frozen
-rules and injected answer. Its decisions and quoted answer coverage are saved
-under `history-review/`; unsupported history or incomplete answers stop admission.
+One model request reviews the exact cited evidence, visible dialogue and frozen
+rules for source support, scope and validity at the cutoff. Source decisions are
+saved under `history-review/`. Answer completeness reuses the current per-rule
+qualification and its exact answer excerpts; unsupported history or incomplete
+answers stop admission.
 The test author receives the fixed criteria and historical contract; source
 archives stay with qualification and independent validation.
 For small Python snapshots with a `tests/` directory, one model request receives
@@ -369,8 +381,8 @@ Reference implementations and both scored conditions continue to use OpenHands.
 For historical tasks, a second finite review checks each acceptance row and any
 additional tests against the task, contract, changed source files and executed
 results. Missing coverage or unsupported requirements return for correction.
-For tasks covered by executable checks, one model request supplies changed source
-files for a historical-error variant. The host exports a replayable patch and
+For tasks covered by executable checks, one model request supplies a change to
+code or a business artifact for a historical-error variant. The host exports a replayable patch and
 executes the frozen checks. Tasks with inspection items use OpenHands to produce
 the variant and inspection evidence. These steps share a preflight budget; the complete
 dialogue archive remains in the qualified draft and frozen task.
@@ -422,7 +434,7 @@ hashes and execution budgets, so uncommitted source changes remain traceable.
 A requirement must solve a real new problem, with a historical rule that changes
 observable behavior. At least one required rule must need external history;
 repository-recoverable compatibility requirements can also apply and are checked.
-Uncertain availability needs review. Before trials, source review checks the exact
+Uncertain availability needs review. Before trials, per-rule qualification checks the exact
 injected answer against necessary information still missing from the public task
 and repository, including scoped corrections and exceptions. At least one such
 gap must remain. Already supplied information need not be repeated in the answer.
@@ -571,11 +583,11 @@ selecting a root does not make nearby facts causal evidence.
 
 For these packages, task construction freezes source-backed historical statements,
 their applicable scopes and explicit replacement links in `history.json`. A later
-rule overrides only its stated scope. Source review checks the public sources,
-updates and exact QA answer supplied in the oracle condition. The OpenHands
+rule overrides only its stated scope. Source review checks the public sources
+and updates; the existing per-rule qualification checks the exact QA answer
+supplied in the oracle condition. The OpenHands
 validator checks observable acceptance behavior. New tasks must not redo already
-completed construction work. The informed reference proves feasibility; answer sufficiency is separately
-checked before freezing. `--design-probe` optionally
+completed construction work. The informed reference proves feasibility. `--design-probe` optionally
 runs an independent no-memory construction probe; its success is not an admission
 requirement. The probe does not establish a scored route or alter task admission.
 

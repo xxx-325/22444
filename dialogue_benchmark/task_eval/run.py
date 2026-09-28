@@ -13,7 +13,7 @@ from .runtime import configure, review_task, review_checks, repair_tests, write_
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline, source_version
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
-                      write_contract_from_targets, review_sources)
+                      write_contract_from_targets, review_sources, qualified_oracle_complete)
 from .selection import SelectionBudget, select_task, write_draft, write_private_draft
 
 def solver_input(task, answer=None):
@@ -270,7 +270,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                             "history_targets": (frozen_targets or {}).get("targets", []),
                             "sources": [e for e in (public_history or {}).get("events", [])
                                         if e["id"] in refs or e.get("role") == "user"]}
-                decision = review_task(protected["task.md"], answer_text(item["qa"]),
+                reviewed_task, reviewed_answer = protected["task.md"], answer_text(item["qa"])
+                decision = review_task(reviewed_task, reviewed_answer,
                                        config, run / "task-review", evidence=evidence, budget=budget)
                 if decision.get("status") == "clean" and frozen_targets:
                     # H is immutable; only the finite review may classify its
@@ -289,6 +290,12 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                     draft_items = acceptance_items(spec, draft_history)
                     protected = {name: (spec / name).read_text() for name in
                                  ("task.md", "memory-use.md", "history-contract.txt")}
+                if draft_history and decision.get("status") == "clean" and (
+                        draft_history["public_task"] != reviewed_task
+                        or draft_history["oracle_answer"] != reviewed_answer
+                        or not qualified_oracle_complete(draft_history, decision)):
+                    decision = dict(decision, status="uncertain", issue="historical_answer_not_verified")
+                    save(run / "task-review/result.json", decision)
                 gate_state.update(review=decision, protected=protected,
                                   requirements=[{k: r[k] for k in ("id", "requirement", "basis")} for r in draft_items])
                 copy_tree(spec, run / "qualified-draft")
@@ -392,6 +399,14 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 feedback = "\n上一轮历史契约错误，请根据公开来源重写：" + str(error)
                 save(root / "construction.json", attempts)
                 continue
+        oracle_complete = not history or (
+            history == read(run / "qualified-draft/history.json")
+            and qualified_oracle_complete(history, task_review))
+        record["oracle_complete"] = oracle_complete
+        if not oracle_complete:
+            record.update(accepted=False, reason="qualified_history_not_verified")
+            save(root / "construction.json", attempts)
+            break
         try:
             items = acceptance_items(spec, history)
             if [{k: r[k] for k in ("id", "requirement", "basis")} for r in items] != gate_state["requirements"]:
@@ -429,8 +444,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         if history:
             source_review = review_sources(history, config, run / "history-review", preflight_budget)
             record["history_source_review"] = source_review
-            if source_review["support"] != "supported" or not source_review["oracle_complete"]:
-                record.update(accepted=False, reason="history_source_or_answer_not_verified")
+            if source_review["support"] != "supported":
+                record.update(accepted=False, reason="history_source_not_verified")
                 save(root / "construction.json", attempts)
                 break
             coverage_review = review_checks(spec, baseline, candidate,
@@ -506,7 +521,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record.update(final_baseline_checks=baseline_checks, final_reference_checks=reference_checks)
         else:
             record["reason"] = "missing_coverage_checks"
-        oracle_complete = not history or source_review["oracle_complete"]
         if history and final_spec is not None and oracle_complete:
             record["history_mutations"] = check_history_mutations(
                 candidate, final_spec, validator / "workspace/checks",
@@ -520,13 +534,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
              "/workspace/experiments": validator / "workspace/experiments"})
             if final_spec else {"status": "uncertain"})
         record["reference_acceptance"] = reference_acceptance
-        record["oracle_complete"] = oracle_complete
         if not agent_finished(validated):
             record["reason"] = "validator_incomplete"
         elif final_spec is None:
             record["reason"] = "missing_coverage_checks"
-        elif not oracle_complete:
-            record["reason"] = "oracle_answer_incomplete"
         elif history and record.get("history_mutations", {}).get("status") != "caught":
             record["reason"] = "historical_mutation_not_verified"
         record["validation_accepted"] = (agent_finished(solved) and agent_finished(validated)
