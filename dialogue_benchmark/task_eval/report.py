@@ -190,13 +190,17 @@ def write_html(output, manifest):
             safe(json.dumps(qa, ensure_ascii=False, indent=2)),
             link(root / "author-reference/qa-input.json", "Original QA generation input"),
             safe(text_file(task_path)), safe(text_file(summary_path)), reference + "".join(trials)))
+    context = ("Controlled simulation: customer rules are simulated; dialogue and agent actions were actually executed."
+               if manifest.get("evaluation_type") == "simulation_only" else "")
     page = '''<!doctype html><html lang="en"><meta charset="utf-8"><title>Repository task results</title>
 <style>body{font:16px/1.6 system-ui;background:#f4f6fa;color:#182336;margin:32px auto;max-width:1150px;padding:0 24px}
 article{background:white;border:1px solid #dce3ed;border-radius:12px;padding:24px;margin:22px 0}a{color:#2157a5}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.6 ui-monospace,monospace;background:#f4f6fa;padding:16px}
 summary{cursor:pointer;color:#2157a5}h1,h2{line-height:1.3}</style><h1>Repository task results</h1>
 <p>Each requirement starts from the pinned dialogue-end code. Both trials use the same frozen criteria.
-The memory trial receives only the historical answer as extra context.</p><p>%s</p>%s</html>''' % (
+The memory trial receives only the historical answer as extra context.</p><p>%s</p>
+<p><a href="report.md">Aggregate results, paired differences and per-item acceptance</a></p><p>%s</p>%s</html>''' % (
+        safe(context),
         safe("Target: %s · Completed pairs: %s · Stop: %s" % (
             manifest.get("target", "—"), manifest.get("completed", sum(t["status"] == "evaluated" for t in manifest.get("tasks", []))),
             manifest.get("stop_reason", "running"))), "".join(cards))
