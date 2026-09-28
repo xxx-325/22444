@@ -1274,6 +1274,7 @@ workflow 是后续开发场景，focus 是需要找回的已确认历史决定�
 共同决定其行为的几条历史规则放在同一道题的答案中，不追加样例输出或计数计算题。
 不要拆成多道语法、参数或数值小题。题干不透露历史答案。
 每行 ANSWER_POINT 写一条有来源的有效规则，保留该规则的条件与例外；不重复同义规则。
+一条规则的完整允许集合或完整映射保留在同一个答案点中，不按元素拆开。
 两个独立要求分两行；规则与文件交付要求分行，每个独立计数字段也分行。
 只使用实际公开的内容，区分用户约定、建议和实测；后续纠正仅替代其适用范围。
 只输出一个 QA 块，不输出类型、难度、解释、JSON或Markdown：
@@ -1437,6 +1438,8 @@ that signature-plus-transfer sentence joined.
 When fixing atomicity, keep one continuous value -> comparison -> one error/no-error
 outcome as one point. Remove a redundant trailing "the test failed/passed" instead
 of splitting that same condition chain into artificial fragments.
+Keep a complete set or mapping defining one rule together; splitting its members
+loses the rule's exhaustive boundary.
 For a task mismatch, restore the original fixed task and focus instead of retaining
 the easier substitute question. Do not change the assigned task.
 Otherwise return exactly one block:
