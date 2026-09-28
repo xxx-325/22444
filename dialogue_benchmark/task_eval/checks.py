@@ -11,10 +11,11 @@ from .runtime import release_completed_execution
 
 def _test_identity(value):
     """Match a pytest file node ID to its JUnit module ID without fuzzy aliases."""
-    module, separator, name = value.partition("::")
+    parts = value.split("::")
+    module = parts[0]
     if module.endswith(".py"):
         module = module[:-3].replace("/", ".")
-    return module + separator + name
+    return ".".join([module, *parts[1:-1]]) + "::" + parts[-1]
 
 
 def acceptance_items(spec, history=None):
@@ -49,8 +50,8 @@ def acceptance_items(spec, history=None):
                     raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
         if not tests and not check.startswith("inspect:"):
             raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
-        if tests and any(not re.fullmatch(r"[\w./-]+::[\w\[\].-]+", t) for t in tests):
-            raise ValueError("Use exact JUnit classname::name: " + identity)
+        if tests and any(not re.fullmatch(r"[\w./-]+(?:::[\w.-]+)*::[\w\[\].-]+", t) for t in tests):
+            raise ValueError("Use an exact pytest node or JUnit classname::name: " + identity)
         rows.append({"id": identity, "requirement": requirement, "basis": sources,
                      "tests": tests, "check": check})
     if not rows or contracts - {s for row in rows for s in row["basis"]}:

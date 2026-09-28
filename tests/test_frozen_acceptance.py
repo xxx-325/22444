@@ -77,6 +77,20 @@ class FrozenAcceptanceTests(unittest.TestCase):
                                        {"/workspace/checks": self.root})
             self.assertEqual(result["status"], expected)
 
+    def test_pytest_class_nodes_match_only_the_same_junit_class(self):
+        table = self.root / "acceptance.md"
+        table.write_text("| a1 | Export | task | test: tests/test_export.py::TestExport::test_batch |\n")
+        items = acceptance_items(self.root)
+        checks = {"status": "passed", "cases": [
+            {"id": "tests.test_export.TestExport::test_batch", "status": "passed"}]}
+        self.assertEqual(assess_acceptance(items, checks)["status"], "passed")
+        checks["cases"][0]["id"] = "tests.test_export.TestOther::test_batch"
+        self.assertEqual(assess_acceptance(items, checks)["status"], "uncertain")
+        checks["cases"] = [
+            {"id": "tests.test_export.TestExport::test_batch", "status": "passed"},
+            {"id": "tests/test_export.py::TestExport::test_batch", "status": "passed"}]
+        self.assertEqual(assess_acceptance(items, checks)["status"], "uncertain")
+
     def test_acceptance_requires_every_active_rule_and_supports_commands(self):
         (self.root / "commands").mkdir()
         (self.root / "commands/export.sh").write_text("exit 0\n")

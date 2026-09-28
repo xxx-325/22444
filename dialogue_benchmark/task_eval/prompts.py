@@ -242,7 +242,8 @@ acceptance.md 只改 Check 列引用，其他列原样保留。现有冻结回�
 TEST_FILES = """根据固定需求和完整的小型 Python 仓库写验收测试，没有工具调用。
 requirements 定义新功能及适用历史，repository 是当前代码、测试和文档。
 输出 FILE test_acceptance.py 和 FILE acceptance.md 两个完整文件，每个以 END_FILE 结束。
-新增接口在测试函数内导入。测试只检查需求约定的可观察行为，不要求某种实现路线。
+用顶层 def test_* 函数，每个函数内部导入被测入口，基线缺少新入口时应是用例失败而非收集失败。
+测试只检查需求约定的可观察行为，不要求某种实现路线。
 旧接口的约束只测旧接口；新接口未约定的异常类型、输入不变性和编码布局不加入要求。
 从调用前独立副本计算输出预期。task 行测试公开功能，历史状态码和阈值只在对应 h 行测试。
 acceptance.md 只替换 Check 列，其他列原样保留。Check 使用 test: test_acceptance::函数名；
