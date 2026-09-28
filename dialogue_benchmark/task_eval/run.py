@@ -14,7 +14,7 @@ from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline, source_version
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
                       write_contract_from_targets, review_sources)
-from .selection import SelectionBudget, select_task, write_draft
+from .selection import SelectionBudget, select_task, write_draft, write_private_draft
 
 def solver_input(task, answer=None):
     message = prompts.SOLVER + "\n\n" + task
@@ -273,6 +273,14 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                     # H is immutable; only the finite review may classify its
                     # applicability and repository availability.
                     write_contract_from_targets(spec, frozen_targets, decision)
+                    inactive = {row["id"] for row in decision["history_rows"]
+                                if row["applicable"] == "no"}
+                    if any(inactive.intersection(row["basis"]) for row in draft_items):
+                        write_private_draft(
+                            draft_selection, config, run / "draft/private-applicability",
+                            spec, budget, history_review=decision,
+                            feedback="Only the supplied historical targets apply to this task. "
+                                     "Rebuild acceptance from the unchanged public task and these targets.")
                     draft_history = freeze_contract(spec, public_history, answer_text(item["qa"]),
                                                     targets=frozen_targets)
                     draft_items = acceptance_items(spec, draft_history)

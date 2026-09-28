@@ -482,10 +482,14 @@ def write_public_task(selection, config, output, spec, budget, feedback=""):
     return {"task.md": task}
 
 
-def write_private_draft(selection, config, output, spec, budget, feedback=""):
+def write_private_draft(selection, config, output, spec, budget, feedback="", history_review=None):
     """Generate private history use and acceptance after task.md is fixed."""
     from .prompts import PRIVATE_DRAFT_SIMPLE
     targets = selection.get("history_targets", {}).get("targets", [])
+    if history_review is not None:
+        active = {row["id"] for row in history_review["history_rows"]
+                  if row["applicable"] == "yes"}
+        targets = [target for target in targets if target["id"] in active]
     history = selection.get("public_history") or {}
     payload = {"task": (Path(spec) / "task.md").read_text(encoding="utf-8"),
                "history_targets": targets,
@@ -509,8 +513,8 @@ def write_private_draft(selection, config, output, spec, budget, feedback=""):
         lines.append("| %s | %s | %s | %s |" %
                      (row["id"], row["requirement"], row["basis"], row["check"]))
     (Path(spec) / "acceptance.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    if targets:
-        write_contract_from_targets(spec, selection["history_targets"])
+    if selection.get("history_targets", {}).get("targets"):
+        write_contract_from_targets(spec, selection["history_targets"], history_review)
     files = {"memory-use.md": response["use"], "acceptance.md": "\n".join(lines) + "\n"}
     if targets:
         files["history-contract.txt"] = (Path(spec) / "history-contract.txt").read_text()

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval.selection import (SelectionBudget, extract_history_targets,
                                                      query_evidence, repository_overview,
-                                                     select_task, write_draft)
+                                                     select_task, write_draft, write_private_draft)
 from dialogue_benchmark.task_eval.run import construct
 from dialogue_benchmark.task_eval.history import oracle_coverage
 
@@ -229,6 +229,37 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["status"], "candidate")
         self.assertEqual(result["query_count"], 1)
         self.assertEqual(budget.requests, 2)
+
+    def test_private_acceptance_uses_reviewed_applicability_and_retains_history(self):
+        from dialogue_benchmark.llm import parse_text_response
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        spec = self.root / "spec"
+        spec.mkdir()
+        task = "Add the customer classifier, without changing the generic API.\n"
+        (spec / "task.md").write_text(task)
+        targets = [{"id": "h1", "statement": "Customer mapping", "scope": "Customer records",
+                    "behavior": "Classify integer states", "sources": ["event1"], "supersedes": []},
+                   {"id": "h2", "statement": "Temporary caller conversion", "scope": "Earlier run",
+                    "behavior": "Convert locally", "sources": ["event2"], "supersedes": []}]
+        selection = {"history_targets": {"targets": targets}, "public_history": self.history,
+                     "historical_answer": "Customer mapping"}
+        review = {"history_rows": [{"id": "h1", "applicable": "yes", "public": "none"},
+                                   {"id": "h2", "applicable": "no", "public": "none"}]}
+        response = {"use": "Use the customer mapping.", "acceptance": [
+            {"id": "a1", "basis": "task", "requirement": "New API", "check": "inspect: call API"},
+            {"id": "a2", "basis": "h1", "requirement": "Mapping", "check": "inspect: classify"}]}
+        budget = SelectionBudget(self.root, {})
+        with patch.object(budget, "call", return_value=response) as call:
+            write_private_draft(selection, {}, self.root / "reviewed-private", spec, budget,
+                                history_review=review)
+        payload = call.call_args.args[1]
+        self.assertEqual([t["id"] for t in payload["history_targets"]], ["h1"])
+        self.assertEqual([e["id"] for e in payload["history_sources"]], ["event1"])
+        contracts = parse_text_response((spec / "history-contract.txt").read_text())["reviews"]
+        self.assertEqual([(r["id"], r["active"]) for r in contracts], [("h1", "yes"), ("h2", "no")])
+        self.assertEqual((spec / "task.md").read_text(), task)
+        self.assertEqual([r["basis"] for r in acceptance_items(spec, {"contracts": [
+            {"id": r["id"], "active": r["active"] == "yes"} for r in contracts]})], [["task"], ["h1"]])
 
     def test_history_index_can_identify_a_requested_read(self):
         request = self.query(op="read", target="history", source="source1")
