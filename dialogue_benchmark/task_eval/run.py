@@ -197,6 +197,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     attempts = []
     fixed_draft = None
     fixed_qualification = None
+    previous_tests = None
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
     if preparation_feedback:
@@ -345,13 +346,17 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 save(root / "construction.json", [dict(attempt=attempt, status="qualified",
                      accepted=False, task_review=task_review)])
                 return {"selection_only": True, "status": "qualified"}
+            if previous_tests:
+                # Qualification stays fixed; repairs consume the complete suite
+                # that produced the latest feedback, including validator checks.
+                shutil.copytree(previous_tests, spec, dirs_exist_ok=True)
             remaining = budget.remaining()
             if reused and attempt == 0 and not preparation_feedback:
                 authored = reused[1]
-            elif preparation_feedback:
-                authored = repair_tests(spec, config, author, budget, feedback)
             else:
-                authored = write_tests(spec, baseline, config, author, budget, feedback)
+                authored = (repair_tests(spec, config, author, budget, feedback)
+                            if preparation_feedback or previous_tests else
+                            write_tests(spec, baseline, config, author, budget, feedback))
                 if authored is None:
                     prepare(author, baseline)
                     test_reference = prepare_test_reference(spec, reference, run / "test-reference")
@@ -408,6 +413,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record.update(accepted=False, status="pending", changed_qualified_files=changed,
                           reason="qualified_draft_changed" if changed else "author_incomplete")
             break
+        previous_tests = spec
         history = None
         if public_history:
             try:
@@ -442,7 +448,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         if baseline_checks["status"] == "error":
             record.update(accepted=False, reason="baseline_check_error", baseline_checks=baseline_checks)
-            copy_tree(spec, reference / ("previous-%02d" % attempt))
+            previous_tests = reference / ("previous-%02d" % attempt)
+            copy_tree(spec, previous_tests)
             feedback = ("\n上一轮检查未正常执行。已有测试保存在 /reference/previous-%02d。"
                         "修正测试收集、依赖或路径问题，保留要求和历史规则。"
                         "尚不存在的新接口须在测试函数内导入。执行结果：%s" % (attempt, baseline_checks))
@@ -479,7 +486,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 save(root / "construction.json", attempts)
                 if coverage_review["status"] == "uncertain":
                     break
-                copy_tree(spec, reference / ("previous-%02d" % attempt))
+                previous_tests = reference / ("previous-%02d" % attempt)
+                copy_tree(spec, previous_tests)
                 feedback = "\n上一轮测试审核发现具体问题，请保留目标并修正：\n" + str(coverage_review)
                 continue
         validation_reference = run / "validator-reference"
@@ -597,6 +605,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         # New author conversation receives the previous artifacts and concrete verifier feedback.
         prior = reference / ("previous-%02d" % attempt)
         copy_tree(final_spec or spec, prior)
+        previous_tests = prior
         feedback = ("\n上一轮未通过。阅读 /reference/previous-%02d。依据以下具体问题修正，"
                     "重新写出完整文件，勿降低任务原有正确性标准：\n%s\n"
                     "补充检查实际重跑：基线 %s；参考实现 %s。%s" % (

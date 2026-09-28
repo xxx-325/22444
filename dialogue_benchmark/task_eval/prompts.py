@@ -212,6 +212,16 @@ Check 只用 inspect: 或精确的 test: classname::name；不要把完整 shell
 也不要新增 task.md 没有提出的要求。
 """
 
+TEST_EXECUTION = """
+执行约定：
+- 测试在 /workspace/checks，项目与交付文件在 /workspace/candidate，执行工作目录是项目根。
+- 程序提供 conftest.py 的 candidate_root fixture。测试函数通过参数 candidate_root 接收项目根，
+  用 candidate_root / 相对路径读取业务文件，并将它传给辅助函数；不从 __file__ 或环境变量猜项目路径。
+- 不修改 conftest.py；辅助 fixture 放测试模块。沿用项目路径配置，不自行设置 PYTHONPATH 或假定 src 布局。
+- 新增接口在测试函数内导入，让缺功能产生用例失败，不阻断收集。使用本地输入和已安装依赖。
+- task.md、memory-use.md、history-contract.txt 已冻结；acceptance.md 只改 Check 列。
+"""
+
 AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你负责读材料、写测试文件，程序随后执行。
 不要运行测试、收集测试或探测环境；测试目录当前为空是正常的，先完成文件。
 1. 读 /workspace/checks/task.md、acceptance.md，以及同目录已有的 history-contract.txt。
@@ -235,13 +245,8 @@ AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你�
    不对参考实现或作答者可新增、修改的 tests 目录重新发现测试。
    不能自动测试的项保留 inspect: 具体动作、输入、预期结果，并写 TESTS_UNAVAILABLE.md。
 
-执行约定：
-- task.md、memory-use.md、history-contract.txt 已冻结，不改内容；没有 history.json 就没有历史条款。
-- 已有 conftest.py 提供 candidate_root fixture，不修改它；辅助 fixture 放测试模块。
-- 若调用新增接口，在测试函数内导入，让缺功能产生测试失败，不阻断测试收集。
-- 沿用环境的项目路径配置，不自行设置 PYTHONPATH 或假定 src 布局。
-- 使用本地自包含输入和已安装依赖。测试只围绕当前验收，不寻找第二个新需求。
-完成后列出写入的文件并结束；实际结果由后续执行产生。"""
+测试只围绕当前验收，不寻找第二个新需求。
+完成后列出写入的文件并结束；实际结果由后续执行产生。""" + TEST_EXECUTION
 
 TEST_REPAIR = """按反馈修正已有测试。本轮只写文件，不执行命令。
 requirements 是不能修改的题面和历史规则；files 是待修的测试与验收表。
@@ -250,12 +255,12 @@ requirements 是不能修改的题面和历史规则；files 是待修的测试�
 acceptance.md 只改 Check 列引用，其他列原样保留。现有冻结回归文件和命令不变。
 输出 files 中每个文件的完整内容，格式为 FILE 文件名、换行内容、END_FILE。
 不输出 JSON、代码围栏、执行结果或解释。程序会运行这些文件并再次审核。
-"""
+""" + TEST_EXECUTION
 
 TEST_FILES = """根据固定需求和完整的小型 Python 仓库写验收测试，没有工具调用。
 requirements 定义本次交付及适用历史，repository 是当前代码、测试和文档。
 输出 FILE test_acceptance.py 和 FILE acceptance.md 两个完整文件，每个以 END_FILE 结束。
-用顶层 def test_* 函数，可通过 candidate_root 检查已交付的业务产物；若调用新增入口，在函数内部导入。
+用顶层 def test_* 函数检查交付。
 基线尚未完成交付时应是用例失败而非收集失败，不因使用已有接口而新增接口要求。
 测试只检查需求约定的可观察行为，不要求某种实现路线。
 旧接口的约束只测旧接口；新接口未约定的异常类型、输入不变性和编码布局不加入要求。
@@ -266,7 +271,7 @@ acceptance.md 只替换 Check 列，其他列原样保留。Check 使用 test: t
 程序会实际运行全部用例，再检查参考实现与错用历史的变体；不要编写或声称执行结果。
 若固定需求有具体矛盾，改为仅输出 FILE NO_TASK.md、矛盾说明、END_FILE。
 不要输出 JSON、代码围栏或其他解释。
-"""
+""" + TEST_EXECUTION
 
 TASK_REVIEW = """核对这个候选能否测试历史答案的帮助。先找信息缺口，再给结论。
 给出 development_workflow 时，需求须保留完整业务交付；缩减或更换目标选 ineligible。

@@ -165,6 +165,7 @@ def write_tests(spec, baseline, config, output, budget, feedback=""):
     if request_size(TEST_FILES, payload) > 60000:
         return None
     try:
+        install_candidate_fixture(spec)
         response = budget.call(TEST_FILES, payload, config, output)
         names = {row.get("name") for row in response.get("files", [])}
         required = {"NO_TASK.md"} if names == {"NO_TASK.md"} else {"test_acceptance.py", "acceptance.md"}
@@ -191,13 +192,15 @@ def repair_tests(spec, config, output, budget, feedback):
     from .prompts import TEST_REPAIR
 
     spec, output = Path(spec), Path(output)
+    tests = list(spec.glob("test_*.py"))
+    if not tests or any(path.name != "existing_suite.sh" for path in (spec / "commands").glob("*.sh")):
+        return None
     try:
-        names = {"acceptance.md", *(path.name for path in spec.glob("test_*.py"))}
-        if len(names) < 2:
-            raise ValueError("Test repair needs existing acceptance tests")
+        names = {"acceptance.md", *(path.name for path in tests)}
         fixed = {name: (spec / name).read_text() for name in
                  ("task.md", "history-contract.txt") if (spec / name).is_file()}
         existing = {name: (spec / name).read_text() for name in names}
+        install_candidate_fixture(spec)
         response = budget.call(TEST_REPAIR, {"requirements": fixed, "files": existing,
                               "feedback": feedback}, config, output)
         files = _parse_files(response, names, names)

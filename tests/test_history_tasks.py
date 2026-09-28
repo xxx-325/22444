@@ -461,6 +461,10 @@ class HistoryConstructionTests(unittest.TestCase):
                 return {"status": "finished"}
             return fixture.fake_agent(root, *args, **kwargs)
 
+        def repair(spec, config, output, budget, feedback):
+            from dialogue_benchmark.task_eval.run import run_agent
+            return run_agent(output, config, "judge", feedback)
+
         def checks(candidate, spec, output, *args, **kwargs):
             status = "failed" if candidate == fixture.baseline else "passed"
             if output.parent.name == "construction-01" and output.name == "final-reference-checks":
@@ -490,6 +494,7 @@ class HistoryConstructionTests(unittest.TestCase):
              patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft) as draft_call, \
              patch("dialogue_benchmark.task_eval.run.review_task", side_effect=task_review) as review_call, \
              patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent) as agent_call, \
+             patch("dialogue_benchmark.task_eval.run.repair_tests", side_effect=repair), \
              patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks) as check_call, \
              patch("dialogue_benchmark.task_eval.run.review_sources", side_effect=source_review) as source_call, \
              patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage_review) as coverage_call, \

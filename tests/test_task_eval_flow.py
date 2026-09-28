@@ -200,7 +200,12 @@ class TaskPreflightTests(unittest.TestCase):
             id="test_acceptance::collection", status="error", detail="No module named new_api")])]
         checks.extend(dict(status=status, cases=[dict(id="test_acceptance::test_feature", status=status)])
                       for status in ("failed", "passed", "failed", "passed"))
+        def repair(spec, config, output, budget, feedback):
+            self.assertEqual((spec / "test_acceptance.py").read_text(), "Original test")
+            from dialogue_benchmark.task_eval.run import run_agent
+            return run_agent(output, config, "judge", feedback)
         with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=self.fake_agent) as agent, \
+             patch("dialogue_benchmark.task_eval.run.repair_tests", side_effect=repair), \
              patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=self.fake_draft) as draft, \
              patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
              patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks):
@@ -215,6 +220,135 @@ class TaskPreflightTests(unittest.TestCase):
         records = read(self.root / "construction.json")
         self.assertEqual(records[0]["reason"], "baseline_check_error")
         self.assertTrue(records[1]["accepted"])
+
+    def check_cumulative_test_repairs(self, mode):
+        from dialogue_benchmark.task_eval import prompts
+
+        (self.baseline / "tests").mkdir()
+        (self.baseline / "tests/test_existing.py").write_text("def test_existing(): pass\n")
+        (self.baseline / "delivery.txt").write_text("old")
+        original = ("from pathlib import Path\n\n"
+                    "def test_feature(candidate_root):\n"
+                    "    path = Path(__file__).parent / 'delivery.txt'\n"
+                    "    assert path.read_text() == EXPECTED\n")
+        repaired_path = original.replace("Path(__file__).parent", "candidate_root")
+        complete = "EXPECTED = 'ready'\n" + repaired_path
+        calls, repair_inputs, executions = [], [], []
+
+        def model_call(budget, prompt, payload, config, output):
+            calls.append(prompt)
+            self.assertIn(prompts.TEST_EXECUTION, prompt)
+            fixture = output / "workspace/checks/conftest.py"
+            self.assertIn("def candidate_root():", fixture.read_text())
+            if prompt == prompts.TEST_FILES:
+                files = {"test_acceptance.py": original,
+                         "acceptance.md": payload["requirements"]["acceptance.md"]}
+            else:
+                self.assertEqual(prompt, prompts.TEST_REPAIR)
+                files = dict(payload["files"])
+                repair_inputs.append(files["test_acceptance.py"])
+                files["test_acceptance.py"] = repaired_path if len(repair_inputs) == 1 else complete
+            return {"files": [{"name": name, "content": content} for name, content in files.items()]}
+
+        def checks(candidate, spec, output, *args, **kwargs):
+            source = (spec / "test_acceptance.py").read_text()
+            executions.append((output.parent.name, output.name, source))
+            try:
+                runpy.run_path(str(spec / "test_acceptance.py"))["test_feature"](candidate)
+                status, detail = "passed", ""
+            except AssertionError:
+                status, detail = "failed", "Delivery is not ready"
+            except (FileNotFoundError, NameError) as error:
+                status, detail = "error", str(error)
+            return {"status": status, "cases": [
+                {"id": "test_acceptance::test_feature", "status": status, "detail": detail}]}
+
+        def agent(root, *args, **kwargs):
+            self.assertNotEqual(root.name, "author")
+            result = self.fake_agent(root, *args, **kwargs)
+            if root.name == "reference-solver":
+                (root / "workspace/candidate/delivery.txt").write_text("ready")
+            return result
+
+        options = {}
+        with patch("dialogue_benchmark.task_eval.selection.SelectionBudget.call", new=model_call), \
+             patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent) as worker, \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}) as review:
+            if mode != "fresh":
+                self.assertIsNone(construct(self.item, self.root, self.baseline,
+                                           {"execution_image": "image"}, 0, {}))
+                prior = self.root / "construction-00"
+                save(self.root / "selection/result.json", {"status": "candidate"})
+                save(self.root.parent / "manifest.json", {"baseline_sha256": fingerprint(self.baseline)})
+                prior_hash = fingerprint(prior)
+                options["reuse_preparation"] = prior
+                self.root = self.base / "retry/task"
+                if mode == "feedback":
+                    feedback = self.base / "feedback.md"
+                    feedback.write_text("Read delivery.txt through candidate_root.")
+                    options["preparation_feedback"] = feedback
+                review.reset_mock()
+                executions.clear()
+            receipt = construct(self.item, self.root, self.baseline,
+                                {"execution_image": "image"}, 2, {}, **options)
+            review.assert_called_once()
+        self.assertIsNotNone(receipt)
+        self.assertEqual(calls.count(prompts.TEST_FILES), 1)
+        self.assertEqual(calls.count(prompts.TEST_REPAIR), 2)
+        self.assertEqual(repair_inputs, [original, repaired_path])
+        self.assertEqual((self.root / "frozen/test_acceptance.py").read_text(), complete)
+        self.assertEqual([call.args[0].name for call in worker.call_args_list],
+                         ["reference-solver", "validator"])
+        expected_errors = 1 if mode == "feedback" else 2
+        self.assertEqual([record.get("reason") for record in read(self.root / "construction.json")][:-1],
+                         ["baseline_check_error"] * expected_errors)
+        first = self.root / "construction-00/qualified-draft"
+        frozen = self.root / "frozen"
+        for name in ("task.md", "memory-use.md"):
+            self.assertEqual((first / name).read_bytes(), (frozen / name).read_bytes())
+        self.assertEqual([{key: row[key] for key in ("id", "requirement", "basis")}
+                          for row in acceptance_items(first)],
+                         [{key: row[key] for key in ("id", "requirement", "basis")}
+                          for row in acceptance_items(frozen)])
+        if mode != "fresh":
+            self.assertEqual(fingerprint(prior), prior_hash)
+
+    def test_fresh_construction_repairs_previous_complete_tests_twice(self):
+        self.check_cumulative_test_repairs("fresh")
+
+    def test_reused_construction_repairs_previous_complete_tests_twice(self):
+        self.check_cumulative_test_repairs("reuse")
+
+    def test_preparation_feedback_repairs_previous_complete_tests_twice(self):
+        self.check_cumulative_test_repairs("feedback")
+
+    def test_custom_command_retry_keeps_agent_and_previous_suite(self):
+        def agent(root, *args, **kwargs):
+            if root.name == "author" and root.parent.name == "construction-01":
+                spec = root / "workspace/checks"
+                self.assertEqual((spec / "test_acceptance.py").read_text(), "Original test")
+                self.assertEqual((spec / "commands/custom.sh").read_text(), "exit 2\n")
+            result = self.fake_agent(root, *args, **kwargs)
+            if root.name == "author":
+                commands = root / "workspace/checks/commands"
+                commands.mkdir(exist_ok=True)
+                (commands / "custom.sh").write_text("exit 2\n" if root.parent.name == "construction-00"
+                                                     else "exit 0\n")
+            return result
+
+        results = [dict(status=status, cases=[dict(id="test_acceptance::test_feature", status=status)])
+                   for status in ("error", "failed", "passed", "failed", "passed")]
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent) as worker, \
+             patch("dialogue_benchmark.task_eval.selection.SelectionBudget.call") as model, \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=results):
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 1, {})
+        self.assertIsNotNone(receipt)
+        model.assert_not_called()
+        self.assertEqual([call.args[0].name for call in worker.call_args_list],
+                         ["author", "author", "reference-solver", "validator"])
+        self.assertEqual((self.root / "frozen/commands/custom.sh").read_text(), "exit 0\n")
 
     def test_interrupted_validator_cannot_admit_with_earlier_accept_report(self):
         self.validator_status = "ConversationExecutionStatus.STUCK"
