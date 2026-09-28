@@ -12,6 +12,9 @@ new repository requirements.
 The external-information workflow is: public historical events → QA → one related
 development requirement per qualifying QA → frozen acceptance → paired execution
 with and without the historical answer. It uses one QA pool and M1–M6 memory types.
+External QA evidence review also checks later public User/Code messages up to the
+cutoff for scoped corrections, even across tasks without a declared revision link.
+These messages are review context, not additional fact seeds or unrelated tool logs.
 
 The optional graph mode treats a dialogue as a time-ordered evidence stream:
 

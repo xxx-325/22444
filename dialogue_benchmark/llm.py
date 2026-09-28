@@ -658,6 +658,11 @@ def _evidence_review_request(scope, source_ids, facts, candidate):
                    "Replace 资料N with actual material references; separate multiple references by commas. "
                    "Bare applied or confirmed is invalid. possible_use_materials are candidates, not proof. "
                    "In usage_reason describe the cited confirmation or completed action, not shared words.\n")
+        prompt += ("For a question about what future work must follow, check later User "
+                   "corrections in the supplied chronological messages. An earlier confirmed "
+                   "rule is stale if a later instruction changes its scope. An Assistant "
+                   "proposal alone does not change a User rule. A question explicitly asking "
+                   "what happened earlier can still be supported by that earlier evidence.\n")
     return prompt, payload, refs
 
 

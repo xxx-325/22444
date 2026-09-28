@@ -82,6 +82,37 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in scope["dialogue"]], ["e1", "e3", "e4", "e5"])
         self.assertEqual(loaded["rejected"], [{"id": "unrelated", "reason": "external_group_budget"}])
 
+    def test_review_sees_later_public_correction_without_a_planned_event_link(self):
+        records = [*self.records,
+            dict(id="later-code", order=4, kind="message", role="assistant",
+                 text="Should the rule become optional?"),
+            dict(id="later-user", order=5, kind="message", role="user",
+                 text="Yes. Apply it only when explicitly requested."),
+            dict(id="unrelated-tool", order=6, kind="result", text="Unrelated output"),
+            dict(id="future", order=7, kind="message", role="user", text="After cutoff")]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": [dict(
+                id="rule", kind="compatibility_contract", memory_kind="M1",
+                task_id="first", source_ids=["e1"], used_by=["e3"])]}))
+            scope, = load_external_scopes(path, records, 6)["scopes"]
+        self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e3"])
+        self.assertEqual(scope["external_source_ids"], ["e1"])
+        candidate = dict(id="q1", question="Which rule must future work follow?",
+                         answer_points=[dict(text="Always keep nulls.", sources=["e1"])])
+        group, audit = external_review_projection(dict(scope=scope, facts=[]), candidate)
+        self.assertTrue(audit["complete"])
+        self.assertEqual([row["id"] for row in group["scope"]["dialogue"]],
+                         ["e1", "e2", "e3", "later-code", "later-user"])
+        from dialogue_benchmark.llm import _evidence_review_request
+        prompt, payload, refs = _evidence_review_request(
+            group["scope"], group["scope"]["review_guard_sources"], [], candidate)
+        self.assertIn("later-user", refs.values())
+        self.assertIn("only when explicitly requested", str(payload))
+        self.assertIn("earlier confirmed rule is stale", prompt)
+        self.assertNotIn("Unrelated output", str(payload))
+        self.assertNotIn("After cutoff", str(payload))
+
     def test_confirmation_and_observation_have_distinct_evidence(self):
         scope = {"dialogue": self.records, "external_source_ids": ["e1", "e2"],
                  "external_usage_ids": ["e2", "e3"]}

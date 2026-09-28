@@ -64,6 +64,11 @@ def external_review_projection(group, candidate):
 
     scope = deepcopy(group["scope"])
     records = {row["id"]: row for row in scope["dialogue"]}
+    # Cross-task corrections need not have a planned supersedes link. Review
+    # later public conversation, not the unrelated tool history or private plan.
+    for row in scope.get("external_review_messages", []):
+        records.setdefault(row["id"], row)
+    scope["dialogue"] = sorted(records.values(), key=lambda row: row.get("order", 0))
     required = set(scope["external_source_ids"]) | set(scope["external_usage_ids"])
     cited = {source for key in ("answer_points", "forbidden_points")
              for point in candidate.get(key, []) for source in point.get("sources", [])}
@@ -140,6 +145,12 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
     selected_ids = set(source_ids) | set(used_by) | set(context_ids)
     selected_orders = [records_by_id[item].get("order", 0) for item in selected_ids]
     dialogue = [record for record in records if record.get("id") in selected_ids]
+    first_source_order = min(records_by_id[item].get("order", 0) for item in source_ids)
+    review_messages = [record for record in records
+                       if record.get("kind") == "message"
+                       and record.get("role") in {"user", "assistant"}
+                       and first_source_order < record.get("order", 0) <= cutoff
+                       and record.get("id") not in selected_ids]
     group_id = "external-%s" % event["id"]
     target_type = event["memory_kind"]
     return {
@@ -162,6 +173,7 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "memory_kinds": event.get("memory_kinds", [target_type]),
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
+        "external_review_messages": review_messages,
         # Later public use/result is context for composing a useful question;
         # it remains separate from the source IDs that ground extracted facts.
         "generation_extra_sources": list(dict.fromkeys(used_by + context_ids)),
