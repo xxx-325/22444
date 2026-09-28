@@ -954,9 +954,9 @@ def parse_text_response(content):
                 fields = [part.strip() for part in line[2:].split("|", 6)]
                 if len(fields) != 7 or not all(fields):
                     raise ValueError("Invalid history review row")
-                fields[1] = _strip_protocol_label(fields[1], "applicable")
-                fields[2] = _strip_protocol_label(fields[2], "public")
-                fields[3] = _strip_protocol_label(fields[3], "answer")
+                for index, label in enumerate(("applicable", "public", "answer"), 1):
+                    fields[index] = _strip_protocol_label(fields[index], label)
+                    fields[index] = fields[index].removeprefix(label + " ").strip()
                 fields[4] = _strip_protocol_label(fields[4], "historical_source")
                 fields[5] = _strip_protocol_label(fields[5], "public_source")
                 fields[6] = _strip_protocol_label(fields[6], "answer_quote")

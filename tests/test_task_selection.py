@@ -394,6 +394,22 @@ class SelectionTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 parse_text_response(invalid)
 
+    def test_history_review_accepts_labeled_choices_but_not_prose(self):
+        from dialogue_benchmark.llm import parse_text_response
+        from dialogue_benchmark.task_eval.runtime import review_task
+        evidence = {"history_targets": [{"id": "h1", "sources": ["event1"]}],
+                    "repository_queries": [], "sources": []}
+        for value, status in (("sufficient", "clean"),
+                              ("sufficient because I believe it", "uncertain")):
+            parsed = parse_text_response(
+                "H h1 | applicable yes | public none | answer " + value
+                + " | event1 | none | Exact fact\nTASK | clean")
+            with self.subTest(value=value), patch("dialogue_benchmark.task_eval.runtime.ask_model",
+                                                 return_value=parsed):
+                result = review_task("New task", "Exact fact", {}, self.root / "labeled-review",
+                                     evidence=evidence)
+                self.assertEqual(result["status"], status)
+
     def test_selection_uses_short_query_row(self):
         from dialogue_benchmark.llm import parse_text_response
         parsed = parse_text_response(
