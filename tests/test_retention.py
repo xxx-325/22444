@@ -47,8 +47,10 @@ class RetentionTests(unittest.TestCase):
                 rows = [json.loads(line) for line in stream]
             self.assertEqual(rows[0]["value"]["id"], "a1")
             self.assertIn("thought", rows[0]["value"])
-            self.assertEqual(rows[1]["value"]["usage"]["total_tokens"], 12)
-            self.assertNotIn("repeated full context", str(rows))
+            self.assertEqual(rows[1]["value"]["kind"], "request")
+            self.assertEqual(rows[1]["value"]["body"], "repeated full context")
+            self.assertEqual(rows[2]["value"]["usage"]["total_tokens"], 12)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
     def test_inventory_selects_only_recorded_containers_with_owned_mounts(self):
         with tempfile.TemporaryDirectory() as directory:

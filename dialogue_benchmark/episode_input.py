@@ -35,5 +35,11 @@ def load_episode_manifest(path):
         raise ValueError("Snapshot hash or export boundary mismatch")
     if not config.is_file():
         raise ValueError("Missing control config")
-    return {"manifest": manifest, "dialogue": dialogue, "snapshot": snapshot,
-            "control_config": config}
+    result = {"manifest": manifest, "dialogue": dialogue, "snapshot": snapshot,
+              "control_config": config}
+    if manifest.get("external_events") is not None:
+        events = artifact("external_events")
+        if hashlib.sha256(events.read_bytes()).hexdigest() != manifest["external_events"].get("sha256"):
+            raise ValueError("External event hash mismatch")
+        result["external_events"] = events
+    return result

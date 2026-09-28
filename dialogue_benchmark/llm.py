@@ -631,10 +631,29 @@ def simple_evidence_payload(scope, source_ids, facts=None, candidate=None):
 
 def simple_evidence_request_size(scope, source_ids, facts, candidate):
     """Measure the exact normal evidence-review request without submitting it."""
-    prompt = _focused_review_prompt(SIMPLE_EVIDENCE_PROMPT, candidate)
-    payload, _ = simple_evidence_payload(
-        scope, source_ids, facts=facts, candidate=candidate)
+    prompt, payload, _ = _evidence_review_request(scope, source_ids, facts, candidate)
     return request_size(prompt, payload)
+
+
+def _evidence_review_request(scope, source_ids, facts, candidate):
+    prompt = _focused_review_prompt(SIMPLE_EVIDENCE_PROMPT, candidate)
+    payload, refs = simple_evidence_payload(scope, source_ids, facts=facts, candidate=candidate)
+    if scope.get("external_event_id"):
+        source_refs = {source: ref for ref, source in refs.items()}
+        payload["historical_use"] = {
+            "rule_materials": [source_refs[s] for s in scope["external_source_ids"] if s in source_refs],
+            "possible_use_materials": [source_refs[s] for s in scope["external_usage_ids"] if s in source_refs],
+        }
+        prompt = prompt.replace("Check only the truth and version", "Check the truth and version", 1)
+        prompt = prompt.replace("END_REVIEW", "usage: STATUS\nusage_reason: one short reason\nEND_REVIEW", 1)
+        prompt += ("\nAlso check whether the historical rule was actually used in the supplied public "
+                   "actions or results. possible_use_materials are candidates, not proof. A promise, "
+                   "a repeated rule, or shared words alone is not actual use. Set usage to applied "
+                   "only with observable action/result evidence, not_applied for only promises or "
+                   "repetition, or uncertain when evidence is incomplete. For applied, append @ and "
+                   "the supplied material references showing the use. Explain that action/result "
+                   "in usage_reason. Do not invent an execution.\n")
+    return prompt, payload, refs
 
 
 def simple_focus_payload(scope, source_ids, facts):
@@ -2720,18 +2739,22 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 return result
 
             simple_review_stage = "review_evidence"
-            evidence_prompt = _focused_review_prompt(
-                SIMPLE_EVIDENCE_PROMPT, candidate)
             material_sources = (_scope_material_source_ids(scope)
                                 if full_range_question else sources)
-            evidence_payload, ref_to_source = simple_evidence_payload(
-                scope, material_sources, facts=result["facts"], candidate=candidate)
+            evidence_prompt, evidence_payload, ref_to_source = _evidence_review_request(
+                scope, material_sources, result["facts"], candidate)
             _check_simple_request_budget(evidence_prompt, evidence_payload, qa_budget)
             evidence_document = _ask_stage(
                 client, evidence_prompt, evidence_payload, "review_evidence")
             evidence_document = _restore_local_sources(
                 evidence_document, ref_to_source)
             save("evidence-review.json", evidence_document)
+            usage_decision = None
+            if scope.get("external_event_id"):
+                from .external import external_usage_review
+                evidence_document, usage_decision = external_usage_review(
+                    evidence_document, scope, ref_to_source)
+                save("external-usage-review.json", usage_decision)
             result["stage_status"]["review_evidence"] = "completed"
             allowed_evidence_sources = set(ref_to_source.values())
             missing_review_ids = simple_evidence_review_omissions(
@@ -2772,6 +2795,12 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
             evidence_kept, evidence_failed = apply_simple_evidence_review(
                 [candidate], evidence_document,
                 allowed_sources=allowed_evidence_sources)
+            if usage_decision is not None:
+                for item in evidence_kept:
+                    item["external_usage_review"] = usage_decision
+                    if item.get("status") == "approved" and usage_decision["status"] != "applied":
+                        item.update(status="needs_review", quality_status="needs_review",
+                                    review_error="external_usage_not_established")
             result["stage_status"]["review_evidence"] = "completed"
 
             if completeness_failed:

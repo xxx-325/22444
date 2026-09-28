@@ -1,0 +1,28 @@
+{
+  "runtime_config": "runtime.local.json",
+  "max_total_requests": 500,
+  "max_total_tokens": 6000000,
+  "projects": [
+    {
+      "id": "dependency-planner",
+      "brief": "A small offline Python tool for planning local jobs with dependencies. Users need useful plans and clear results without running a service. Use only the standard library.",
+      "increments": 2,
+      "scenarios": [
+        {
+          "id": "customer-workflow",
+          "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work.",
+          "memory_kinds": ["M1", "M2", "M3", "M6"]
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "general_count": 4,
+    "code_count": 4,
+    "task_count": 1,
+    "task_budget": 2,
+    "task_workers": 1,
+    "parallel_workers": 2,
+    "revisions": 3
+  }
+}

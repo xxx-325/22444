@@ -118,6 +118,47 @@ Questions name the receiving system and intended work while leaving the historic
 limit or rule for the answer. The repository probe gets a final decision after its
 last allowed read; that decision cannot issue another query.
 
+`run_episode.py --episode-manifest ... --qa-source external` reads the event file
+from the package and checks its byte hash. An explicit event file must match the
+package. M1–M6 provenance tags are retained separately from QA purpose types,
+including M4 failure-avoidance events. Evidence review also checks actual public
+use: a promise or repeated rule alone does not establish application. Missing or
+uncertain use evidence stays pending review.
+
+### Generated project collections
+
+`run_collection.py` composes the simulator's project preparation, scenario
+preparation, progressive dialogue, export, and the existing episode evaluation.
+Use [examples/collection.json](examples/collection.json) as a fixed attempt list.
+Its `runtime_config` points to a simulator configuration containing the model,
+immutable Docker images, and whole-project `max_requests` / `max_tokens` budgets.
+Credentials remain in the separate environment file.
+
+```sh
+python run_collection.py --config /path/to/collection.json \
+  --simulator-path /path/to/agent-session-simulator \
+  --env-file /path/to/provider.env --output runs/project-pilot
+```
+
+Run with the simulator's Python environment, or supply it through `--python`.
+New projects have a tested baseline and two or three consecutive feature commits.
+The host checks frozen feature tests on the prior and new versions and preserves
+previous regressions. An existing project can use `prepared_config` instead of a
+business `brief`. Scenarios start independently from that project's base; each
+paired trial starts from its dialogue's actual final snapshot.
+
+The collection checks cumulative request/token usage between stages; a started
+stage finishes under its own existing budgets. No per-response output cap is
+introduced. Rejected stages remain recorded, and the runner does not add attempts
+to replace failures. Use a new output directory for another fixed plan. M4/M5
+scenarios require prepared runtime conditions; design counts and public event
+counts are reported separately. Root Git lineage groups project families.
+
+`collection.md` lists construction outcomes and costs; `report.md` and
+`report.html` reuse the paired-trial report. `collection.json` retains the full
+stage records. Exact provider request bodies and responses are kept in private
+verified compressed traces before disposable runtime files are removed.
+
 The input file may be a unified JSON document or a supported native rollout.
 OpenHands public `session.jsonl` exports preserve paired tools and successful
 file edits. A `dialogue.json` list of user/assistant messages is also accepted;

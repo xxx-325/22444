@@ -6,6 +6,7 @@ the QA runner turns each bundle into one bounded evidence scope.
 """
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 
@@ -19,6 +20,7 @@ EXTERNAL_EVENT_KINDS = frozenset({
     "perturbation_revealed",
     "compatibility_contract",
     "verification_result",
+    "failure_avoidance",
 })
 
 EVENT_TYPE = {
@@ -28,7 +30,32 @@ EVENT_TYPE = {
     "perturbation_revealed": "failure_avoidance",
     "compatibility_contract": "compatibility_preservation",
     "verification_result": "verification_reuse",
+    "failure_avoidance": "failure_avoidance",
 }
+
+
+def external_usage_review(document, scope, reference_map):
+    """Separate the event-use judgment from immutable answer-point judgments."""
+    cleaned = deepcopy(document)
+    reviews = cleaned.get("reviews", []) if isinstance(cleaned, dict) else []
+    decision = {"status": "uncertain", "reason": "missing_usage_review", "sources": []}
+    if len(reviews) != 1 or not isinstance(reviews[0], dict):
+        return cleaned, decision
+    review = reviews[0]
+    value = review.pop("usage", "")
+    reason = review.pop("usage_reason", "")
+    if isinstance(value, str) and value in {"not_applied", "uncertain"}:
+        decision.update(status=value, reason=reason if isinstance(reason, str) and reason.strip()
+                        else "usage_not_established")
+    elif isinstance(value, str) and value.startswith("applied@"):
+        refs = [ref.strip() for ref in re.split(r"[,，]", value.partition("@")[2])]
+        sources = [reference_map[ref] for ref in refs if ref in reference_map]
+        if (refs and len(sources) == len(refs) and isinstance(reason, str) and reason.strip()
+                and set(sources) & set(scope.get("external_usage_ids", []))):
+            decision.update(status="applied", reason=reason, sources=sources)
+        else:
+            decision["reason"] = "invalid_usage_evidence"
+    return cleaned, decision
 
 
 def external_review_projection(group, candidate):
@@ -141,6 +168,7 @@ def _event_scope(event, records, records_by_id, cutoff, track, index, max_chars)
         "model_request_chars": max_chars,
         "external_event_id": event["id"],
         "external_kind": event["kind"],
+        "memory_kind": event.get("memory_kind"),
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
         # Later public use/result is context for composing a useful question;
@@ -195,6 +223,10 @@ def load_external_scopes(path, records, cutoff, enabled_tracks, max_chars=32000,
         seen.add(event_id)
         if kind not in EXTERNAL_EVENT_KINDS:
             rejected.append({"id": event_id, "reason": "unknown_external_event_kind"})
+            continue
+        if raw.get("memory_kind") is not None and raw["memory_kind"] not in {
+                "M1", "M2", "M3", "M4", "M5", "M6"}:
+            rejected.append({"id": event_id, "reason": "unknown_memory_kind"})
             continue
         if raw.get("status", "active") != "active":
             rejected.append({"id": event_id, "reason": "external_event_inactive"})

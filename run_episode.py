@@ -14,6 +14,7 @@ from dialogue_benchmark.task_eval.retention import compact_run
 from dialogue_benchmark.task_eval.report import write_report
 from render_run import render
 from dialogue_benchmark.episode_input import load_episode_manifest
+from dialogue_benchmark.collection import episode_usage
 
 
 def main(argv=None):
@@ -39,11 +40,17 @@ def main(argv=None):
     parser.add_argument("--resume-tasks", action="store_true",
                         help="Reuse completed QA and start repository tasks in an empty tasks directory")
     args = parser.parse_args(argv)
+    package = load_episode_manifest(args.episode_manifest) if args.episode_manifest else None
+    packaged_events = package.get("external_events") if package else None
+    if args.qa_source == "external" and args.external_events is None:
+        args.external_events = packaged_events
     if (args.qa_source == "external") != (args.external_events is not None):
-        parser.error("External QA requires --qa-source external and --external-events together")
+        parser.error("External QA requires an event file from the episode manifest or --external-events")
     if args.external_events is not None and not args.external_events.is_file():
         parser.error("External event file does not exist")
-    package = load_episode_manifest(args.episode_manifest) if args.episode_manifest else None
+    if (args.external_events is not None and packaged_events is not None
+            and args.external_events.read_bytes() != packaged_events.read_bytes()):
+        parser.error("Explicit external events differ from the episode manifest")
     source_run = args.source_run or args.episode_manifest.resolve().parent
     dialogue_path = package["dialogue"] if package else source_run / "session.jsonl"
     snapshot_path = package["snapshot"] if package else source_run / "workspace/candidate"
@@ -119,6 +126,7 @@ def main(argv=None):
             save(root / "tasks/manifest.json", task_manifest)
             write_report(root / "tasks", task_manifest)
             state.update(status="completed", stop_reason="no_eligible_qa")
+            save(root / "usage.json", episode_usage(root))
             phase("complete")
             render(root)
             return 0
@@ -138,12 +146,14 @@ def main(argv=None):
         render(root)
         state["status"] = "completed" if status == 0 else "failed"
         phase("complete")
+        save(root / "usage.json", episode_usage(root))
         if status == 0 and (root / "tasks/manifest.json").exists():
             compact_run(root)
             write_report(root / "tasks", read(root / "tasks/manifest.json"))
             render(root)
         return status
     except BaseException as error:
+        save(root / "usage.json", episode_usage(root))
         state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
                      error_type=type(error).__name__)
         save(root / "pipeline.json", state)

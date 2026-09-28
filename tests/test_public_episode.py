@@ -105,6 +105,35 @@ class PublicEpisodeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     load_episode_manifest(root / "manifest.json")
 
+            events = root / "external-events.json"
+            save(events, {"version": 1, "events": []})
+            manifest["external_events"] = {"path": events.name,
+                "sha256": hashlib.sha256(events.read_bytes()).hexdigest()}
+            save(root / "manifest.json", manifest)
+            self.assertEqual(load_episode_manifest(root / "manifest.json")["external_events"], events.resolve())
+            with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.generate_qa", side_effect=qa) as generate, \
+                 patch("run_episode.render"):
+                self.assertEqual(run_episode(["--episode-manifest", str(root / "manifest.json"),
+                    "--simulator-path", str(root), "--env-file", str(root / "unused"),
+                    "--output", str(root / "external-run"), "--source-event", "result",
+                    "--qa-source", "external"]), 0)
+                args = generate.call_args.args[0]
+                self.assertEqual(args[args.index("--external-events") + 1], str(events.resolve()))
+            different = root / "different-events.json"
+            save(different, {"version": 1, "events": [{"id": "unrelated"}]})
+            with patch("run_episode.configure") as configure, self.assertRaises(SystemExit):
+                run_episode(["--episode-manifest", str(root / "manifest.json"),
+                    "--simulator-path", str(root), "--env-file", str(root / "unused"),
+                    "--output", str(root / "mismatch-run"), "--qa-source", "external",
+                    "--external-events", str(different)])
+            configure.assert_not_called()
+            for change in ({"sha256": "wrong"}, {"path": "../external-events.json"}):
+                save(root / "manifest.json", dict(manifest,
+                    external_events=dict(manifest["external_events"], **change)))
+                with self.assertRaises(ValueError):
+                    load_episode_manifest(root / "manifest.json")
+
     def test_shared_file_does_not_alone_establish_public_relation(self):
         from dialogue_benchmark.fact_index import build_evidence_index, _relation
         records = [{"id": "e1", "order": 1, "kind": "message", "role": "user",

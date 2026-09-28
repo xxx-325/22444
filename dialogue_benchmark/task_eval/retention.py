@@ -14,7 +14,7 @@ from ..storage import compress_file, save_projection
 
 
 def save_trace(root):
-    """Keep original events and model responses, without repeated request histories."""
+    """Keep original events and exact provider requests and responses privately."""
     root = Path(root)
     target = root / "trace.jsonl.gz"
     if target.exists():
@@ -46,8 +46,7 @@ def save_trace(root):
                 for line in source:
                     if line.strip():
                         row = json.loads(line)
-                        if row.get("kind") != "request":
-                            emit("provider", row)
+                        emit("provider", row)
     verified = hashlib.sha256()
     with gzip.open(temp, "rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
