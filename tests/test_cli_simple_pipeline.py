@@ -175,12 +175,15 @@ class SimpleCliPipelineTests(unittest.TestCase):
 
     def test_main_simple_both_tracks_reuses_indexes_and_publishes_static_labels(self):
         calls = []
+        timeouts = {}
 
         class FakeClient:
             def __init__(self, *unused):
                 self.usage = []
+                self.timeout = unused[3]
 
         def extract(scope, client, qa_mode, checkpoint=None):
+            timeouts["facts"] = client.timeout
             source = scope["dialogue"][0]["id"]
             return {
                 "facts": [{"id": "f1", "qa_mode": qa_mode,
@@ -192,6 +195,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
 
         def generate(scope, facts, client, max_questions, qa_mode, target_type,
                      generation_mode, **kwargs):
+            timeouts["generation"] = client.timeout
             self.assertEqual(generation_mode, "simple")
             self.assertEqual(max_questions, 1)
             calls.append((qa_mode, target_type))
@@ -207,12 +211,14 @@ class SimpleCliPipelineTests(unittest.TestCase):
                     "stage_status": {"qa": "completed"}}
 
         def review(scope, facts, candidates, client, review_mode, **kwargs):
+            timeouts["review"] = client.timeout
             self.assertEqual(review_mode, "simple")
             return {"questions": [dict(item, status="approved") for item in candidates],
                     "rejected": [], "stage_errors": [], "revisions": [],
                     "stage_status": {"review": "completed"}}
 
         def duplicate_review(candidates, client, reviewed_pairs):
+            timeouts["deduplication"] = client.timeout
             return {"decisions": [], "errors": [], "usage": [],
                     "reviewed_pairs": set(reviewed_pairs)}
 
@@ -234,12 +240,14 @@ class SimpleCliPipelineTests(unittest.TestCase):
                     "--general-group-budget", "1", "--code-group-budget", "1",
                     "--parallel-workers", "1", "--allow-network",
                     "--endpoint", "https://example.invalid", "--model", "model",
+                    "--request-timeout", "1800",
                 ])
             public = json.loads((output / "qa-public.json").read_text())
             audit = json.loads((output / "qa-audit.json").read_text())
 
         self.assertEqual(status, 0)
         self.assertEqual(calls, [("general", "constraint_followthrough"), ("code", "constraint_followthrough")])
+        self.assertEqual(timeouts, {stage: 1800 for stage in ("facts", "generation", "review", "deduplication")})
         self.assertEqual(public["counts"], {"general": 1, "code": 1})
         self.assertFalse(audit["stage_errors"])
         for question in public["questions"]:

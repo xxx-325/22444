@@ -455,6 +455,11 @@ HTML entry point. The task report updates after each completed task.
 runs/episode` runs all stages in order using the simulator's configured model.
 Defaults target 40 approved questions per track and 12 evaluated tasks, exploring
 up to 24 requirements. QA workers default to 10; repository workers default to 3.
+Episode QA extraction, generation, review, deduplication, repository probes, and
+task-stage host model calls inherit `judge.request_timeout` from the episode's
+control configuration or simulator checkpoint. Standalone QA accepts
+`--request-timeout SECONDS` (default: 90); timeouts must be positive finite numbers.
+An omitted host-call timeout retains the 90-second default.
 `--model-request-chars` sets the serialized QA input limit (default: 32,000
 characters). Increase it when a complete external event bundle needs more room
 within the model's context window. Failed QA stages retain their evidence and

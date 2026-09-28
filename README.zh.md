@@ -200,6 +200,9 @@ python -m dialogue_benchmark.task_eval.run \
 
 `run_episode.py --source-run /path/to/completed-session --simulator-path /path/to/agent-session-simulator --env-file /path/to/provider.env --output runs/episode` 可依次执行完整流程，使用模拟器配置的模型。默认每轨目标 40 道通过题、目标 12 个完成两组评测的任务，最多探索 24 个需求；QA 并发 10，仓库任务并发 3。重叠子图先按来源合并再抽 facts；静态代码关系保留给后续 QA 组合，不重复塞入 facts 请求。
 
+Episode 的事实抽取、QA 生成／审核／去重、仓库探针及任务阶段宿主模型调用，继承控制配置或模拟器 checkpoint 中的 `judge.request_timeout`。
+独立 QA CLI 使用 `--request-timeout 秒数`，默认 90 秒；超时值须为正且有限，未配置的宿主调用仍保留 90 秒默认值。
+
 `--model-request-chars` 设置 QA 请求的输入长度上限，默认 32,000 字符。完整外部事件组较长时，可在模型上下文容量内提高。QA 阶段失败会保留证据并以 `qa_generation_failed` 停止，与正常完成但没有合格题目的情况分别记录。
 合集运行默认使用 96,000 字符，可通过 `evaluation.model_request_chars` 设置。
 

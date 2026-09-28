@@ -85,7 +85,8 @@ class EpisodeRunnerTests(unittest.TestCase):
             (source / "session.jsonl").write_text(json.dumps({"kind": "user", "content": "Customer rule"}) + "\n")
             events = source / "external-events.json"
             save(events, {"version": 1, "events": []})
-            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY",
+                                "request_timeout": 1800}}
             def generated(args):
                 output = Path(args[args.index("--output") + 1])
                 save(output / "qa-public.json", {"questions": [{"id": "q1"}]})
@@ -102,6 +103,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             self.assertEqual(args[args.index("--qa-source") + 1], "external")
             self.assertEqual(args[args.index("--qa-count") + 1], "40")
             self.assertEqual(args[args.index("--model-request-chars") + 1], "96000")
+            self.assertEqual(args[args.index("--request-timeout") + 1], "1800")
             self.assertNotIn("--qa-mode", args)
             self.assertNotIn("--general-count", args)
             self.assertNotIn("--code-count", args)
@@ -121,6 +123,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             order = []
             def qa(args):
                 order.append("qa")
+                self.assertEqual(args[args.index("--request-timeout") + 1], "90")
                 self.assertEqual(read(Path(args[0]))["version"], 1)
                 self.assertEqual(args[args.index("--general-count") + 1], "40")
                 output = Path(args[args.index("--output") + 1])

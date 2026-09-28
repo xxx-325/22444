@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from .llm import ChatClient
+from .llm import ChatClient, DEFAULT_REQUEST_TIMEOUT
 from .task_eval.selection import _path, _query_from_text, query_evidence
 
 
@@ -98,7 +98,8 @@ def _write_json(path, value):
 
 
 def probe_candidate(question, repository, endpoint, model, key_env, output,
-                    *, max_steps=6, model_request_chars=60000):
+                    *, max_steps=6, model_request_chars=60000,
+                    request_timeout=DEFAULT_REQUEST_TIMEOUT):
     """Run the probe and return a private, auditable recoverability result."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -122,7 +123,7 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
              "observations": []}
     seen = set()
     steps = []
-    client = ChatClient(endpoint, model, key_env, system=PROBE_SYSTEM)
+    client = ChatClient(endpoint, model, key_env, request_timeout, system=PROBE_SYSTEM)
     final = None
     # A query consumes a read slot. Its result still needs a model decision,
     # including when it was the last permitted query.

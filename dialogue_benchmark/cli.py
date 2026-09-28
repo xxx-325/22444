@@ -19,7 +19,8 @@ from .fact_index import (build_evidence_groups, build_evidence_index,
 from .external import external_review_projection, filter_external_facts, load_external_scopes
 from .general import build_general_scope, identify_stages
 from .graph import build_graph, graph_at, query_scope_adaptive
-from .llm import (ChatClient, extract_facts, generate_from_facts,
+from .llm import (ChatClient, DEFAULT_REQUEST_TIMEOUT, validate_request_timeout,
+                  extract_facts, generate_from_facts,
                   repair_simple_validation_rejection, review_candidates,
                   stage_error)
 from .normalize import load_dialogue
@@ -141,6 +142,8 @@ def _build_parser():
     parser.add_argument("--endpoint", help="Full HTTPS chat/completions endpoint")
     parser.add_argument("--model")
     parser.add_argument("--key-env", default="BENCHMARK_API_KEY")
+    parser.add_argument("--request-timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT,
+                        help="Model request timeout in seconds (default: 90)")
     parser.add_argument("--reuse-facts", type=Path,
                         help="Reuse saved facts/errors from an identical normalized input and chunk layout")
     parser.add_argument("--repository", type=Path,
@@ -153,6 +156,10 @@ def _build_parser():
 
 
 def _parse_options(args, parser):
+    try:
+        validate_request_timeout(args.request_timeout)
+    except ValueError as error:
+        parser.error(str(error))
     external = args.qa_source == "external"
     graph_options = ("qa_mode", "general_types", "code_types", "general_count",
                      "code_count", "general_group_budget", "code_group_budget", "max_questions")
@@ -271,7 +278,7 @@ def _checkpoint(checkpoint_dir, track, phase, index):
 
 
 def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
-                    reuse_dir=None, external_only=False):
+                    reuse_dir=None, external_only=False, request_timeout=DEFAULT_REQUEST_TIMEOUT):
     """Extract every chunk's facts through one bounded shared executor."""
     if not tasks:
         return {"facts": [], "questions": [], "rejected": [], "usage": [],
@@ -299,7 +306,7 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
             elif reuse_dir:
                 raise ValueError("Missing saved fact-stage result")
             else:
-                client = ChatClient(endpoint, model, key_env)
+                client = ChatClient(endpoint, model, key_env, request_timeout)
                 kwargs = {
                     "qa_mode": track,
                     "checkpoint": _checkpoint(checkpoint_dir, track, "chunk", index),
@@ -585,7 +592,7 @@ def generate_simple_target(group, evidence_index, target_type, client,
 
 def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                   deduplicate_results=True, review_mode="single",
-                  evidence_indexes=None, expansion_budget=3):
+                  evidence_indexes=None, expansion_budget=3, request_timeout=DEFAULT_REQUEST_TIMEOUT):
     """Generate bounded candidates per group, reviewing each independently."""
     if not tasks:
         return {"questions": [], "rejected": [], "usage": [],
@@ -596,7 +603,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
         index, track, group = item
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env)
+            client = ChatClient(endpoint, model, key_env, request_timeout)
             if review_mode == "simple":
                 evidence_index = (evidence_indexes or {}).get(track)
                 if evidence_index is None:
@@ -1546,7 +1553,7 @@ def main(argv=None):
                 facts_result = _run_fact_tasks(
                     fact_tasks, args.endpoint, args.model, args.key_env,
                     args.parallel_workers, checkpoint_dir,
-                    external_only=external_mode, **fact_options)
+                    external_only=external_mode, request_timeout=args.request_timeout, **fact_options)
                 save(args.output, "fact-extraction.json", {
                     "reused_from": str(args.reuse_facts) if args.reuse_facts else None,
                     "usage": facts_result["usage"], "stage_errors": facts_result["stage_errors"],
@@ -1700,7 +1707,8 @@ def main(argv=None):
                         safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(candidate_id))[:120]
                         probe = probe_candidate(
                             question, args.repository, args.endpoint, args.model,
-                            args.key_env, args.output / "recoverability" / safe_id)
+                            args.key_env, args.output / "recoverability" / safe_id,
+                            request_timeout=args.request_timeout)
                     except Exception as error:
                         probe = {"status": "uncertain",
                                  "reason": "probe_error:%s" % type(error).__name__}
@@ -1717,7 +1725,7 @@ def main(argv=None):
                     if len(candidates) < 2:
                         return {}
                     try:
-                        client = ChatClient(args.endpoint, args.model, args.key_env)
+                        client = ChatClient(args.endpoint, args.model, args.key_env, args.request_timeout)
                         reviewed = review_duplicate_clusters(
                             candidates, client, duplicate_state["reviewed_pairs"])
                     except Exception as error:
@@ -1753,7 +1761,8 @@ def main(argv=None):
                                                deduplicate_results=False,
                                                review_mode=args.review_mode,
                                                evidence_indexes=evidence_indexes,
-                                               expansion_budget=args.expansion_budget),
+                                               expansion_budget=args.expansion_budget,
+                                               request_timeout=args.request_timeout),
                     lambda questions, caps: _publication_view(
                         questions, caps, workspaces, duplicate_state["decisions"],
                         recoverability_check=check_repository_recoverability,
@@ -2017,7 +2026,8 @@ def main(argv=None):
             "questions_per_group": options["questions_per_group"],
             "expansion_budget": args.expansion_budget,
             "configured_limits": {track: options[track + "_count"] for track in tracks},
-            "model": args.model, "usage": result.get("usage", []),
+            "model": args.model, "request_timeout": args.request_timeout,
+            "usage": result.get("usage", []),
             "source_kinds": {
                 "records": {kind: sum(1 for record in records
                                        if record.get("source_kind") == kind)

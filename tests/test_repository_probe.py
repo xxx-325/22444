@@ -492,19 +492,21 @@ class RepositoryProbeTests(unittest.TestCase):
                     }), \
                     patch("dialogue_benchmark.repository_probe.probe_candidate",
                           return_value={"status": "recoverable", "evidence": ["query1"],
-                                         "reason": "current source is sufficient", "usage": []}):
+                                         "reason": "current source is sufficient", "usage": []}) as probe:
                 status = cli.main([
                     str(example), "--output", str(output), "--qa-mode", "code",
                     "--code-types", "constraint_followthrough", "--code-count", "1",
                     "--code-group-budget", "1", "--parallel-workers", "1",
                     "--allow-network", "--endpoint", "https://example.invalid",
                     "--model", "model", "--repository", str(root),
+                    "--request-timeout", "1800",
                 ])
             public = json.loads((output / "qa-public.json").read_text())
             audit = json.loads((output / "qa-audit.json").read_text())
             self.assertEqual(status, 0)
             self.assertEqual(public["counts"]["code"], 0)
             self.assertEqual(audit["recoverability"]["filtered"], 1)
+            self.assertEqual(probe.call_args.kwargs["request_timeout"], 1800)
             self.assertEqual(audit["candidate_records"][0]["selection_status"],
                              "filtered_recoverable")
 

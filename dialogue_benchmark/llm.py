@@ -1,6 +1,7 @@
 """Opt-in chat-completions transport; never execute model responses."""
 
 import json
+import math
 from copy import deepcopy
 import os
 import re
@@ -41,6 +42,15 @@ from .protocol import (
     required_point_ids_text,
     simple_point_ids,
 )
+
+DEFAULT_REQUEST_TIMEOUT = 90
+
+
+def validate_request_timeout(value):
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0):
+        raise ValueError("request_timeout must be a positive finite number")
+    return value
 
 
 class ModelStageError(ValueError):
@@ -1779,17 +1789,17 @@ def _fit_projection(prompt, scope, sources, extra, budget, full_range=False,
 
 
 class ChatClient:
-    def __init__(self, endpoint, model, key_env="BENCHMARK_API_KEY", timeout=90, *, system=SYSTEM):
+    def __init__(self, endpoint, model, key_env="BENCHMARK_API_KEY", timeout=DEFAULT_REQUEST_TIMEOUT, *, system=SYSTEM):
         parsed = urllib.parse.urlparse(endpoint)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("LLM endpoint must be HTTPS without embedded credentials")
         if parsed.query or parsed.fragment:
             raise ValueError("LLM endpoint cannot contain query or fragment")
+        self.timeout = validate_request_timeout(timeout)
         self.endpoint, self.model = endpoint, model
         self.key = os.environ.get(key_env)
         if not self.key:
             raise ModelStageError("missing_api_key")
-        self.timeout = timeout
         self.system = system
         self.usage = []
         self.responses = []
@@ -3263,7 +3273,8 @@ def _merge_results(results, quotas=None):
 
 def generate_parallel(chunks, endpoint, model, key_env="BENCHMARK_API_KEY",
                       max_questions=4, workers=4, qa_mode="code",
-                      allowed_types=None, per_chunk_questions=None):
+                      allowed_types=None, per_chunk_questions=None,
+                      request_timeout=DEFAULT_REQUEST_TIMEOUT):
     """Run every chunk through one shared scheduling path, even with one worker."""
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -3273,7 +3284,7 @@ def generate_parallel(chunks, endpoint, model, key_env="BENCHMARK_API_KEY",
         index, scope = item
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env)
+            client = ChatClient(endpoint, model, key_env, request_timeout)
             result = generate(scope, client, each, qa_mode=qa_mode,
                               allowed_types=allowed_types)
             return index, _prefix_result(result, index, qa_mode), client.usage, qa_mode
@@ -3291,7 +3302,7 @@ def generate_parallel(chunks, endpoint, model, key_env="BENCHMARK_API_KEY",
 
 
 def generate_tasks(tasks, endpoint, model, key_env="BENCHMARK_API_KEY", workers=6,
-                   quotas=None):
+                   quotas=None, request_timeout=DEFAULT_REQUEST_TIMEOUT):
     """Run general and code tasks in one bounded pool and merge by stable order.
 
     Each task is a mapping with ``scope``, ``qa_mode``, ``allowed_types`` and an
@@ -3306,7 +3317,7 @@ def generate_tasks(tasks, endpoint, model, key_env="BENCHMARK_API_KEY", workers=
         mode = task.get("qa_mode", "code")
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env)
+            client = ChatClient(endpoint, model, key_env, request_timeout)
             result = generate(task["scope"], client, task.get("max_questions", 1),
                               qa_mode=mode, allowed_types=task.get("allowed_types"))
             return index, _prefix_result(result, index, mode), client.usage, mode

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from convert_session import convert
 from dialogue_benchmark.cli import main as generate_qa
+from dialogue_benchmark.llm import DEFAULT_REQUEST_TIMEOUT
 from dialogue_benchmark.task_eval.artifacts import copy_tree, fingerprint, read, save
 from dialogue_benchmark.task_eval.run import main as run_tasks
 from dialogue_benchmark.task_eval.runtime import configure
@@ -115,6 +116,7 @@ def main(argv=None):
             "--model-request-chars", str(args.model_request_chars),
             "--allow-network",
             "--endpoint", endpoint, "--model", model["model"], "--key-env", model["key_env"],
+            "--request-timeout", str(model.get("request_timeout", DEFAULT_REQUEST_TIMEOUT)),
         ]
         if args.reuse_facts:
             qa_args += ["--reuse-facts", str(args.reuse_facts)]
