@@ -648,19 +648,16 @@ def _evidence_review_request(scope, source_ids, facts, candidate):
             "possible_use_materials": [source_refs[s] for s in scope["external_usage_ids"] if s in source_refs],
         }
         prompt = prompt.replace("Check only the truth and version", "Check the truth and version", 1)
-        prompt = prompt.replace("END_REVIEW", "usage: STATUS\nusage_reason: one short reason\nEND_REVIEW", 1)
-        prompt += ("\nAlso check whether the historical rule was actually used in the supplied public "
-                   "actions or results. possible_use_materials are candidates, not proof. A promise, "
-                   "a repeated rule, or shared words alone is not actual use. Set usage to applied "
-                   "only with observable action/result evidence, not_applied for only promises or "
-                   "repetition, or uncertain when evidence is incomplete. For applied, append @ and "
-                   "the supplied material references showing the use. Explain that action/result "
-                   "in usage_reason. Do not invent an execution.\n")
-        prompt += ("A user-confirmed rule for future work need not have been executed. For an answer "
-                   "about that agreement, use confirmed@ followed by its User message references. "
-                   "This confirms the agreement, never a claimed execution or failure. An assistant "
-                   "completion report alone does not prove application. For applied, cite a public tool "
-                   "result and check whether the operation completed; a command alone only proves an attempt.\n")
+        prompt = prompt.replace("END_REVIEW", "usage: applied@资料N OR confirmed@资料N OR not_applied OR uncertain\n"
+                                "usage_reason: one short reason\nEND_REVIEW", 1)
+        prompt += ("\nChoose exactly one usage value:\n"
+                   "- applied@资料N: a cited public tool result shows completed use of this rule.\n"
+                   "- confirmed@资料N: a cited User message establishes the agreement asked about; execution is not required.\n"
+                   "- not_applied: only an assistant promise, repetition, or attempted command supports claimed use.\n"
+                   "- uncertain: the supplied evidence does not settle it.\n"
+                   "Replace 资料N with actual material references; separate multiple references by commas. "
+                   "Bare applied or confirmed is invalid. possible_use_materials are candidates, not proof. "
+                   "In usage_reason describe the cited confirmation or completed action, not shared words.\n")
     return prompt, payload, refs
 
 

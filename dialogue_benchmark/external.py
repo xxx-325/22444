@@ -33,6 +33,8 @@ def external_usage_review(document, scope, reference_map):
     review = reviews[0]
     value = review.pop("usage", "")
     reason = review.pop("usage_reason", "")
+    if value:
+        decision["reason"] = "invalid_usage_evidence"
     if isinstance(value, str) and value in {"not_applied", "uncertain"}:
         decision.update(status=value, reason=reason if isinstance(reason, str) and reason.strip()
                         else "usage_not_established")

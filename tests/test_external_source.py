@@ -230,6 +230,16 @@ class ExternalSourceTests(unittest.TestCase):
                 self.assertEqual(result["questions"][0]["status"], status)
                 self.assertIn("historical_use", client.payloads[-1])
 
+    def test_positive_usage_without_citation_is_a_format_failure(self):
+        for value in ('applied', 'confirmed'):
+            with self.subTest(value=value):
+                _, decision = external_usage_review(
+                    {"reviews": [{"usage": value, "usage_reason": "资料3 shows use"}]},
+                    {"dialogue": self.records, "external_usage_ids": ["e3"]}, {"资料3": "e3"})
+                self.assertEqual(decision["status"], "uncertain")
+                self.assertEqual(decision["reason"], "invalid_usage_evidence")
+                self.assertEqual(decision["sources"], [])
+
     def test_external_review_keeps_declared_context_without_code_symbols(self):
         scope = {"external_event_id": "x1", "external_source_ids": ["e1"],
                  "external_usage_ids": ["e3"], "dialogue": self.records,

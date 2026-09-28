@@ -165,6 +165,8 @@ execution. Claims of application require a public tool result, including the out
 of a matching command. Relevant corrections stay in the workflow, focus, QA, review
 and task-history inputs. Repairs preserve the chosen workflow and their final source
 references. Source and request-size checks apply throughout.
+A positive confirmation or application verdict must cite supplied material;
+a missing citation is recorded as invalid review evidence, not a finding of non-use.
 Each connected group enters the unified pool once, regardless of a producer's old track
 label. General/code options belong to graph mode. Types are reported separately
 without quotas that force all six types to appear.
