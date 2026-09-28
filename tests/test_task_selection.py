@@ -334,8 +334,30 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("Maple rule", str(calls[0]["history"]))
         self.assertNotIn("Unrelated follow-up", str(calls[0]["history"]))
 
+    def test_history_target_prompt_bounds_agreement_by_question_without_filtering_sources(self):
+        question = "Which partner approval scope applies to Maple's May delivery cycle?"
+        history_text = ("For May, Maple approves P1 and excludes P2 until onboarding is signed. "
+                        "If both partners were approved later, the same writer could accept both.")
+        self.history["initial_events"][0]["text"] = history_text
+        self.history["events"][0]["text"] = history_text
+        agreement = {"public_goal": "Filter partner batches for every future delivery cycle."}
+        budget = SelectionBudget(self.root, {})
+        with patch.object(budget, "call", return_value={"reviews": []}) as call:
+            extract_history_targets({"question": question, "type": "M6"}, self.history,
+                                    agreement, {}, self.root / "target-boundary", budget)
+        self.assertEqual(call.call_count, 1)
+        prompt, payload = call.call_args.args[:2]
+        self.assertIn("question 限定对象、周期、适用范围和必要结论", prompt)
+        self.assertIn("agreement 只提供后续用途，不能扩大这些边界", prompt)
+        self.assertIn("假设例子仅解释同一规则的边界时，不单独列为目标", prompt)
+        self.assertIn("不视为已发生的新批准或修正", prompt)
+        self.assertEqual(payload["question"], question)
+        self.assertEqual(payload["agreement"], agreement)
+        self.assertEqual(payload["history"][0]["text"], history_text)
+
     def test_history_targets_keep_applicable_cycle_limited_authorization(self):
-        statement = "Maple approved only P1 orders for the May delivery cycle."
+        statement = ("Maple approved only P1 orders for the May delivery cycle; "
+                     "P2 stays excluded until onboarding is signed.")
         self.history["initial_events"][0]["text"] = statement
         self.history["events"][0]["text"] = statement
         row = {"id": "h1", "statement": statement, "scope": "Maple May delivery cycle",
@@ -350,6 +372,7 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("普通的一次执行命令不要作为约定", prompt)
         self.assertIn("仍适用于本任务的、已确认的周期限定授权或状态必须保留", prompt)
         self.assertIn("不得扩展其周期或范围", prompt)
+        self.assertIn("保留当前问题所需规则的真实适用条件、例外和已确认的局部修正", prompt)
         self.assertEqual(result["status"], "candidate")
         self.assertEqual(result["targets"][0]["statement"], statement)
         self.assertEqual(result["targets"][0]["scope"], row["scope"])
