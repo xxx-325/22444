@@ -218,9 +218,11 @@ def _review_history_targets(task, answer, config, output, evidence, budget):
     try:
         allowed_history_sources = sorted({source for target in targets for source in target.get("sources", [])})
         allowed_public_sources = sorted({query.get("id") for query in public_repository})
-        protocol = (HISTORY_QUALIFY
-                    + "\n本题固定目标 ID 只能使用：" + ",".join(target_ids)
-                    + "。历史来源只能使用：" + ",".join(allowed_history_sources or ["none"])
+        row_template = ("H %s | <applicable> | <public> | <answer> | <历史来源ID>"
+                        " | <公开来源ID或none> | <答案原句或none>")
+        protocol = (HISTORY_QUALIFY.replace("HISTORY_QUALIFY_ROWS", "\n".join(
+                        row_template % target_id for target_id in target_ids))
+                    + "\n历史来源只能使用：" + ",".join(allowed_history_sources or ["none"])
                     + "。公开来源只能使用：" + ",".join(["task", *allowed_public_sources]) + "。\n")
         response = (budget.call if budget else ask_model)(protocol, payload, config, output)
         history_rows = response.get("history_reviews", [])

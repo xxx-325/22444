@@ -527,6 +527,63 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["status"], "clean")
         self.assertEqual(result["history_rows"][0]["id"], "h1")
 
+    def test_history_review_prompt_renders_exact_frozen_row_prefixes(self):
+        from dialogue_benchmark.llm import parse_text_response
+        from dialogue_benchmark.task_eval.runtime import review_task
+        evidence = {"history_targets": [{"id": target, "sources": ["event1"]}
+                                         for target in ("h2", "h7")]}
+        response = parse_text_response(
+            "H h2 | yes | none | sufficient | event1 | none | Exact fact\n"
+            "H h7 | yes | none | sufficient | event1 | none | Exact fact\nTASK | clean")
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response) as ask:
+            result = review_task("New task", "Exact fact", {}, self.root / "fixed-prefixes",
+                                 evidence=evidence)
+        self.assertEqual(result["status"], "clean")
+        prompt = ask.call_args.args[0]
+        rows = [line for line in prompt.splitlines() if line.startswith("H ")]
+        self.assertEqual([line.split("|", 1)[0].strip() for line in rows], ["H h2", "H h7"])
+        self.assertTrue(all(len(line.split("|")) == 7 for line in rows))
+        self.assertIn("中间保留一个空格", prompt)
+        self.assertNotIn("H h1", prompt)
+        self.assertNotIn("HISTORY_QUALIFY_ROWS", prompt)
+
+    def test_history_review_rejects_duplicate_unknown_and_concatenated_ids(self):
+        from dialogue_benchmark.llm import parse_text_response
+        from dialogue_benchmark.task_eval.runtime import review_task
+        evidence = {"history_targets": [{"id": target, "sources": ["event1"]}
+                                         for target in ("h1", "h2")]}
+        for prefixes in (("H h1", "H h1"), ("H h1", "H h9"), ("Hh1", "Hh2")):
+            with self.subTest(prefixes=prefixes):
+                response = parse_text_response("\n".join(
+                    prefix + " | yes | none | sufficient | event1 | none | Exact fact"
+                    for prefix in prefixes) + "\nTASK | clean")
+                self.assertEqual([row["id"] for row in response["history_reviews"]],
+                                 [prefix.removeprefix("H ") for prefix in prefixes])
+                with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response) as ask:
+                    result = review_task("New task", "Exact fact", {}, self.root / "invalid-ids",
+                                         evidence=evidence)
+                self.assertEqual(ask.call_count, 1)
+                self.assertEqual(result["status"], "uncertain")
+                self.assertEqual(result["issue"], "history_review_failed")
+                self.assertEqual(result["error"]["error_code"], "validation_error")
+
+    def test_history_review_clear_ids_do_not_override_incomplete_answer(self):
+        from dialogue_benchmark.llm import parse_text_response
+        from dialogue_benchmark.task_eval.runtime import review_task
+        evidence = {"history_targets": [{"id": target, "sources": ["event1"]}
+                                         for target in ("h1", "h2", "h3")],
+                    "repository_queries": [{"id": "query1"}]}
+        response = parse_text_response(
+            "H h1 | yes | partial | sufficient | event1 | query1 | Exact fact\n"
+            "H h2 | yes | full | not_applicable | event1 | query1 | none\n"
+            "H h3 | yes | partial | insufficient | event1 | query1 | none\nTASK | clean")
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response) as ask:
+            result = review_task("New task", "Exact fact", {}, self.root / "incomplete-answer",
+                                 evidence=evidence)
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["issue"], "historical_answer_incomplete")
+
     def test_history_review_does_not_accept_one_quote_for_missing_target(self):
         from dialogue_benchmark.task_eval.runtime import review_task
         evidence = {"history_targets": [{"id": "h1", "sources": ["event1"]},

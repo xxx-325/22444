@@ -159,9 +159,9 @@ full 必须引用 task 或 public_repository 中的真实来源；不能引用�
 answer：injected_answer 是否补齐仍缺的必要信息？sufficient/insufficient/uncertain；规则不适用或已完全公开用 not_applicable。
 sufficient 必须从 injected_answer 原样摘录支持文字；不能用 private_history_targets 替答案补缺项。
 
-每条规则输出一行实际结果，无表头。七列依次为：
-H 加实际规则ID；applicable选项；public选项；answer选项；历史来源ID；公开来源ID或none；答案原句或none。
-列之间用 | 分隔，选项必须替换成上面列出的英文值。
+按以下模板逐行输出，无表头。原样复制每行的 H 和规则 ID，中间保留一个空格。
+只替换 | 后六列的尖括号内容，选项使用上面列出的英文值，不改写、重复或新增规则 ID。
+HISTORY_QUALIFY_ROWS
 引用多个答案要点时，第一点写在该行末尾，其余要点可原样用 - 开头续行。
 最后一行 TASK | clean；若公开需求与历史规则矛盾，写 TASK | uncertain。
 不要输出解释或 JSON。
