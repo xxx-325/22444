@@ -220,6 +220,25 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertIn("byte total from one run", client.calls[0][0])
         self.assertIn("external size limit can be useful", client.calls[0][0])
 
+    def test_external_target_repair_keeps_facts_and_correction_context(self):
+        scope = self.scope("M1")
+        scope["dialogue"].append({"id": "e3", "kind": "message", "role": "user", "order": 3,
+                                  "text": "导出失败时可以重试。"})
+        facts = [{"id": "f1", "statement": "导出必须保留空值。", "sources": ["e1"]}]
+        client = ExternalClient()
+        generated = generate_from_facts(scope, facts, client, qa_mode="memory", target_type="M1")
+        context = generated["_repair_context"]
+        client.alignment = "drifted"
+        result = review_candidates(scope, facts, generated["questions"], client,
+                                   qa_mode="memory", review_mode="simple", generation_context=context)
+        self.assertEqual(result["questions"][0]["status"], "approved")
+        self.assertEqual(len(result["revisions"]), 1)
+        repair, = [payload for _, payload in client.calls if "review_issue" in payload]
+        self.assertEqual(repair["facts"], context["payload"]["facts"])
+        self.assertEqual(repair["materials"], context["payload"]["materials"])
+        self.assertIn("external rules selected in facts", repair["review_issue"])
+        self.assertIn("even if focus included them", repair["review_issue"])
+
     def test_cli_extracts_once_publishes_one_pool_and_joins_original_task_input(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

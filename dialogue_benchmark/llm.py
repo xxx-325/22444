@@ -2424,6 +2424,11 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
             payload["original_candidate"] = _simple_repair_candidate_view(
                 candidate, source_to_ref)
             payload["review_issue"] = _simple_repair_issue(failure)
+            if qa_mode == "memory" and failure.get("reason") == "answer_target_mismatch":
+                payload["review_issue"] = (
+                    "Keep the question about the external rules selected in facts and their "
+                    "scoped corrections. Remove unrelated rules from the question and answer, "
+                    "even if focus included them. Keep workflow as context only.")
             repair_prompt = prompt + "\n\n" + SIMPLE_REPAIR_PROMPT
             _check_simple_request_budget(repair_prompt, payload, budget)
             save("repair-input.json", {"system_prompt": SYSTEM, "prompt": repair_prompt, "payload": payload,
@@ -2653,7 +2658,10 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                     "TARGET_DEFINITION", SIMPLE_TYPE_GUIDANCE[candidate["type"]])
                 if qa_mode == "memory":
                     target_prompt += MEMORY_QA_RULES + (
-                        "\nChoose drifted if the answer does not resolve such a future decision.")
+                        "\nChoose aligned only when the question asks about the external rules "
+                        "in facts or later corrections to those same rules. Choose drifted when "
+                        "it asks about another rule from the surrounding materials, even if "
+                        "that rule belongs to the same workflow or appears in focus.")
                 distinctiveness_payload, _ = simple_evidence_payload(
                     scope, sources, facts=result["facts"], candidate=candidate)
                 if isinstance(candidate.get("_generation_focus"), dict):
