@@ -202,6 +202,51 @@ class RepositoryProbeTests(unittest.TestCase):
             self.assertIn("load_config 遇到缺失配置会抛出 ValueError", payload)
             self.assertEqual(result["query_count"], 1)
 
+    def test_mock_probe_receives_scope_evidence_beyond_first_read_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            (root / "tests").mkdir(parents=True)
+            scope_line = "    approved = {'P1': []}"
+            (root / "tests/test_scope.py").write_text(
+                "# unrelated setup\n" * 96 + "def test_approved_scope():\n"
+                + scope_line + "\n    assert set(approved) == {'P1'}\n")
+            output = Path(directory) / "probe"
+            FakeProbeClient.responses = [
+                "PROBE: need_evidence\nREASON: locate the approval test\n"
+                "QUERY: lookup|repo|.|approved_scope|0\nEVIDENCE: none",
+                "PROBE: need_evidence\nREASON: inspect the test file\n"
+                "QUERY: read|repo|tests/test_scope.py|-|0\nEVIDENCE: query1",
+                "PROBE: need_evidence\nREASON: continue to the scope test\n"
+                "QUERY: read|repo|tests/test_scope.py|-|80\nEVIDENCE: query1,query2",
+                "PROBE: recoverable\nREASON: the scope test explicitly selects P1\n"
+                "QUERY: none\nEVIDENCE: query3",
+            ]
+            question = {"question": "Which partner does the approval test select?",
+                        "answer_points": [{"text": "The approval test selects only P1."}]}
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate(question, root, "https://example.invalid", "m", "KEY",
+                                         output, max_steps=3)
+            lookup_input = json.loads((output / "step-002/input.json").read_text())["payload"]
+            lookup = lookup_input["observations"][0]
+            self.assertEqual(lookup["result"]["matches"], [
+                {"match": "tests/test_scope.py:97:def test_approved_scope():"}])
+            page_input = json.loads((output / "step-003/input.json").read_text())["payload"]
+            first_page = page_input["observations"][1]
+            self.assertEqual(first_page["id"], "query2")
+            self.assertEqual(first_page["result"]["next_offset"], 80)
+            self.assertEqual(first_page["result"]["lines"][-1]["line"], 80)
+            self.assertNotIn(scope_line, [row["text"] for row in first_page["result"]["lines"]])
+            final_input = json.loads((output / "step-004/input.json").read_text())["payload"]
+            scope_page = final_input["observations"][2]
+            self.assertEqual(scope_page["query"]["offset"], first_page["result"]["next_offset"])
+            self.assertIn({"line": 98, "text": scope_line}, scope_page["result"]["lines"])
+            self.assertIsNone(scope_page["result"]["next_offset"])
+            self.assertEqual(final_input["remaining_queries"], 0)
+            self.assertEqual(result["status"], "recoverable")
+            self.assertEqual(result["evidence"], [scope_page["id"]])
+            self.assertEqual(result["query_count"], 3)
+            self.assertEqual(len(result["usage"]), 4)
+
     def test_duplicate_query_does_not_claim_recoverable(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
