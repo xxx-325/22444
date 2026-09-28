@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from dialogue_benchmark.llm import ModelStageError, stage_error
 from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval.selection import (SelectionBudget, extract_history_targets,
                                                      query_evidence, repository_overview,
@@ -185,6 +186,29 @@ class SelectionTests(unittest.TestCase):
                                              {"max_requests": 1})
         self.assertEqual(result["status"], "pending")
         self.assertEqual(budget.requests, 1)
+
+    def test_construction_wait_does_not_consume_agent_execution_timeout(self):
+        with patch("time.monotonic", return_value=0) as clock:
+            budget = SelectionBudget(self.root, {"max_requests": 2, "max_tokens": 100,
+                                                "max_seconds": 1800})
+            budget.record([{"prompt_tokens": 10, "completion_tokens": 2}])
+            # Reference solving and test execution have their own budgets.
+            clock.return_value = 3600
+            self.assertEqual(budget.remaining(), {"max_requests": 1, "max_tokens": 88,
+                                                  "max_seconds": 1800})
+            budget.record([{"prompt_tokens": 10, "completion_tokens": 2}])
+            with self.assertRaises(ModelStageError) as exhausted:
+                budget.remaining()
+        self.assertEqual(stage_error("history_review", exhausted.exception)["error_code"],
+                         "selection_budget_exhausted")
+
+    def test_token_budget_still_stops_next_request(self):
+        budget = SelectionBudget(self.root, {"max_tokens": 12})
+        budget.record([{"prompt_tokens": 10, "completion_tokens": 2}])
+        with patch("dialogue_benchmark.task_eval.selection.ask_model") as ask:
+            with self.assertRaisesRegex(ModelStageError, "selection_budget_exhausted"):
+                budget.call("review", {}, {}, self.root / "review")
+        ask.assert_not_called()
 
     def test_missing_usage_and_request_errors_preserve_pending(self):
         for error in (TimeoutError("timeout"), None):
@@ -467,6 +491,17 @@ class SelectionTests(unittest.TestCase):
              "public_sources": "query1",
              "answer_quote": "Exact fact", "issue": "none"}],
              "task_review": {"id": "task", "leakage": "clean", "issue": "none"}})
+
+    def test_uncertain_task_review_keeps_specific_reason(self):
+        from dialogue_benchmark.llm import parse_text_response
+        row = "H h1 | yes | none | sufficient | source1 | none | Exact fact\n"
+        parsed = parse_text_response(row + "TASK | uncertain: Public task requires caller to supply rule")
+        self.assertEqual(parsed["task_review"], {
+            "id": "task", "leakage": "uncertain",
+            "issue": "Public task requires caller to supply rule"})
+        for invalid in ("TASK | uncertain", "TASK | clean: contradictory", "TASK | leaked"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_text_response(row + invalid)
         self.assertEqual(parse_text_response(
             "h1 | yes | partial | sufficient | source1 | query1 | Exact fact\n"
             "TASK | clean"),

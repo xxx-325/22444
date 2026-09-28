@@ -4,32 +4,32 @@ import json
 from pathlib import Path
 import re
 import subprocess
-import time
 
+from ..llm import ModelStageError
 from .artifacts import read, save
 from .runtime import ask_model
 from .history import freeze_targets, write_contract_from_targets
 
 
 class SelectionBudget:
-    """Account for selection, draft, review, and author execution together."""
+    """Share request/token limits; each agent retains its execution timeout."""
 
     def __init__(self, root, options):
         self.root = Path(root)
         self.max_requests = options.get("max_requests", 80)
         self.max_tokens = options.get("max_tokens", 1500000)
-        self.deadline = time.monotonic() + 1200
+        self.agent_seconds = options.get("max_seconds", 1200)
         self.requests = self.prompt_tokens = self.completion_tokens = 0
         self.usage_complete = True
 
     def remaining(self):
         if not self.usage_complete:
-            raise ValueError("usage_missing")
-        if self.requests >= self.max_requests or self.tokens >= self.max_tokens or time.monotonic() >= self.deadline:
-            raise ValueError("selection_budget_exhausted")
+            raise ModelStageError("usage_missing")
+        if self.requests >= self.max_requests or self.tokens >= self.max_tokens:
+            raise ModelStageError("selection_budget_exhausted")
         return dict(max_requests=self.max_requests - self.requests,
                     max_tokens=self.max_tokens - self.tokens,
-                    max_seconds=max(1, self.deadline - time.monotonic()))
+                    max_seconds=self.agent_seconds)
 
     @property
     def tokens(self):
@@ -68,7 +68,7 @@ class SelectionBudget:
             # Preserve the provider/protocol error.  A missing usage record is
             # a second diagnostic, not a reason to hide the original failure.
             if error is None and not self.usage_complete:
-                raise ValueError("usage_missing")
+                raise ModelStageError("usage_missing")
 
 
 def _path(root, value):

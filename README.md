@@ -340,8 +340,10 @@ A candidate first freezes the historical targets from the original dialogue.
 Then one tool-free call writes only the public task, and a second tool-free call
 writes private history use and acceptance material. The existing qualification
 review runs only after the public task is fixed; only then are tests constructed.
-Selection, drafting, review, and test authoring share cumulative
-budgets, without a per-response output cap.
+Selection, drafting, review, and test authoring share cumulative request and token
+budgets, without a per-response output cap. Each agent has its own execution
+timeout; waiting for reference solving and test execution does not consume the
+next author's execution time.
 The test author cannot change qualified requirements or historical rules.
 Test repairs reuse the qualified draft. Compatibility tests apply to the named
 old APIs; new APIs are checked by their stated behavior. Regression commands use

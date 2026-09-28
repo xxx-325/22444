@@ -170,8 +170,8 @@ sufficient 必须从 injected_answer 原样摘录支持文字；不能用 privat
 只替换 | 后六列的尖括号内容，选项使用上面列出的英文值，不改写、重复或新增规则 ID。
 HISTORY_QUALIFY_ROWS
 引用多个答案要点时，第一点写在该行末尾，其余要点可原样用 - 开头续行。
-最后一行 TASK | clean；若公开需求与历史规则矛盾，写 TASK | uncertain。
-不要输出解释或 JSON。
+最后一行 TASK | clean；若公开需求与历史规则矛盾，写 TASK | uncertain: <具体矛盾>。
+不确定也要指出具体哪里不确定；不要输出其他解释或 JSON。
 """
 
 DRAFT_TASK = """根据已选候选和已提供证据，一次组织草案。没有工具，不能另行调查或补造事实。
