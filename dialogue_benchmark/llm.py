@@ -1314,8 +1314,8 @@ REVIEW CANDIDATE_ID
 review_contract: simple_relevance_v1
 point_relevance: RELEVANCE_ASSIGNMENTS
 END_REVIEW
-Write assignments like A1=direct;A2=extra using semicolons. For each ID choose
-direct, extra, or uncertain. Do not output a reason or any other field.
+For each ID, choose one value inside angle brackets and remove the brackets.
+Do not copy the alternatives literally. Do not output a reason or any other field.
 """
 
 SIMPLE_ATOMICITY_PROMPT = """Classify only the atomicity of each immutable A*/F*
@@ -1455,11 +1455,14 @@ def _focused_review_prompt(prompt, candidate, point_ids=None):
         raise ValueError("focused review requires at least one point ID")
     atomicity = ";".join(
         point_id + "=<single|compound|uncertain>" for point_id in required)
+    relevance = ";".join(
+        point_id + "=<direct|extra|uncertain>" for point_id in required)
     evidence = ";".join(point_id + "=STATUS" for point_id in required)
     required_text = (",".join(required) if point_ids is not None
                      else required_point_ids_text(candidate))
     return (prompt.replace("CANDIDATE_ID", "q1")
             .replace("REQUIRED_POINT_IDS", required_text)
+            .replace("RELEVANCE_ASSIGNMENTS", relevance)
             .replace("ATOMICITY_ASSIGNMENTS", atomicity)
             .replace("EVIDENCE_ASSIGNMENTS", evidence))
 

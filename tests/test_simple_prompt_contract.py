@@ -1,9 +1,11 @@
 """Offline regressions for simple-review prompt isolation and lifecycle."""
 
 import copy
+import re
 import unittest
 
 from dialogue_benchmark.llm import parse_text_response, review_candidates
+from dialogue_benchmark.quality import apply_simple_relevance_review
 from tests.simple_test_helpers import maybe_relevance_response
 
 
@@ -181,6 +183,25 @@ class SimplePromptContractTests(unittest.TestCase):
         )
         self.assertNotIn("facts", atomic_payload)
         self.assertNotIn("materials", atomic_payload)
+
+    def test_relevance_response_can_fill_the_supplied_point_template(self):
+        result, client = self._run([
+            atomicity_review("A1=single;A2=single;F1=single"),
+            completeness_review(),
+            evidence_review("A1=supported@资料1;A2=supported@资料2;F1=contradicted@资料1"),
+        ])
+        prompt, _payload = client.calls[0]
+        template = re.search(r"(?m)^REVIEW q1\n.*?\npoint_relevance: .*?\nEND_REVIEW", prompt)
+        self.assertIsNotNone(template)
+        response = parse_text_response(
+            template[0].replace("<direct|extra|uncertain>", "direct"))
+        reviewed, rejected = apply_simple_relevance_review([self.candidate], response)
+        self.assertFalse(rejected)
+        self.assertEqual(reviewed[0]["status"], "awaiting_atomicity_review")
+        self.assertEqual(response["reviews"][0]["point_relevance"],
+                         "A1=direct;A2=direct;F1=direct")
+        self.assertNotIn("RELEVANCE_ASSIGNMENTS", prompt)
+        self.assertEqual(result["questions"][0]["status"], "approved")
 
     def test_evidence_supplement_is_one_shot_after_atomicity(self):
         result, client = self._run([
