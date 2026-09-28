@@ -34,6 +34,8 @@ def episode_usage(root):
     qa = root / "qa/manifest.json"
     if qa.is_file():
         receipts.append(dict(path="qa/manifest.json", **sum_usage(read(qa).get("usage", []))))
+    elif (root / "qa").exists():
+        receipts.append(dict(sum_usage([]), path="qa/manifest.json", complete=False))
     for directory, dirs, files in os.walk(root / "tasks"):
         dirs[:] = [name for name in dirs if name not in {
             "workspace", "runtime", ".git", "reference-input", "author-reference"}]
@@ -123,18 +125,21 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             row["outcome"] = result.get("status", result.get("schema", "missing_receipt"))
             row["status"] = ("completed" if row["returncode"] == 0
                              and row["outcome"] in expected else "failed")
-            budget = _read_if(ledger)
-            if name == "dialogue" and not budget:
-                budget = {"budget": _read_if(folder / "private/budget.json")}
-            if budget_key:
-                budget = budget.get(budget_key)
-            row["usage"] = sum_usage([budget]) if budget else dict(sum_usage([]), complete=False)
             return result if row["status"] == "completed" else None
         except BaseException as error:
             row.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
                        error_type=type(error).__name__)
             raise
         finally:
+            try:
+                budget = _read_if(ledger)
+                if name == "dialogue" and not budget:
+                    budget = {"budget": _read_if(folder / "private/budget.json")}
+                if budget_key:
+                    budget = budget.get(budget_key)
+                row["usage"] = sum_usage([budget]) if budget else dict(sum_usage([]), complete=False)
+            except (OSError, ValueError, TypeError) as error:
+                row["usage"] = dict(sum_usage([]), complete=False, error_type=type(error).__name__)
             persist()
 
     def upstream(module, config, target):
@@ -206,9 +211,12 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     continue
                 from .episode_input import load_episode_manifest
                 exported = load_episode_manifest(package / "manifest.json")
-                events = read(exported["external_events"])["events"]
+                events = read(exported["external_events"])["events"] if exported.get("external_events") else []
                 record["public_memory_counts"] = {kind: sum(e.get("memory_kind") == kind for e in events)
                                                    for kind in ("M1", "M2", "M3", "M4", "M5", "M6")}
+                if not events:
+                    record.update(status="no_external_history", published_qa=0, paired_tasks=0, tasks=[])
+                    continue
                 target = scenario_root / "evaluation"
                 command = [str(python), str(Path(__file__).resolve().parents[1] / "run_episode.py"),
                     "--episode-manifest", str(package / "manifest.json"), "--qa-source", "external",
@@ -234,6 +242,12 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
     except BaseException as error:
         state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "stopped",
                      stop_reason=str(error), error_type=type(error).__name__)
+        for project in state["projects"]:
+            if project["status"] == "running":
+                project["status"] = state["status"]
+            for scenario in project["scenarios"]:
+                if scenario["status"] == "running":
+                    scenario["status"] = state["status"]
         raise
     finally:
         persist()

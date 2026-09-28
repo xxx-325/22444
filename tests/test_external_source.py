@@ -68,6 +68,21 @@ class ExternalSourceTests(unittest.TestCase):
         m4 = next(s for s in result["scopes"] if s["memory_kind"] == "M4")
         self.assertEqual(m4["evidence_group"]["target_types"], ["failure_avoidance"])
 
+    def test_one_external_event_can_supply_both_independent_tracks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "external-events.json"
+            path.write_text(json.dumps({"version": 1, "events": [{
+                "id": "x1", "kind": "compatibility_contract", "memory_kind": "M1",
+                "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "both"}]}))
+            for enabled in ({"code", "general"}, {"general"}):
+                result = load_external_scopes(path, self.records, 3, enabled)
+                self.assertEqual({s["track"] for s in result["scopes"]}, enabled)
+                self.assertEqual(len(result["events"]), 1)
+            result = load_external_scopes(path, self.records, 3, {"code", "general"},
+                                          max_groups={"general": 0, "code": 1})
+            self.assertEqual([s["track"] for s in result["scopes"]], ["code"])
+            self.assertEqual(len(result["events"]), 1)
+
     def test_usage_requires_a_cited_public_action_or_result(self):
         scope = {"external_usage_ids": ["e3"]}
         for value, expected in [("not_applied", "not_applied"), ("uncertain", "uncertain"),

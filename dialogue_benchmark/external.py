@@ -133,7 +133,7 @@ def _resolve_ids(values, identities, label):
 
 def _track(event, records_by_id):
     value = event.get("qa_mode", event.get("track"))
-    if value in {"general", "code"}:
+    if value in {"general", "code", "both"}:
         return value
     source_ids = list(event.get("source_ids", [])) + list(event.get("used_by", []))
     if any(source_kind_for(records_by_id[item]) in {"code", "test"}
@@ -252,7 +252,8 @@ def load_external_scopes(path, records, cutoff, enabled_tracks, max_chars=32000,
             rejected.append({"id": event_id, "reason": "event_after_cutoff"})
             continue
         track = _track(raw, records_by_id)
-        if track not in enabled_tracks:
+        tracks = [t for t in ("general", "code") if t in enabled_tracks] if track == "both" else [track]
+        if not tracks or any(t not in enabled_tracks for t in tracks):
             rejected.append({"id": event_id, "reason": "track_disabled", "track": track})
             continue
         if not _has_public_source(source_ids, records_by_id):
@@ -261,10 +262,11 @@ def load_external_scopes(path, records, cutoff, enabled_tracks, max_chars=32000,
         if min(usage_orders) <= min(source_orders):
             rejected.append({"id": event_id, "reason": "usage_not_after_source"})
             continue
-        scope = _event_scope(raw, records, records_by_id, cutoff, track,
-                             len(scopes), max_chars)
-        scopes.append(scope)
-        accepted.append(raw)
+        for selected_track in tracks:
+            scope = _event_scope(raw, records, records_by_id, cutoff, selected_track,
+                                 len(scopes), max_chars)
+            scopes.append(scope)
+            accepted.append(raw)
     if max_groups is not None:
         selected = []
         counts = {track: 0 for track in enabled_tracks}
@@ -278,7 +280,7 @@ def load_external_scopes(path, records, cutoff, enabled_tracks, max_chars=32000,
             selected.append((scope, event))
         scopes = [item[0] for item in selected]
         accepted = [item[1] for item in selected]
-    return {"version": document.get("version"), "events": accepted,
+    return {"version": document.get("version"), "events": list({event["id"]: event for event in accepted}.values()),
             "scopes": scopes, "rejected": rejected}
 
 

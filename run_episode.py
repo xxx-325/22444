@@ -64,6 +64,7 @@ def main(argv=None):
     state = {"source_run": str(source_run.resolve()),
              "parameters": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
              "phase": "input", "status": "running"}
+    usage_saved = False
     def phase(name):
         state["phase"] = name
         save(root / "pipeline.json", state)
@@ -127,6 +128,7 @@ def main(argv=None):
             write_report(root / "tasks", task_manifest)
             state.update(status="completed", stop_reason="no_eligible_qa")
             save(root / "usage.json", episode_usage(root))
+            usage_saved = True
             phase("complete")
             render(root)
             return 0
@@ -147,13 +149,15 @@ def main(argv=None):
         state["status"] = "completed" if status == 0 else "failed"
         phase("complete")
         save(root / "usage.json", episode_usage(root))
+        usage_saved = True
         if status == 0 and (root / "tasks/manifest.json").exists():
             compact_run(root)
             write_report(root / "tasks", read(root / "tasks/manifest.json"))
             render(root)
         return status
     except BaseException as error:
-        save(root / "usage.json", episode_usage(root))
+        if not usage_saved:
+            save(root / "usage.json", episode_usage(root))
         state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
                      error_type=type(error).__name__)
         save(root / "pipeline.json", state)

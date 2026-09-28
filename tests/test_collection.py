@@ -31,6 +31,29 @@ class CollectionTests(unittest.TestCase):
         save(root / "input.json", plan)
         return plan
 
+    def test_started_qa_without_final_usage_is_not_reported_as_complete_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "qa").mkdir()
+            self.assertFalse(episode_usage(root)["complete"])
+
+    def test_interrupted_stage_still_reads_its_primary_ledger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            def interrupted(command, cwd, log):
+                target = Path(command[command.index("--output") + 1])
+                save(target / "private/budget.json", dict(attempts=3, prompt_tokens=60,
+                                                          completion_tokens=9))
+                raise KeyboardInterrupt()
+            with patch("dialogue_benchmark.collection._command", side_effect=interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_collection(root / "input.json", root / "run", root, root / ".env")
+            result = read(root / "run/collection.json")
+            self.assertEqual(result["usage"]["requests"], 3)
+            self.assertEqual(result["usage"]["total_tokens"], 69)
+            self.assertEqual(result["projects"][0]["status"], "interrupted")
+
     def command(self, command, cwd, log):
         target = Path(command[command.index("--output") + 1])
         self.commands.append(command)
@@ -58,8 +81,13 @@ class CollectionTests(unittest.TestCase):
         elif name == "evaluation":
             self.assertIn("--episode-manifest", command)
             self.assertIn("external", command)
-            save(target / "pipeline.json", dict(status="completed", stop_reason="no_eligible_qa"))
-            save(target / "qa/qa-public.json", dict(questions=[]))
+            paired = getattr(self, "paired", False)
+            save(target / "pipeline.json", dict(status="completed", **(
+                {} if paired else {"stop_reason": "no_eligible_qa"})))
+            save(target / "qa/qa-public.json", dict(questions=[{"id": "q1"}] if paired else []))
+            save(target / "tasks/manifest.json", dict(tasks=[dict(task="task-01", status="completed",
+                comparison={"without_memory": {"result": "failed", "metrics": {}, "trial": "trial-1"},
+                            "with_memory": {"result": "passed", "metrics": {}, "trial": "trial-2"}})] if paired else []))
             save(target / "usage.json", dict(requests=1, prompt_tokens=10, completion_tokens=2, complete=True))
         else:
             self.fail("Unexpected stage")
@@ -70,7 +98,7 @@ class CollectionTests(unittest.TestCase):
         with patch("dialogue_benchmark.collection._command", side_effect=self.command), \
              patch("dialogue_benchmark.collection.subprocess.check_output", return_value="root-sha\n"), \
              patch("dialogue_benchmark.episode_input.load_episode_manifest", side_effect=lambda p: {
-                 "external_events": p.parent / "external-events.json"}):
+                 "external_events": p.parent / "external-events.json"} if not getattr(self, "empty", False) else {}):
             return run_collection(root / "input.json", root / "run", root, root / ".env")
 
     def test_rejected_scenario_is_retained_and_next_scenario_starts_from_same_base(self):
@@ -101,9 +129,36 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(result["usage"]["requests"], 2)
             self.assertTrue((root / "run/planner/project/config.json").is_file())
 
+    def test_pairs_are_aggregated_with_distinct_scenario_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            result = self.invoke(root)
+            scenes = result["projects"][0]["scenarios"]
+            self.assertEqual(sum(s["paired_tasks"] for s in scenes), 2)
+            self.assertEqual(result["usage"]["requests"], 9)
+            report = (root / "run/report.md").read_text()
+            self.assertIn("planner/first/evaluation/tasks/task-01", report)
+            self.assertIn("planner/second/evaluation/tasks/task-01", report)
+            self.assertEqual(scenes[0]["public_memory_counts"]["M1"], 1)
+
     def test_duplicate_or_escaping_targets_are_rejected_before_execution(self):
         with tempfile.TemporaryDirectory() as directory:
             plan = self.plan(Path(directory))
             plan["projects"][0]["id"] = "../project"
             with self.assertRaises(ValueError):
                 validate_plan(plan)
+
+    def test_valid_empty_history_skips_evaluation_and_continues(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.empty = True
+            result = self.invoke(root)
+            self.assertEqual(result["usage"]["requests"], 7)
+            self.assertEqual([s["status"] for s in result["projects"][0]["scenarios"]],
+                             ["no_external_history", "no_external_history"])
+            self.assertFalse(any("run_episode.py" in " ".join(c) for c in self.commands))

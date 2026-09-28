@@ -87,6 +87,8 @@ dialogue 生成侧可以同时保存一个轻量的 `external-events.json`。其
 
 通过 `run_episode.py --episode-manifest ... --qa-source external` 运行时，程序自动读取导出包中的外部事件文件并核对字节哈希；显式指定的文件必须与导出包一致。M1～M6 来源标签单独保留，不替代 QA 类型，M4 的失败经验事件也可接入。证据审核同时检查公开行动或结果是否证明该信息被实际使用；只有承诺、复述或证据不完整时，保留为待复核。
 
+标记 `qa_mode: both` 的事件可以分别供两轨出题，事件本身只计数一次，最终回答目标仍进行全局去重。
+
 ### 自建项目批量生成
 
 `run_collection.py` 串联模拟器已有的项目准备、场景准备、渐进对话、导出及 QA／需求评测。以 [examples/collection.json](examples/collection.json) 配置固定尝试列表；`runtime_config` 指向模拟器配置，包含模型、固定 Docker 镜像及整个项目准备的 `max_requests`、`max_tokens` 预算，凭据仍从独立环境文件读取。
@@ -100,6 +102,8 @@ python run_collection.py --config /path/to/collection.json \
 使用模拟器的 Python 环境，或通过 `--python` 指定。DeepSeek 生成可运行的基础项目和两三个连续功能提交。宿主固定功能测试，检查前版失败、新版通过、旧回归保留。复用项目时，用 `prepared_config` 代替业务 `brief`。同一项目的场景从共同基线独立启动；正式两组从各自 dialogue 的实际结束快照开始。
 
 批次在阶段之间检查累计请求和 token；已启动的阶段按其现有预算完成，不增加单次输出上限。失败与拒绝全部保存，不自动追加候选凑数。另一批固定计划使用新目录。M4／M5 场景需要预先准备执行条件；设计数量与实际公开事件数量分别统计，项目家族按根 Git 谱系分组。
+
+完成包没有公开外部历史时，记录 `no_external_history` 并跳过 QA／需求执行，继续处理固定列表中的其他场景。
 
 `collection.md` 展示各阶段产出及构造成本，`report.md`、`report.html` 复用成对评测报告，`collection.json` 保存完整阶段记录。清理临时运行文件前，实际模型请求正文及响应会先进入经过校验的私有压缩轨迹。
 

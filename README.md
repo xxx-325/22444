@@ -124,6 +124,8 @@ package. M1–M6 provenance tags are retained separately from QA purpose types,
 including M4 failure-avoidance events. Evidence review also checks actual public
 use: a promise or repeated rule alone does not establish application. Missing or
 uncertain use evidence stays pending review.
+Events marked `qa_mode: both` can seed both enabled tracks; the event itself is
+counted once and final answer targets still go through global deduplication.
 
 ### Generated project collections
 
@@ -150,8 +152,9 @@ paired trial starts from its dialogue's actual final snapshot.
 The collection checks cumulative request/token usage between stages; a started
 stage finishes under its own existing budgets. No per-response output cap is
 introduced. Rejected stages remain recorded, and the runner does not add attempts
-to replace failures. Use a new output directory for another fixed plan. M4/M5
-scenarios require prepared runtime conditions; design counts and public event
+to replace failures. Use a new output directory for another fixed plan.
+An episode with no exported external history is recorded as `no_external_history`
+and skips QA/task execution. M4/M5 scenarios require prepared runtime conditions; design counts and public event
 counts are reported separately. Root Git lineage groups project families.
 
 `collection.md` lists construction outcomes and costs; `report.md` and

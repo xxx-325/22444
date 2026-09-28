@@ -10,6 +10,33 @@ from run_episode import main
 
 
 class EpisodeRunnerTests(unittest.TestCase):
+    def test_cleanup_failure_keeps_the_usage_receipt_saved_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            candidate = source / "workspace/candidate"
+            candidate.mkdir(parents=True)
+            (candidate / "a.py").write_text("x = 1\n")
+            (source / "session.jsonl").write_text(json.dumps({"kind": "user", "content": "rule"}) + "\n")
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            def generated(args):
+                save(Path(args[args.index("--output") + 1]) / "qa-public.json", {"questions": [{"id": "q1"}]})
+                return 0
+            def tasks(args):
+                save(Path(args[args.index("--output") + 1]) / "manifest.json", {"tasks": []})
+                return 0
+            receipt = dict(requests=3, prompt_tokens=100, completion_tokens=20, complete=True)
+            with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.generate_qa", side_effect=generated), \
+                 patch("run_episode.run_tasks", side_effect=tasks), patch("run_episode.render"), \
+                 patch("run_episode.episode_usage", return_value=receipt) as usage, \
+                 patch("run_episode.compact_run", side_effect=RuntimeError("cleanup failed")):
+                with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                    main(["--source-run", str(source), "--simulator-path", str(root),
+                          "--env-file", str(root / ".env"), "--output", str(root / "run")])
+            usage.assert_called_once()
+            self.assertEqual(read(root / "run/usage.json"), receipt)
+
     def test_external_mode_uses_sidecar_and_probes_the_pinned_final_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
