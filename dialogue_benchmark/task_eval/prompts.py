@@ -36,7 +36,7 @@ REASON: 待核查事实怎样影响资格；candidate 则说明新用途、历�
 SOURCES: qa、已读取的 source、query 编号或 repository_exploration，逗号分隔；无引用写 none
 QUERY: op|target|path|text|offset；不适用的 path 或 text 写 -；无需查询写 none
 candidate 还必须给出三行：
-PUBLIC_GOAL: 不含具体历史规则的一句话新功能目标
+PUBLIC_GOAL: 指明适用客户或系统的新功能目标，不包含具体历史取值
 AGREEMENT_OBJECT: 历史约定涉及的对象
 AGREEMENT_SCOPE: 新功能中沿用该对象的范围
 END
@@ -143,7 +143,8 @@ private_history_targets：已经核实的历史规则，只供你核对；无记
 injected_answer：仅有记忆组收到的答案。不要把这两种私有材料算成公开信息。
 
 对每条固定规则依次判断：
-applicable：新功能必须用这条规则吗？yes/no/uncertain。仅实现可配置接口、由调用者传规则时选 no。
+applicable：新功能必须用这条规则吗？yes/no/uncertain。接口若要求调用者传入这条规则的取值或映射，选 no。
+若签名要求传映射，正文又禁止传映射，属于题面矛盾，TASK 选 uncertain；不能只按正文忽略必填参数。
 public：仅看公开信息，具体规则已明确多少？full/partial/none/uncertain。
 “沿用以前的约定”只指明对象，不提供具体规则；同一通用函数支持多个选项，也没有说明客户选哪个。
 full 必须引用 task 或 public_repository 中的真实来源；不能引用私有规则或答案。
@@ -234,6 +235,19 @@ requirements 是不能修改的题面和历史规则；files 是待修的测试�
 acceptance.md 只改 Check 列引用，其他列原样保留。现有冻结回归文件和命令不变。
 输出 files 中每个文件的完整内容，格式为 FILE 文件名、换行内容、END_FILE。
 不输出 JSON、代码围栏、执行结果或解释。程序会运行这些文件并再次审核。
+"""
+
+TEST_FILES = """根据固定需求和完整的小型 Python 仓库写验收测试，没有工具调用。
+requirements 定义新功能及适用历史，repository 是当前代码、测试和文档。
+输出 FILE test_acceptance.py 和 FILE acceptance.md 两个完整文件，每个以 END_FILE 结束。
+新增接口在测试函数内导入。测试只检查需求约定的可观察行为，不要求某种实现路线。
+旧接口的约束只测旧接口；新接口未约定的异常类型、输入不变性和编码布局不加入要求。
+从调用前独立副本计算输出预期。task 行测试公开功能，历史状态码和阈值只在对应 h 行测试。
+acceptance.md 只替换 Check 列，其他列原样保留。Check 使用 test: test_acceptance::函数名；
+原仓库 tests 已由程序冻结，旧接口回归可引用 command: existing_suite。
+程序会实际运行全部用例，再检查参考实现与错用历史的变体；不要编写或声称执行结果。
+若固定需求有具体矛盾，改为仅输出 FILE NO_TASK.md、矛盾说明、END_FILE。
+不要输出 JSON、代码围栏或其他解释。
 """
 
 TASK_REVIEW = """核对这个候选能否测试历史答案的帮助。先找信息缺口，再给结论。

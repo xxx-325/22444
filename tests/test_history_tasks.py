@@ -10,7 +10,7 @@ from dialogue_benchmark.task_eval import retention
 from dialogue_benchmark.task_eval.history import (
     answer_clarification, freeze_contract, freeze_targets, historical_context, prepare_history,
     read_history_review, oracle_coverage, validate_contract_targets, review_history, review_sources)
-from dialogue_benchmark.task_eval.runtime import run_agent, configure, repair_tests, review_checks, write_history_mutation
+from dialogue_benchmark.task_eval.runtime import run_agent, configure, repair_tests, write_tests, review_checks, write_history_mutation
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
 import test_task_eval_flow
@@ -433,6 +433,51 @@ class HistoryConstructionTests(unittest.TestCase):
 
 
 class CheckReviewTests(unittest.TestCase):
+    def test_initial_test_writer_uses_snapshot_and_freezes_real_regressions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec, baseline = root / "spec", root / "baseline"
+            spec.mkdir()
+            (baseline / "tests").mkdir(parents=True)
+            (baseline / "entry.py").write_text("VALUE = 1\n")
+            original = "def test_existing(): assert True\n"
+            (baseline / "tests/test_existing.py").write_text(original)
+            (spec / "task.md").write_text("Add the new entry")
+            (spec / "acceptance.md").write_text("Initial checks")
+            calls = []
+            def call(prompt, payload, config, output):
+                calls.append(payload)
+                return {"files": [
+                    {"name": "test_acceptance.py", "content": "def test_feature(): assert True\n"},
+                    {"name": "acceptance.md", "content": "Executable checks\n"}]}
+            result = write_tests(spec, baseline, {}, root / "author", SimpleNamespace(call=call))
+            self.assertEqual(result["status"], "finished")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["repository"]["entry.py"], "VALUE = 1\n")
+            self.assertEqual((spec / "regression/tests/test_existing.py").read_text(), original)
+            self.assertEqual((baseline / "tests/test_existing.py").read_text(), original)
+            self.assertIn("/workspace/checks/regression/tests", (spec / "commands/existing_suite.sh").read_text())
+            self.assertEqual((spec / "task.md").read_text(), "Add the new entry")
+            (baseline / "large.py").write_text("# context\n" * 10000)
+            self.assertIsNone(write_tests(spec, baseline, {}, root / "large", SimpleNamespace(call=call)))
+            self.assertEqual(len(calls), 1)
+
+    def test_initial_test_writer_preserves_a_contradiction_without_making_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec, baseline = root / "spec", root / "baseline"
+            spec.mkdir()
+            (baseline / "tests").mkdir(parents=True)
+            (baseline / "entry.py").write_text("pass\n")
+            (spec / "task.md").write_text("Conflicting requirements")
+            (spec / "acceptance.md").write_text("Original criteria")
+            result = write_tests(spec, baseline, {}, root / "author", SimpleNamespace(call=lambda *a: {
+                "files": [{"name": "NO_TASK.md", "content": "The required argument contradicts the task."}]}))
+            self.assertEqual(result["status"], "finished")
+            self.assertTrue((spec / "NO_TASK.md").exists())
+            self.assertFalse((spec / "test_acceptance.py").exists())
+            self.assertEqual((spec / "acceptance.md").read_text(), "Original criteria")
+
     def test_finite_repair_cannot_edit_task_or_frozen_regressions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

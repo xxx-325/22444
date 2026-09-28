@@ -9,7 +9,7 @@ from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_inputs, read, save, write_diff
 from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
 from .metrics import compare_trials
-from .runtime import configure, review_task, review_checks, repair_tests, write_history_mutation, run_agent
+from .runtime import configure, review_task, review_checks, repair_tests, write_tests, write_history_mutation, run_agent
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline, source_version
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
@@ -320,14 +320,16 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             elif preparation_feedback:
                 authored = repair_tests(spec, config, author, budget, feedback)
             else:
-                prepare(author, baseline)
-                test_reference = prepare_test_reference(spec, reference, run / "test-reference")
-                authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS + feedback,
-                                     system=prompts.PREPARATION_SYSTEM, reference=test_reference, **remaining)
-                metrics = authored.get("metrics", {})
-                budget.record([dict(request_count=metrics.get("attempted_requests", 0),
-                                    **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
-                                       if metrics.get("usage_complete") else {}))])
+                authored = write_tests(spec, baseline, config, author, budget, feedback)
+                if authored is None:
+                    prepare(author, baseline)
+                    test_reference = prepare_test_reference(spec, reference, run / "test-reference")
+                    authored = run_agent(author, config, "judge", prompts.AUTHOR_TESTS + feedback,
+                                         system=prompts.PREPARATION_SYSTEM, reference=test_reference, **remaining)
+                    metrics = authored.get("metrics", {})
+                    budget.record([dict(request_count=metrics.get("attempted_requests", 0),
+                                        **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
+                                           if metrics.get("usage_complete") else {}))])
             budget.record([])
         except Exception as error:
             attempts.append(dict(attempt=attempt, accepted=False, status="pending", reason=str(error)))

@@ -111,9 +111,60 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
     return file_generation_result(output, result)
 
 
+def _write_test_files(spec, files):
+    """Validate generated Python before writing any model-authored test file."""
+    import ast
+    for name, content in files.items():
+        if name.endswith(".py"):
+            ast.parse(content, filename=name)
+    for name, content in files.items():
+        (Path(spec) / name).write_text(content, encoding="utf-8")
+
+
+def write_tests(spec, baseline, config, output, budget, feedback=""):
+    """Write tests in one request when the complete Python snapshot fits."""
+    from ..llm import request_size
+    from .prompts import TEST_FILES
+    from .selection import _parse_files
+
+    spec, baseline, output = Path(spec), Path(baseline), Path(output)
+    if not (baseline / "tests").is_dir():
+        return None
+    paths = [path for path in sorted(baseline.rglob("*"))
+             if path.is_file() and path.suffix in {".py", ".md", ".rst", ".txt", ".toml", ".ini", ".cfg"}
+             and not any(part.startswith(".") or part == "__pycache__"
+                         for part in path.relative_to(baseline).parts)]
+    if not any(path.suffix == ".py" for path in paths) or sum(path.stat().st_size for path in paths) > 60000:
+        return None
+    payload = {"requirements": {name: (spec / name).read_text() for name in
+               ("task.md", "acceptance.md", "history-contract.txt") if (spec / name).is_file()},
+               "repository": {path.relative_to(baseline).as_posix(): path.read_text() for path in paths},
+               "feedback": feedback}
+    if request_size(TEST_FILES, payload) > 60000:
+        return None
+    try:
+        response = budget.call(TEST_FILES, payload, config, output)
+        names = {row.get("name") for row in response.get("files", [])}
+        required = {"NO_TASK.md"} if names == {"NO_TASK.md"} else {"test_acceptance.py", "acceptance.md"}
+        files = _parse_files(response, required, required)
+        _write_test_files(spec, files)
+        if "NO_TASK.md" not in files:
+            regression = spec / "regression/tests"
+            if not regression.exists():
+                copy_tree(baseline / "tests", regression)
+            commands = spec / "commands"
+            commands.mkdir(exist_ok=True)
+            (commands / "existing_suite.sh").write_text(
+                "python -m pytest -c /dev/null --rootdir=/workspace/checks "
+                "-p no:cacheprovider -q /workspace/checks/regression/tests\n", encoding="utf-8")
+        result = {"status": "finished"}
+    except Exception as error:
+        result = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}
+    return file_generation_result(output, result)
+
+
 def repair_tests(spec, config, output, budget, feedback):
     """Repair known test defects from complete saved files in one model request."""
-    import ast
     from .selection import _parse_files
     from .prompts import TEST_REPAIR
 
@@ -128,11 +179,7 @@ def repair_tests(spec, config, output, budget, feedback):
         response = budget.call(TEST_REPAIR, {"requirements": fixed, "files": existing,
                               "feedback": feedback}, config, output)
         files = _parse_files(response, names, names)
-        for name, content in files.items():
-            if name.endswith(".py"):
-                ast.parse(content, filename=name)
-        for name, content in files.items():
-            (spec / name).write_text(content, encoding="utf-8")
+        _write_test_files(spec, files)
         result = {"status": "finished"}
     except Exception as error:
         result = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}

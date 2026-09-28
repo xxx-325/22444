@@ -169,8 +169,8 @@ exhausted budgets produce pending records, not ineligibility conclusions.
 A candidate first freezes the historical targets from the original dialogue.
 Then one tool-free call writes only the public task, and a second tool-free call
 writes private history use and acceptance material. The existing qualification
-review runs only after the public task is fixed; only then does OpenHands
-construct tests. Selection, drafting, review, and test authoring share cumulative
+review runs only after the public task is fixed; only then are tests constructed.
+Selection, drafting, review, and test authoring share cumulative
 budgets, without a per-response output cap.
 The test author cannot change qualified requirements or historical rules.
 Test repairs reuse the qualified draft. Compatibility tests apply to the named
@@ -191,6 +191,11 @@ rules and injected answer. Its decisions and quoted answer coverage are saved
 under `history-review/`; unsupported history or incomplete answers stop admission.
 The test author receives the fixed criteria and historical contract; source
 archives stay with qualification and independent validation.
+For small Python snapshots with a `tests/` directory, one model request receives
+the source, tests, documentation and fixed criteria and writes the acceptance
+tests. The host copies the original regression suite and executes all checks.
+Snapshots exceeding the existing request budget use the OpenHands test author.
+Reference implementations and both scored conditions continue to use OpenHands.
 For historical tasks, a second finite review checks each acceptance row and any
 additional tests against the task, contract, changed source files and executed
 results. Missing coverage or unsupported requirements return for correction.
