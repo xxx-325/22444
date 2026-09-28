@@ -334,6 +334,26 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("Maple rule", str(calls[0]["history"]))
         self.assertNotIn("Unrelated follow-up", str(calls[0]["history"]))
 
+    def test_history_targets_keep_applicable_cycle_limited_authorization(self):
+        statement = "Maple approved only P1 orders for the May delivery cycle."
+        self.history["initial_events"][0]["text"] = statement
+        self.history["events"][0]["text"] = statement
+        row = {"id": "h1", "statement": statement, "scope": "Maple May delivery cycle",
+               "behavior": "Select P1 orders", "sources": "source1", "supersedes": "none"}
+        budget = SelectionBudget(self.root, {})
+        with patch.object(budget, "call", return_value={"reviews": [row]}) as call:
+            result = extract_history_targets(
+                {"question": "Which orders are approved for Maple's May delivery cycle?", "type": "M6"},
+                self.history, {"public_goal": "Add delivery reconciliation"},
+                {}, self.root / "cycle-targets", budget)
+        prompt = call.call_args.args[0]
+        self.assertIn("普通的一次执行命令不要作为约定", prompt)
+        self.assertIn("仍适用于本任务的、已确认的周期限定授权或状态必须保留", prompt)
+        self.assertIn("不得扩展其周期或范围", prompt)
+        self.assertEqual(result["status"], "candidate")
+        self.assertEqual(result["targets"][0]["statement"], statement)
+        self.assertEqual(result["targets"][0]["scope"], row["scope"])
+
     def test_history_target_extraction_preserves_saved_public_corrections(self):
         from dialogue_benchmark.task_eval.history import prepare_history
         records = [

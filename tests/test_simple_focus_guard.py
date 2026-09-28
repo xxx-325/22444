@@ -3,6 +3,7 @@
 import copy
 import json
 import unittest
+from unittest.mock import patch
 
 from dialogue_benchmark.fact_index import (
     _review_guard_closure,
@@ -91,6 +92,45 @@ class SimpleFocusPromptTests(unittest.TestCase):
         self.assertNotIn("f-selected", qa_text)
         self.assertEqual(len(focus_payload["material_references"]), 1)
         self.assertEqual(len(qa_payload["materials"]), 1)
+
+    def test_invalid_focus_response_is_saved_before_validation_without_retry(self):
+        cases = [
+            ({"focus": {"text": "确认导出限制", "sources": []}}, "invalid_focus"),
+            ({"focus": {"text": "确认资料1的导出限制", "sources": ["资料1"]}}, "invalid_focus"),
+            ({"focus": {"text": "确认导出限制", "sources": ["资料99"]}}, "invalid_focus_sources"),
+        ]
+        for response, error in cases:
+            with self.subTest(response=response):
+                saved = {}
+                with patch.object(_NoQaClient, "ask", return_value=response) as ask:
+                    result = generate_from_facts(
+                        self.scope, [self.fact], _NoQaClient(), qa_mode="general",
+                        target_type="constraint_followthrough",
+                        checkpoint=lambda name, value: saved.update({name: copy.deepcopy(value)}))
+                self.assertEqual(saved["focus-response.json"], response)
+                self.assertEqual(saved["focus-error.json"]["error_code"], error)
+                self.assertNotIn("focus.json", saved)
+                self.assertEqual(result["stage_status"]["focus"], "failed")
+                self.assertEqual(result["stage_status"]["qa"], "not_submitted")
+                self.assertEqual(result["generation_request_count"], 1)
+                ask.assert_called_once()
+
+    def test_refinement_response_is_saved_before_validation(self):
+        initial = {"focus": {"text": "确认批准状态以及导出限制", "sources": ["资料1"]}}
+        refined = {"focus": {"text": "确认资料1的导出限制", "sources": ["资料1"]}}
+        saved = {}
+        with patch.object(_NoQaClient, "ask", side_effect=[initial, refined]) as ask:
+            result = generate_from_facts(
+                self.scope, [self.fact], _NoQaClient(), qa_mode="general",
+                target_type="constraint_followthrough",
+                checkpoint=lambda name, value: saved.update({name: copy.deepcopy(value)}))
+        self.assertEqual(saved["focus-response.json"], initial)
+        self.assertEqual(saved["focus-initial.json"]["focus"]["sources"], ["selected-source"])
+        self.assertEqual(saved["focus-refinement-response.json"], refined)
+        self.assertEqual(saved["focus-error.json"]["error_code"], "invalid_focus")
+        self.assertEqual(result["stage_status"]["qa"], "not_submitted")
+        self.assertEqual(result["generation_request_count"], 2)
+        self.assertEqual(ask.call_count, 2)
 
     def test_simple_prompt_requires_grounded_relationships_and_concrete_forbidden_claims(self):
         prompt = " ".join(SIMPLE_QA_PROMPT.split())

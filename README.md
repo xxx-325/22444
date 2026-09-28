@@ -134,6 +134,15 @@ alone does not qualify. A recorded receiver size limit can qualify because it
 changes how a future export must work. The existing target review checks this
 distinction. External QA has no graph-distance difficulty label.
 
+User-supplied API specifications alone are not external business facts. Extraction
+keeps actual customer choices, authorizations, agreements, and external state with
+their recorded objects, cycles, and conditions. A hypothetical later approval is
+not an observed update; cycle-limited authorizations remain eligible when they
+apply to the task. One selection rule includes its scope, restrictions, and
+exceptions; independent outputs or actions remain separate answer points.
+Parsed focus responses are saved before validation in local stage artifacts
+(`focus-response.json`, and `focus-refinement-response.json` when applicable).
+
 The dialogue producer may also save a small `external-events.json` sidecar. It
 records public dialogue source IDs for facts that arose from a user correction,
 an environment observation, a perturbation failure, a compatibility exception,

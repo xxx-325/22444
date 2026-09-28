@@ -35,6 +35,29 @@ class ExternalClient(Client):
 
 
 class ExternalMemoryPipelineTests(unittest.TestCase):
+    def test_external_fact_prompt_separates_customer_choice_from_api_specs(self):
+        client = ExternalClient()
+        extract_facts(self.scope("M6"), client, qa_mode="memory", external_only=True)
+        prompt = " ".join(client.calls[0][0].split())
+        self.assertIn("API requirements and corrections are not external business facts by themselves", prompt)
+        self.assertIn("customer's actual choice, authorization, business agreement, or external state", prompt)
+        self.assertIn("including its object and applicable scope", prompt)
+        self.assertIn("Generic API behavior and sample data are context, not separate fact targets", prompt)
+
+    def test_memory_authoring_preserves_cycle_and_hypothetical_approval(self):
+        client = Client()
+        generate_from_facts(self.scope("M6"),
+            [{"id": "f1", "statement": "本周期仅批准 P1。", "sources": ["e1"]}],
+            client, qa_mode="memory", target_type="M6")
+        workflow_prompt, focus_prompt, qa_prompt = [prompt for prompt, _ in client.calls]
+        self.assertIn("保留公开确认的客户、对象、周期和适用条件", workflow_prompt)
+        self.assertIn("假设中的后续批准不是已经发生的更新或局部纠正", workflow_prompt)
+        for prompt in (focus_prompt, qa_prompt):
+            self.assertIn("Preserve the publicly confirmed customer, object, cycle, and applicability", prompt)
+            self.assertIn("A hypothetical later approval is not an actual update or scoped correction", prompt)
+            self.assertIn("Do not extend a cycle-limited authorization to other cycles", prompt)
+        self.assertEqual([receipt["stage"] for receipt in client.usage], ["workflow", "focus", "qa"])
+
     @unittest.skipUnless(importlib.util.find_spec("simulator"), "Add the simulator checkout to PYTHONPATH")
     def test_simulator_route_and_disclosed_update_reach_requirement_input(self):
         from simulator.openhands.commit_scenario import expand_tasks
@@ -47,7 +70,8 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
 
         tasks = [dict(kind="commit", reference=ref, base=base, title="Delivery", body="Extend delivery")
                  for ref, base in (("first", "base"), ("second", "first"))]
-        route = {"stages": [dict(commit=t["reference"], requirement=t["body"],
+        route = {"baseline": "The project supports generic deliveries without customer-specific rules.",
+                 "stages": [dict(commit=t["reference"], requirement=t["body"],
                                   history="Private planned choice, disclose after an applicable attempt") for t in tasks]}
         old = dict(id="old", type="M1", text="Keep explicit nulls", scope="Harbor",
                    trigger="Code chooses field selection", behavior="Retain null fields in delivery")

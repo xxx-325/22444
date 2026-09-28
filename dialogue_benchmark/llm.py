@@ -1141,12 +1141,16 @@ Return at most 12 useful facts per request, each stated concisely.
 """ + FACT_FORMAT
 
 EXTERNAL_FACT_PROMPT = """Extract only externally supplied historical facts from the
-provided dialogue window. Prefer a user correction, a real environment or downstream
+provided dialogue window. User-supplied API requirements and corrections are not
+external business facts by themselves. Keep the customer's actual choice,
+authorization, business agreement, or external state, including its object and
+applicable scope. Generic API behavior and sample data are context, not separate
+fact targets. Prefer corrections to those facts, a real environment or downstream
 observation, a perturbation-revealed failure, a compatibility exception, or a completed
 test conclusion that affects future work. Keep the condition, affected object, and
 observed consequence. A file count or byte total alone is not a reusable conclusion.
 An external limit that constrains future output is. Do not
-extract file names, signatures, current implementation details, plans, or facts that
+extract standalone file names, signatures, current implementation details, plans, or facts that
 are merely visible in unchanged code. A fact must be stated in the supplied dialogue
 or public tool result; do not infer one from silence. Separate an old rule from a later
 correction and keep only the still-applicable rule as a separate fact. Return at most
@@ -1236,6 +1240,8 @@ SIMPLE_CODE_FOCUS_RULES = SIMPLE_CODE_QA_RULES
 MEMORY_WORKFLOW_PROMPT = """为后续开发选择一条有实际用途的业务链路。
 输入是已公开的历史原文和事实。选择其中涉及的真实业务，用一句话说明未来目标及相连的业务步骤。
 facts 是本次要考查的外部知识，业务链路必须用到其中的具体规则；materials 用于理解这些规则的条件、使用和后续纠正。
+保留公开确认的客户、对象、周期和适用条件；不要把周期限定的授权扩展为长期政策。
+假设中的后续批准不是已经发生的更新或局部纠正。
 例如“增加批量交付恢复：确认接收状态 → 处理待完成交付 → 汇总结果”。这只是格式示例。
 这里只选业务方向，不回答历史规则，不规定代码修改顺序，也不声称新功能已实现。
 选择需要复用所给外部知识的链路；孤立的文件数、运行字节数或测试计数不构成开发目标。
@@ -2041,6 +2047,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             result["generation_request_count"] += 1
             focus_document = _ask_stage(
                 client, focus_prompt, focus_payload, "focus")
+            save("focus-response.json", focus_document)
             focus_document = _restore_local_focus(
                 focus_document, focus_ref_to_source)
             focus_issue = _simple_focus_issue(
@@ -2060,6 +2067,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 focus_document = _ask_stage(
                     client, refinement_prompt, refinement_payload,
                     "focus_refinement")
+                save("focus-refinement-response.json", focus_document)
                 focus_document = _restore_local_focus(
                     focus_document, focus_ref_to_source)
                 if _simple_focus_issue(

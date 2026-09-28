@@ -162,6 +162,24 @@ class SimpleAtomicityTests(unittest.TestCase):
         self.assertNotIn("facts", atomic_payload)
         self.assertNotIn("materials", atomic_payload)
 
+    def test_selection_rule_keeps_its_scope_without_joining_independent_actions(self):
+        text = " ".join(SIMPLE_ATOMICITY_PROMPT.split())
+        self.assertIn("One eligibility or selection rule", text)
+        self.assertIn("conditions, restrictions, and exceptions that define its scope, is one claim", text)
+        self.assertIn("Independent outputs or actions are separate claims", text)
+        candidate = copy.deepcopy(self.candidate)
+        candidate.update(question="本周期开放订单如何选择？", forbidden_points=[], answer_points=[
+            {"text": "本周期仅纳入 P1 订单，且无额外订单级排除。", "sources": ["m1"]}])
+        self.scope["dialogue"][0]["text"] = candidate["answer_points"][0]["text"]
+        result, client = self._run([
+            atomicity_review("A1=single"), completeness_review(),
+            evidence_review("A1=supported@资料1"),
+        ], candidate=candidate)
+        self.assertEqual(result["questions"][0]["status"], "approved")
+        self.assertEqual(result["questions"][0]["answer_points"], candidate["answer_points"])
+        self.assertEqual([receipt["stage"] for receipt in client.usage], [
+            "review_relevance", "review_atomicity", "review_completeness", "review_evidence"])
+
     def test_compound_port_and_retry_point_rejects_before_follow_ups(self):
         candidate = copy.deepcopy(self.candidate)
         candidate["answer_points"] = [

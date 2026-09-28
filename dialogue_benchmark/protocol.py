@@ -45,6 +45,9 @@ Use examples to identify its meaning or scope, not as extra recall targets.
 A recorded external size limit can be useful when it determines how future output must behave.
 Use the rule, condition, or established consequence actually present in the evidence;
 do not turn a one-off observation into a permanent rule.
+Preserve the publicly confirmed customer, object, cycle, and applicability.
+A hypothetical later approval is not an actual update or scoped correction.
+Do not extend a cycle-limited authorization to other cycles or call it the current policy.
 """
 
 TASK_TYPE_GUIDANCE = {
@@ -75,7 +78,12 @@ SIMPLE_TEMPORAL_WORDING_RULE = (
 
 SIMPLE_ATOMICITY_RULE = (
     "One subject's old state plus new state is one transition claim. "
-    "One condition plus its result is one behavior claim. Use separate points "
+    "One condition plus its result is one behavior claim. "
+    "One eligibility or selection rule, including the conditions, restrictions, and "
+    "exceptions that define its scope, is one claim. 'Include all approved records "
+    "in the same window, with no additional record-level exclusions' is single. "
+    "Independent outputs or actions are separate claims, even when they share a "
+    "condition. Use separate points "
     "for different subjects or independent conclusions. Examples: 'Port 8080 "
     "changed to 9090' is single. 'On timeout, do not publish output' is single. "
     "'The port changed and the retry count changed' is compound. 'tests contains "
