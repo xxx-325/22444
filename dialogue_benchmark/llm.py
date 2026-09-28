@@ -1254,6 +1254,21 @@ SOURCES: 资料1,资料2
 没有足够公开依据只输出 NO_QA。
 """
 
+MEMORY_QA_PROMPT = """根据输入生成一道中文问答。固定任务：TARGET_DEFINITION。
+workflow 是后续开发场景，focus 是需要确认的历史决定。materials 原文才是答案依据。
+围绕这条链路写一个自然问题。共同决定其行为的几条历史规则放在同一道题的答案中，
+不要拆成多道语法、参数或数值小题。题干交代客户及适用场景，不透露历史答案。
+每行 ANSWER_POINT 写一条有来源的有效规则，保留该规则的条件与例外；不重复同义规则。
+只使用实际公开的内容，区分用户约定、建议和实测；后续纠正仅替代其适用范围。
+只输出一个 QA 块，不输出类型、难度、解释、JSON或Markdown：
+QA q1
+QUESTION: 自然问题
+ANSWER_POINT: 一条历史规则及其适用条件 || SOURCES: 资料1,资料2
+END_QA
+按需要增加 ANSWER_POINT 行；资料编号只放在 SOURCES 后。
+无法从材料回答时只输出 NO_QA。
+""" + SIMPLE_TEMPORAL_WORDING_RULE + MEMORY_QA_RULES
+
 SIMPLE_GENERAL_FOCUS_RULES = """
 普通题围绕固定任务选择一项历史信息：后续做哪个具体动作前，需要确认什么？
 不要选“有哪些限制/哪些操作/输入与输出要求”这类清单或多个目标。
@@ -1960,10 +1975,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             elif qa_mode == "memory":
                 focus_prompt = MEMORY_FOCUS_PROMPT.replace("TARGET_DEFINITION", definition)
                 focus_prompt += MEMORY_QA_RULES
-                qa_prompt = qa_prompt.replace(
-                    "从约束清单中选一项，不问整个清单。",
-                    "同一业务链路需要几条关联规则时逐条回答，保留各自条件。")
-                qa_prompt += MEMORY_QA_RULES
+                qa_prompt = MEMORY_QA_PROMPT.replace("TARGET_DEFINITION", definition)
             else:
                 focus_prompt += SIMPLE_GENERAL_FOCUS_RULES
             max_questions = 1

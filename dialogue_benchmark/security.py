@@ -22,6 +22,10 @@ _CREDENTIAL_LABEL = re.compile(
     r"[\"']?\b(?:api[_-]?key|access[_-]?token|secret|password|passwd|token)"
     r"[\"']?\s*[:=]", re.I,
 )
+_TYPED_PARAMETER = re.compile(
+    r"\b(?:api[_-]?key|access[_-]?token|secret|password|passwd|token)"
+    r"\s*:\s*(?:str|bytes|int|float|bool)\s*(?=[,)])",
+)
 _SAFE_VALUE = re.compile(
     r"^(?:none|null|nil|empty|placeholder|example|dummy|your[_-]?token|"
     r"<[^>]+>|\*{3,}|os\.environ(?:\[[^]]+\])?|\$\{?[A-Z0-9_]+\}?$)",
@@ -39,6 +43,8 @@ def credential_detected(text):
         return True
     for pattern in (_ASSIGNMENT, _NATURAL_CREDENTIAL):
         for match in pattern.finditer(text):
+            if pattern is _ASSIGNMENT and _TYPED_PARAMETER.match(text, match.start()):
+                continue
             value = match.group(1).strip().strip(".;")
             if value and not (_SAFE_VALUE.fullmatch(value)
                               or value.lower().startswith("os.environ[")):

@@ -457,6 +457,15 @@ END_QA
         # are code examples rather than credentials.
         outbound_guard("token=None API_KEY=$API_KEY password=<placeholder>", "different")
 
+    def test_credential_guard_accepts_typed_parameters_but_not_secret_defaults(self):
+        source = "def parse(token: str, password: bytes):\n    return token\n"
+        outbound_guard(source, "different")
+        outbound_guard(json.dumps({"text": source}), "different")
+        for source in ('def parse(token: str = "real-secret-123"): pass',
+                       'token="str)"', 'password="real-secret-123"'):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                outbound_guard(source, "different")
+
     def test_fake_llm_pipeline(self):
         decision = {"id": "q1", "reason": "Synthetic test review"}
         for key in ("evidence_supported", "version_consistent", "unambiguous", "category_correct",
