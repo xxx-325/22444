@@ -970,6 +970,11 @@ def parse_text_response(content):
                 if len(fields) != 2 or fields[1] not in {"clean", "leaked", "uncertain"}:
                     raise ValueError("Invalid task review row")
                 task_review = {"id": "task", "leakage": fields[1], "issue": "none"}
+            elif (line.startswith(("- ", "* ")) and history_reviews
+                  and task_review is None):
+                # Preserve quoted answer bullets as one field. The downstream
+                # check still requires every fragment to occur in the answer.
+                history_reviews[-1]["answer_quote"] += "\n" + line
             else:
                 raise ValueError("Invalid history review output")
         if not history_reviews or task_review is None:

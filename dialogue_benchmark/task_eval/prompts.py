@@ -151,6 +151,7 @@ sufficient 必须从 injected_answer 原样摘录支持文字；不能用 privat
 
 每条规则一行，按此列顺序输出：
 H 规则ID | applicable的值 | public的值 | answer的值 | 该规则的来源ID | 公开来源ID或none | 答案原句或none
+引用多个答案要点时，第一点写在该行末尾，其余要点可原样用 - 开头续行。
 最后一行 TASK | clean；若公开需求与历史规则矛盾，写 TASK | uncertain。
 不要输出解释或 JSON。
 """

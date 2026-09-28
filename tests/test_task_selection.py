@@ -339,6 +339,27 @@ class SelectionTests(unittest.TestCase):
                                    "answer_quote": "Exact fact", "issue": "none"}],
              "task_review": {"id": "task", "leakage": "clean", "issue": "none"}})
 
+    def test_history_review_keeps_multiline_answer_quotes_grounded(self):
+        from dialogue_benchmark.llm import parse_text_response
+        from dialogue_benchmark.task_eval.runtime import review_task
+        answer = "- External code 7 means committed.\n- External code 4 means pending."
+        text = "H h1 | yes | none | sufficient | event1 | none | " + answer + "\nTASK | clean"
+        parsed = parse_text_response(text)
+        self.assertEqual(parsed["history_reviews"][0]["answer_quote"], answer)
+        evidence = {"history_targets": [{"id": "h1", "sources": ["event1"]}],
+                    "repository_queries": [], "contracts": [],
+                    "sources": [{"id": "event1", "text": "confirmed"}]}
+        for quote, status in ((text, "clean"),
+                              (text.replace("4 means pending", "4 means committed"), "uncertain")):
+            with self.subTest(quote=quote), patch("dialogue_benchmark.task_eval.runtime.ask_model",
+                                                 return_value=parse_text_response(quote)):
+                result = review_task("New task", answer, {}, self.root / "multiline-review",
+                                     evidence=evidence)
+                self.assertEqual(result["status"], status)
+        for invalid in (text + "\n- Extra quote", text.replace("\nTASK", "\nExplanation\nTASK")):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_text_response(invalid)
+
     def test_selection_uses_short_query_row(self):
         from dialogue_benchmark.llm import parse_text_response
         parsed = parse_text_response(
