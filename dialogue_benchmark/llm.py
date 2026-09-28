@@ -1247,6 +1247,7 @@ TARGET_DEFINITION
 以 facts 中的规则为追问对象。材料中的其他话题只作背景；后续内容只有纠正同一条规则时才改变答案。
 保留条件和局部例外，后续纠正只替代其明确范围。不要把旧执行结果当成未来固定要求。
 focus 说明需要确认什么，不给出答案，不另选开发目标，不收集无关规则。
+只选尚需从历史确认的规则及其适用范围。样例计算、逐条结果和总计数只作规则的证据，不作为额外问题。
 严格输出两行：
 FOCUS: 围绕该业务链路需要确认的历史规则
 SOURCES: 资料1,资料2
@@ -1256,9 +1257,11 @@ SOURCES: 资料1,资料2
 MEMORY_QA_PROMPT = """根据输入生成一道中文问答。固定任务：TARGET_DEFINITION。
 workflow 是后续开发场景，focus 是需要确认的历史决定。materials 原文才是答案依据。
 问题必须考查 facts 中的外部规则及其后续有效纠正；不能改问相邻的接口行为、其他需求或实现细节。
-围绕这条链路写一个自然问题。共同决定其行为的几条历史规则放在同一道题的答案中，
-不要拆成多道语法、参数或数值小题。题干交代客户及适用场景，不透露历史答案。
+题干只需点明客户、场景和要找回的历史规则，不复述 workflow 的目标及每个步骤，不写成开发需求。
+共同决定其行为的几条历史规则放在同一道题的答案中，不追加样例输出或计数计算题。
+不要拆成多道语法、参数或数值小题。题干不透露历史答案。
 每行 ANSWER_POINT 写一条有来源的有效规则，保留该规则的条件与例外；不重复同义规则。
+两个独立要求分两行；规则与文件交付要求分行，每个独立计数字段也分行。
 只使用实际公开的内容，区分用户约定、建议和实测；后续纠正仅替代其适用范围。
 只输出一个 QA 块，不输出类型、难度、解释、JSON或Markdown：
 QA q1
@@ -1410,6 +1413,9 @@ When splitting a causal claim, each resulting point must cite every existing
 material needed for that step, including an earlier premise used by 因此.
 Different functions changing their signatures are different claims. A signature
 change and the later value transfer are also different claims.
+Two independent output fields or requirements need separate points, even if they
+share a condition. Split "accepted=4, rejected=2" into two points; split an output
+destination and a separate comparison rule. Keep necessary conditions on each point.
 For example, rewrite "_default_runner 新增 timeout_seconds 形参，并将其作为
 subprocess.run 的 timeout" as two points: one signature point and one point saying
 "_default_runner 将 timeout_seconds 作为 subprocess.run 的 timeout". Never leave

@@ -204,6 +204,10 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                     self.assertIn(MEMORY_TYPE_GUIDANCE[kind], prompt)
                     self.assertIn("future business workflow", prompt)
                     self.assertNotIn(kind, prompt)
+                qa_prompt = next(prompt for prompt, payload in client.calls
+                                 if 'QUESTION: 自然问题' in prompt)
+                self.assertIn('不写成开发需求', qa_prompt)
+                self.assertIn('不追加样例输出或计数计算题', qa_prompt)
                 self.assertIn(MEMORY_TASK_GUIDANCE[kind], task_direction(kind))
 
     def test_trivia_target_is_rejected_before_more_review_calls(self):
