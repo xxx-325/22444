@@ -5,7 +5,6 @@ import re
 from collections import deque
 
 from .normalize import source_kind_for
-from .external import EVENT_TYPE
 from .protocol import MISSING_KINDS, QA_TYPES
 from .subgraph import _select_root_seeds
 from .quality import scope_source_ids
@@ -1144,8 +1143,12 @@ def build_evidence_index(facts, scopes, qa_mode, model_request_chars=32000):
     contains the merged source universe and normalized sets used by the static
     linker.  Groups receive only a small JSON-safe expansion pointer.
     """
+    if qa_mode == "memory":
+        # External events need source lookup only, never graph reconstruction.
+        return {"qa_mode": qa_mode,
+                "info_by_id": {fact["id"]: {"fact": fact} for fact in facts}}
     if qa_mode not in {"general", "code"}:
-        raise ValueError("qa_mode must be general or code")
+        raise ValueError("qa_mode must be general, code, or memory")
     facts, fact_aliases, merged_fact_ids = _merge_duplicate_facts(facts)
     universe = merge_scopes(scopes, qa_mode, model_request_chars)
     source_index = _source_index(universe)
@@ -2128,7 +2131,7 @@ def static_evidence_check(group, evidence_index, target_type, candidate=None):
     # absent.
     external_kind = (group.get("scope") or {}).get("external_kind")
     if external_kind:
-        expected = EVENT_TYPE.get(external_kind)
+        expected = group["scope"].get("memory_kind")
         infos = _group_infos(group, evidence_index)
         if expected != target_type:
             return _code_evidence_result("insufficient", "external_type_mismatch", infos, cited_sources)
@@ -2188,6 +2191,11 @@ def _static_eligible_types(infos, qa_mode, proposed, evidence_index):
 def static_candidate_labels(group, candidate, evidence_index, target_type,
                             *, type_origin="static_target", type_candidates=None):
     """Label one generated candidate from its actually cited answer evidence."""
+    if group.get("qa_mode") == "memory":
+        check = static_evidence_check(group, evidence_index, target_type, candidate)
+        return {"type": target_type, "type_origin": "external_event",
+                "static_evidence_status": check["status"],
+                "static_evidence_reason": check["reason"]}
     answer_sources = []
     for point in candidate.get("answer_points", []):
         for source in point.get("sources", []):
@@ -2595,7 +2603,8 @@ def coverage_report(records, versions, scopes, facts, groups, stage_status, ques
                 for item in scope.get(field, []) if item.get("id")}
 
     result = {}
-    for track in ("general", "code"):
+    modes = tuple(scopes) or tuple(dict.fromkeys(g.get("qa_mode") for g in groups))
+    for track in modes:
         track_scopes = scopes.get(track, [])
         track_facts = [f for f in facts if f.get("qa_mode", "code") == track]
         track_groups = [g for g in groups if g.get("qa_mode") == track]

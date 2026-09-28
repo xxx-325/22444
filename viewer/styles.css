@@ -64,3 +64,4 @@
 .qa-controls button[aria-pressed="true"] { background:#173d6a; color:white; }
 .qa-controls label, .qa-controls select { font-size:1rem; }
 .audit-json { white-space:pre-wrap; overflow-wrap:anywhere; font-size:.875rem; padding:1rem; background:#f3f6fa; max-height:32rem; overflow:auto; }
+[hidden] { display: none !important; }

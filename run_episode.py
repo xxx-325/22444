@@ -29,8 +29,10 @@ def main(argv=None):
     parser.add_argument("--source-event", action="append", default=[])
     parser.add_argument("--source-object", action="append", default=[])
     parser.add_argument("--design-probe", action="store_true")
-    parser.add_argument("--general-count", type=int, default=40)
-    parser.add_argument("--code-count", type=int, default=40)
+    parser.add_argument("--qa-count", type=int, help="External QA target (default: 40)")
+    parser.add_argument("--group-budget", type=int, help="External event exploration budget")
+    parser.add_argument("--general-count", type=int, help="Graph general QA target (default: 40)")
+    parser.add_argument("--code-count", type=int, help="Graph code QA target (default: 40)")
     parser.add_argument("--task-count", type=int, default=12)
     parser.add_argument("--task-budget", type=int, default=24)
     parser.add_argument("--parallel-workers", type=int, default=10)
@@ -40,6 +42,13 @@ def main(argv=None):
     parser.add_argument("--resume-tasks", action="store_true",
                         help="Reuse completed QA and start repository tasks in an empty tasks directory")
     args = parser.parse_args(argv)
+    if args.qa_source == "external" and (args.general_count is not None or args.code_count is not None):
+        parser.error("External QA uses --qa-count, not separate general/code counts")
+    if args.qa_source == "graph" and (args.qa_count is not None or args.group_budget is not None):
+        parser.error("--qa-count and --group-budget require --qa-source external")
+    for name in ("qa_count", "group_budget", "general_count", "code_count"):
+        if getattr(args, name) is not None and getattr(args, name) <= 0:
+            parser.error("--%s must be positive" % name.replace("_", "-"))
     package = load_episode_manifest(args.episode_manifest) if args.episode_manifest else None
     packaged_events = package.get("external_events") if package else None
     if args.qa_source == "external" and args.external_events is None:
@@ -96,17 +105,22 @@ def main(argv=None):
         phase("qa_reused" if args.resume_tasks else "qa")
         qa_args = [
             str(root / "input/dialogue.json"), "--output", str(root / "qa"),
-            "--qa-mode", "both", "--general-count", str(args.general_count),
-            "--code-count", str(args.code_count), "--questions-per-group", "3",
             "--parallel-workers", str(args.parallel_workers), "--chunk-chars", "24000",
-            "--adaptive-subgraphs", "--expansion-budget", "3", "--allow-network",
+            "--allow-network",
             "--endpoint", endpoint, "--model", model["model"], "--key-env", model["key_env"],
         ]
         if args.reuse_facts:
             qa_args += ["--reuse-facts", str(args.reuse_facts)]
         if args.qa_source == "external":
             qa_args += ["--qa-source", "external", "--external-events", str(args.external_events),
+                        "--qa-count", str(args.qa_count or 40),
                         "--repository", str(root / "baseline")]
+            if args.group_budget is not None:
+                qa_args += ["--group-budget", str(args.group_budget)]
+        else:
+            qa_args += ["--qa-mode", "both", "--general-count", str(args.general_count or 40),
+                        "--code-count", str(args.code_count or 40), "--questions-per-group", "3",
+                        "--adaptive-subgraphs", "--expansion-budget", "3"]
         for event_id in args.source_event:
             qa_args += ["--source-event", event_id]
         for name in args.source_object:
@@ -116,6 +130,8 @@ def main(argv=None):
                 raise ValueError("Completed QA belongs to a different converted dialogue")
             if read(root / "qa/manifest.json").get("qa_source", "graph") != args.qa_source:
                 raise ValueError("Completed QA uses a different source mode")
+            if args.qa_source == "external" and read(root / "qa/manifest.json").get("qa_mode") != "memory":
+                raise ValueError("External QA must use the unified memory types; regenerate QA")
         else:
             status = generate_qa(qa_args)
             if status:

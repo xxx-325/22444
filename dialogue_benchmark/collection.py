@@ -11,6 +11,9 @@ import sys
 
 from .task_eval.artifacts import read, save
 
+EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
+                           parallel_workers=2, task_workers=1, revisions=3)
+
 
 def sum_usage(rows):
     result = dict(requests=0, prompt_tokens=0, completion_tokens=0, complete=True)
@@ -71,6 +74,11 @@ def validate_plan(plan):
     for key in ("max_total_requests", "max_total_tokens"):
         if type(plan.get(key)) is not int or plan[key] <= 0:
             raise ValueError(key + " must be a positive stage-admission budget")
+    for key, value in plan.get("evaluation", {}).items():
+        if key not in EVALUATION_DEFAULTS and key != "group_budget":
+            raise ValueError("Unknown evaluation option: " + key)
+        if type(value) is not int or value <= 0:
+            raise ValueError(key + " must be positive")
     seen = set()
     for project in plan["projects"]:
         name = _identifier(project.get("id"))
@@ -221,13 +229,9 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 command = [str(python), str(Path(__file__).resolve().parents[1] / "run_episode.py"),
                     "--episode-manifest", str(package / "manifest.json"), "--qa-source", "external",
                     "--simulator-path", str(simulator), "--env-file", str(env_file), "--output", str(target)]
-                defaults = dict(general_count=4, code_count=4, task_count=1, task_budget=2,
-                                parallel_workers=2, task_workers=1, revisions=3)
+                defaults = dict(EVALUATION_DEFAULTS)
                 defaults.update(plan.get("evaluation", {}))
                 for key, value in defaults.items():
-                    if key not in {"general_count", "code_count", "task_count", "task_budget",
-                                   "parallel_workers", "task_workers", "revisions"}:
-                        raise ValueError("Unknown evaluation option: " + key)
                     command.extend(["--" + key.replace("_", "-"), str(value)])
                 completed = stage("evaluation", target, command, Path(__file__).resolve().parents[1],
                                   target / "pipeline.json", {"completed"}, target / "usage.json")

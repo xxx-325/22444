@@ -9,7 +9,11 @@ new repository requirements.
 
 ## What it does
 
-The builder treats a dialogue as a time-ordered evidence stream:
+The external-information workflow is: public historical events → QA → one related
+development requirement per qualifying QA → frozen acceptance → paired execution
+with and without the historical answer. It uses one QA pool and M1–M6 memory types.
+
+The optional graph mode treats a dialogue as a time-ordered evidence stream:
 
 1. Normalize visible messages, tool records, code observations, patches,
    failures, and test results.
@@ -29,7 +33,7 @@ repository checkout. A question is valuable when its answer depends on a past
 change, feedback, failure, test, decision, or multi-stage conversation that a
 current checkout alone cannot reveal.
 
-General and code QA use the same six memory-purpose types, with independent
+In graph mode, general and code QA use the same six memory-purpose types, with independent
 quotas. General questions concern recorded decisions and observations; code
 questions connect that history to implementation or testing behavior.
 
@@ -51,7 +55,7 @@ remain separate checks. The task author receives the final type and must connect
 decision and observable acceptance behavior. Older QA types are not accepted; regenerate QA
 before deriving tasks from an older run.
 
-Difficulty is computed locally from the selected evidence structure: number of
+Graph-mode difficulty is computed locally from the selected evidence structure: number of
 necessary stages/versions, graph distance, and whether the question crosses a
 failure/change/verification chain. The model does not choose the difficulty.
 
@@ -100,6 +104,28 @@ cases for review. Probe receipts are kept under
 
 ### External-only QA source
 
+External QA uses one target, `--qa-count`, and one exploration limit,
+`--group-budget` (default: four times the target, at least ten). The target counts
+only approved, safe, unique published questions. Each event group generates at
+most one QA; a qualifying QA supplies one candidate development requirement.
+The existing one-repair limit, review, deduplication, and repository probe remain.
+
+| Memory type | What the answer preserves | Derived requirement |
+|---|---|---|
+| M1 · Interaction agreements | User rules and their scope | Apply the agreement to a new feature |
+| M2 · External facts | External system contracts or business facts | Adapt observable behavior to those facts |
+| M3 · Misleading repository information | Established corrections to stale code, docs, or examples | Implement according to the corrected behavior |
+| M4 · Costly trial and error | Conclusions from actual failed attempts or expensive investigation | Handle the same conditions without repeating the problem |
+| M5 · Runtime differences | Observed environment-dependent behavior | Support the relevant execution conditions |
+| M6 · Cross-session state | Still-valid prior decisions or state, including scoped corrections | Continue work from the applicable state |
+
+The producer supplies the type; the model writes only the focus, question, and
+source-linked answer. A useful answer changes a future implementation choice,
+behavior, boundary, or validation decision. A one-run byte total or file inventory
+alone does not qualify. A recorded receiver size limit can qualify because it
+changes how a future export must work. The existing target review checks this
+distinction. External QA has no graph-distance difficulty label.
+
 The dialogue producer may also save a small `external-events.json` sidecar. It
 records public dialogue source IDs for facts that arose from a user correction,
 an environment observation, a perturbation failure, a compatibility exception,
@@ -120,12 +146,26 @@ last allowed read; that decision cannot issue another query.
 
 `run_episode.py --episode-manifest ... --qa-source external` reads the event file
 from the package and checks its byte hash. An explicit event file must match the
-package. M1–M6 provenance tags are retained separately from QA purpose types,
-including M4 failure-avoidance events. Evidence review also checks actual public
+package. Each event requires a static `memory_kind` from M1–M6; this becomes the
+QA type and is retained through requirement generation and reporting.
+Evidence review also checks actual public
 use: a promise or repeated rule alone does not establish application. Missing or
 uncertain use evidence stays pending review.
-Events marked `qa_mode: both` can seed both enabled tracks; the event itself is
-counted once and final answer targets still go through global deduplication.
+Each event enters the unified pool once, regardless of a producer's old track
+label. General/code options belong to graph mode. Types are reported separately
+without quotas that force all six types to appear.
+
+```sh
+python run_episode.py --episode-manifest /path/to/episode/manifest.json \
+  --qa-source external --qa-count 20 --group-budget 80 \
+  --task-count 10 --task-budget 20 \
+  --simulator-path /path/to/agent-session-simulator \
+  --env-file /path/to/provider.env --output runs/episode-memory
+```
+
+`qa-public.json` contains the unified final set. The local viewer filters final
+questions and all candidates by memory type and links their historical evidence;
+the task report retains each requirement's source QA and type.
 
 ### Generated project collections
 

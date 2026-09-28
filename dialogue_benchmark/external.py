@@ -10,7 +10,7 @@ import re
 from copy import deepcopy
 from pathlib import Path
 
-from .normalize import source_kind_for
+from .protocol import MEMORY_TYPES
 
 
 EXTERNAL_EVENT_KINDS = frozenset({
@@ -22,17 +22,6 @@ EXTERNAL_EVENT_KINDS = frozenset({
     "verification_result",
     "failure_avoidance",
 })
-
-EVENT_TYPE = {
-    "user_correction": "correction_update",
-    "external_observation": "external_state_application",
-    "environment_observation": "external_state_application",
-    "perturbation_revealed": "failure_avoidance",
-    "compatibility_contract": "compatibility_preservation",
-    "verification_result": "verification_reuse",
-    "failure_avoidance": "failure_avoidance",
-}
-
 
 def external_usage_review(document, scope, reference_map):
     """Separate the event-use judgment from immutable answer-point judgments."""
@@ -131,18 +120,7 @@ def _resolve_ids(values, identities, label):
     return resolved
 
 
-def _track(event, records_by_id):
-    value = event.get("qa_mode", event.get("track"))
-    if value in {"general", "code", "both"}:
-        return value
-    source_ids = list(event.get("source_ids", [])) + list(event.get("used_by", []))
-    if any(source_kind_for(records_by_id[item]) in {"code", "test"}
-           for item in source_ids if item in records_by_id):
-        return "code"
-    return "general"
-
-
-def _event_scope(event, records, records_by_id, cutoff, track, index, max_chars):
+def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
     source_ids = list(event["source_ids"])
     used_by = list(event["used_by"])
     # The producer already declares the evidence boundary. Do not add
@@ -152,10 +130,10 @@ def _event_scope(event, records, records_by_id, cutoff, track, index, max_chars)
     selected_orders = [records_by_id[item].get("order", 0) for item in selected_ids]
     dialogue = [record for record in records if record.get("id") in selected_ids]
     group_id = "external-%s" % event["id"]
-    target_type = EVENT_TYPE[event["kind"]]
+    target_type = event["memory_kind"]
     return {
         "cutoff": cutoff,
-        "track": track,
+        "track": "memory",
         "scope_index": index,
         "chunk_index": index,
         "chunk_window": [min(selected_orders), max(selected_orders)],
@@ -168,7 +146,7 @@ def _event_scope(event, records, records_by_id, cutoff, track, index, max_chars)
         "model_request_chars": max_chars,
         "external_event_id": event["id"],
         "external_kind": event["kind"],
-        "memory_kind": event.get("memory_kind"),
+        "memory_kind": target_type,
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
         # Later public use/result is context for composing a useful question;
@@ -176,14 +154,11 @@ def _event_scope(event, records, records_by_id, cutoff, track, index, max_chars)
         "generation_extra_sources": used_by,
         "evidence_group": {
             "id": group_id,
-            "qa_mode": track,
+            "qa_mode": "memory",
             "target_types": [target_type],
             "allowed_types": [target_type],
             "eligible_types": [target_type],
             "type_selection": "preselected",
-            "stage_count": 0,
-            "graph_hops": 0,
-            "reasoning_hops": 1,
         },
     }
 
@@ -196,7 +171,7 @@ def _has_public_source(source_ids, records_by_id):
                for item in source_ids)
 
 
-def load_external_scopes(path, records, cutoff, enabled_tracks, max_chars=32000,
+def load_external_scopes(path, records, cutoff, max_chars=32000,
                          max_groups=None):
     """Load validated public-source events and build bounded QA scopes.
 
@@ -224,9 +199,8 @@ def load_external_scopes(path, records, cutoff, enabled_tracks, max_chars=32000,
         if kind not in EXTERNAL_EVENT_KINDS:
             rejected.append({"id": event_id, "reason": "unknown_external_event_kind"})
             continue
-        if raw.get("memory_kind") is not None and raw["memory_kind"] not in {
-                "M1", "M2", "M3", "M4", "M5", "M6"}:
-            rejected.append({"id": event_id, "reason": "unknown_memory_kind"})
+        if raw.get("memory_kind") not in MEMORY_TYPES:
+            rejected.append({"id": event_id, "reason": "invalid_memory_kind"})
             continue
         if raw.get("status", "active") != "active":
             rejected.append({"id": event_id, "reason": "external_event_inactive"})
@@ -251,36 +225,19 @@ def load_external_scopes(path, records, cutoff, enabled_tracks, max_chars=32000,
         if any(order > cutoff for order in orders):
             rejected.append({"id": event_id, "reason": "event_after_cutoff"})
             continue
-        track = _track(raw, records_by_id)
-        tracks = [t for t in ("general", "code") if t in enabled_tracks] if track == "both" else [track]
-        if not tracks or any(t not in enabled_tracks for t in tracks):
-            rejected.append({"id": event_id, "reason": "track_disabled", "track": track})
-            continue
         if not _has_public_source(source_ids, records_by_id):
             rejected.append({"id": event_id, "reason": "no_public_message_source"})
             continue
         if min(usage_orders) <= min(source_orders):
             rejected.append({"id": event_id, "reason": "usage_not_after_source"})
             continue
-        for selected_track in tracks:
-            scope = _event_scope(raw, records, records_by_id, cutoff, selected_track,
-                                 len(scopes), max_chars)
-            scopes.append(scope)
-            accepted.append(raw)
-    if max_groups is not None:
-        selected = []
-        counts = {track: 0 for track in enabled_tracks}
-        for scope, event in zip(scopes, accepted):
-            track = scope["track"]
-            if counts[track] >= max_groups.get(track, 0):
-                rejected.append({"id": event["id"], "reason": "external_group_budget",
-                                 "track": track})
-                continue
-            counts[track] += 1
-            selected.append((scope, event))
-        scopes = [item[0] for item in selected]
-        accepted = [item[1] for item in selected]
-    return {"version": document.get("version"), "events": list({event["id"]: event for event in accepted}.values()),
+        if max_groups is not None and len(scopes) >= max_groups:
+            rejected.append({"id": event_id, "reason": "external_group_budget"})
+            continue
+        scope = _event_scope(raw, records, records_by_id, cutoff, len(scopes), max_chars)
+        scopes.append(scope)
+        accepted.append(raw)
+    return {"version": document.get("version"), "events": accepted,
             "scopes": scopes, "rejected": rejected}
 
 
@@ -303,5 +260,7 @@ def filter_external_facts(facts, scopes):
         fact["external"] = True
         fact["external_event_ids"] = event_ids
         fact["external_kind"] = matches[0][1].get("external_kind")
+        fact["memory_kinds"] = sorted({scope["memory_kind"] for _, scope in matches
+                                       if scope.get("memory_kind") in MEMORY_TYPES})
         kept.append(fact)
     return kept

@@ -14,6 +14,29 @@ QA_TYPE_GUIDANCE = {
 }
 QA_TYPES = frozenset(QA_TYPE_GUIDANCE)
 
+# External episodes use their source labels; graph QA keeps its purpose taxonomy.
+MEMORY_TYPE_LABELS = {
+    "M1": "交互约定", "M2": "外部事实", "M3": "仓库误导",
+    "M4": "高成本试错", "M5": "运行时差异", "M6": "跨会话状态",
+}
+MEMORY_TYPE_GUIDANCE = {
+    "M1": "Ask which previously agreed user rule must apply to a concrete future feature, and under which conditions.",
+    "M2": "Ask which recorded fact about an external system or business context changes the behavior required of a future feature.",
+    "M3": "Ask what previously established correction to misleading code, documentation, or examples a future change must account for.",
+    "M4": "Ask what a completed trial established about a failed approach or costly investigation, under conditions relevant to future work.",
+    "M5": "Ask which observed runtime or environment difference a future feature must handle, preserving the actual conditions.",
+    "M6": "Ask which still-applicable decision or state from an earlier interaction future work must continue from, including any scoped correction.",
+}
+MEMORY_TYPES = frozenset(MEMORY_TYPE_GUIDANCE)
+MEMORY_QA_RULES = """
+The answer must change one future implementation choice, required behavior, boundary,
+or validation decision. State that concrete future situation in the question.
+An isolated file inventory, byte total from one run, or test count is not such a decision.
+A recorded external size limit can be useful when it determines how future output must behave.
+Use the rule, condition, or established consequence actually present in the evidence;
+do not turn a one-off observation into a permanent rule.
+"""
+
 TASK_TYPE_GUIDANCE = {
     "constraint_followthrough": "让新功能或重构实际用到已确认约束；验收其适用条件下的行为。",
     "correction_update": "让新需求触及被纠正的规则；验收修订范围内使用新规则、范围外保留仍有效规则。",
@@ -21,6 +44,14 @@ TASK_TYPE_GUIDANCE = {
     "failure_avoidance": "让新需求涉及过去失败的条件；验收功能正确及同类失败不再出现，不强制固定实现路线。",
     "verification_reuse": "让历史测试或实验结论影响新功能的边界或验证选择；新增测试必须验证新需求，不能只重跑旧测试。",
     "compatibility_preservation": "扩展或重构相关能力，验收新行为及已确认需要保留的旧调用行为。",
+}
+MEMORY_TASK_GUIDANCE = {
+    "M1": "提出实际需要沿用用户既有约定的新功能；验收约定适用范围内的行为。",
+    "M2": "提出依赖已记录外部事实的新功能；让该事实决定具体行为或边界。",
+    "M3": "提出会触及已确认仓库误导的新功能；验收实际行为遵循历史纠正。",
+    "M4": "提出涉及已有试错条件的新功能；用历史结论避免已证实的问题，不要求特定实现路线。",
+    "M5": "提出需要适配已观察运行环境差异的新功能；在固定环境条件下验收。",
+    "M6": "提出承接已确认状态或决定的新功能；只沿用仍有效的规则，保留局部纠正的范围。",
 }
 SIMPLE_ATOMICITY_STATES = {"single", "compound", "uncertain"}
 SIMPLE_EVIDENCE_STATES = {"supported", "contradicted", "insufficient", "stale"}

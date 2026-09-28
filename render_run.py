@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 
 from viewer.build_data import build
+from dialogue_benchmark.protocol import MEMORY_TYPE_LABELS
 
 
 def render(root):
@@ -27,11 +28,17 @@ def render(root):
     manifest = json.loads((qa / "manifest.json").read_text())
     progress = manifest.get("progress", {})
     qa_rows = []
-    for mode, label in (("general", "普通题"), ("code", "代码题")):
+    modes = (("memory", "QA"),) if manifest.get("qa_mode") == "memory" else (("general", "普通题"), ("code", "代码题"))
+    for mode, label in modes:
         unique = len({q["question"].strip() for q in questions if q.get("qa_mode", "code") == mode})
         qa_rows.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
             label, progress.get("targets", {}).get(mode, "—"), counts[mode], unique,
             escape(progress.get("stop_reasons", {}).get(mode, "未记录"))))
+    qa_summary = " · ".join("%s %d 道" % (label, counts[mode]) for mode, label in modes)
+    if manifest.get("qa_mode") == "memory":
+        type_counts = Counter(q.get("type") for q in questions)
+        qa_summary += "。" + " · ".join("%s %s：%d" % (kind, label, type_counts[kind])
+                                      for kind, label in MEMORY_TYPE_LABELS.items() if type_counts[kind])
     task_manifest = root / "tasks/manifest.json"
     task_summary = "需求生成尚未完成。"
     if task_manifest.exists():
@@ -48,10 +55,10 @@ def render(root):
 section{background:white;padding:24px;border-radius:14px;margin:22px 0;border:1px solid #dce3ed}a{color:#235dac}code{overflow-wrap:anywhere}
 table{width:100%%;border-collapse:collapse;font-size:14px}th,td{text-align:left;border-bottom:1px solid #dce3ed;padding:8px}</style>
 <h1>Dialogue → QA → 新需求</h1><p>%s</p>%s
-<section><h2>QA 与证据</h2><p>普通题 %d 道 · 代码题 %d 道</p>
-<table><tr><th>轨道</th><th>目标</th><th>已发布</th><th>不同题干</th><th>停止原因</th></tr>%s</table>
+<section><h2>QA 与证据</h2><p>%s</p>
+<table><tr><th>题集</th><th>目标</th><th>已发布</th><th>不同题干</th><th>停止原因</th></tr>%s</table>
 <p>保留原始运行结果；“不同题干”仅合并完全相同的题干，不代表语义去重或人工质量认证。</p>
-<a href="qa-viewer/index.html">打开图与完整候选审阅</a> · <a href="qa/qa-public.json">最终 QA</a> ·
+<a href="qa-viewer/index.html">打开证据与完整候选审阅</a> · <a href="qa/qa-public.json">最终 QA</a> ·
 <a href="qa/qa-audit.json">审核记录</a> · <a href="qa/stages/">最终 QA 的实际生成输入</a></section>
 <section><h2>新需求与两组代码</h2><p>模型提出新需求、生成验收标准并验证参考实现；随后分别运行无记忆和注入历史答案两组。</p>
 <p>%s</p><a href="tasks/report.html">打开需求、测试、代码与轨迹对比</a> ·
@@ -64,7 +71,7 @@ table{width:100%%;border-collapse:collapse;font-size:14px}th,td{text-align:left;
             sum(receipt["visible_messages"].values()), receipt["records"])),
         ('<p><a href="observations.md">本轮结果与方法问题</a> · '
          '<a href="verification.json">版本和数量核验</a></p>') if (root / "observations.md").exists() else "",
-        counts["general"], counts["code"], "".join(qa_rows), escape(task_summary), escape(baseline["base_commit"]))
+        escape(qa_summary), "".join(qa_rows), escape(task_summary), escape(baseline["base_commit"]))
     (root / "report.html").write_text(page, encoding="utf-8")
     print(root / "report.html")
 

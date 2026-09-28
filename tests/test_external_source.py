@@ -25,17 +25,17 @@ class ExternalSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "external-events.json"
             path.write_text(json.dumps({"version": 1, "events": [{
-                "id": "x1", "kind": "compatibility_contract",
+                "id": "x1", "kind": "compatibility_contract", "memory_kind": "M1",
                 "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "code",
             }]}), encoding="utf-8")
-            loaded = load_external_scopes(path, self.records, 3, {"code"}, 32000)
+            loaded = load_external_scopes(path, self.records, 3, 32000)
 
         self.assertEqual(loaded["rejected"], [])
         self.assertEqual(len(loaded["scopes"]), 1)
         scope = loaded["scopes"][0]
         self.assertEqual(scope["external_event_id"], "x1")
         self.assertEqual(scope["evidence_group"]["target_types"],
-                         ["compatibility_preservation"])
+                         ["M1"])
         self.assertEqual(scope["edges"], [])
         self.assertEqual(scope["versions"], [])
         self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e3"])
@@ -44,11 +44,11 @@ class ExternalSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "external-events.json"
             path.write_text(json.dumps({"version": 1, "events": [{
-                "id": "x1", "kind": "compatibility_contract",
+                "id": "x1", "kind": "compatibility_contract", "memory_kind": "M1",
                 "source_ids": ["e1"], "used_by": ["e3"],
                 "context_ids": ["e2"], "qa_mode": "code",
             }]}), encoding="utf-8")
-            loaded = load_external_scopes(path, self.records, 3, {"code"}, 32000)
+            loaded = load_external_scopes(path, self.records, 3, 32000)
 
         self.assertEqual([row["id"] for row in loaded["scopes"][0]["dialogue"]],
                          ["e1", "e2", "e3"])
@@ -62,27 +62,37 @@ class ExternalSourceTests(unittest.TestCase):
                 {"id": "x" + str(i), "kind": kind, "memory_kind": "M" + str(i),
                  "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "code"}
                 for i, kind in enumerate(kinds, 1)]}))
-            result = load_external_scopes(path, self.records, 3, {"code"})
+            result = load_external_scopes(path, self.records, 3)
         self.assertEqual(result["rejected"], [])
         self.assertEqual({s["memory_kind"] for s in result["scopes"]},
                          {"M" + str(i) for i in range(1, 7)})
         m4 = next(s for s in result["scopes"] if s["memory_kind"] == "M4")
-        self.assertEqual(m4["evidence_group"]["target_types"], ["failure_avoidance"])
+        self.assertEqual(m4["evidence_group"]["target_types"], ["M4"])
 
-    def test_one_external_event_can_supply_both_independent_tracks(self):
+    def test_one_external_event_is_processed_once_without_track_routing(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "external-events.json"
-            path.write_text(json.dumps({"version": 1, "events": [{
-                "id": "x1", "kind": "compatibility_contract", "memory_kind": "M1",
-                "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "both"}]}))
-            for enabled in ({"code", "general"}, {"general"}):
-                result = load_external_scopes(path, self.records, 3, enabled)
-                self.assertEqual({s["track"] for s in result["scopes"]}, enabled)
+            for routing in ({}, {"qa_mode": "both"}, {"qa_mode": "code"}, {"qa_mode": "general"}):
+                path.write_text(json.dumps({"version": 1, "events": [{
+                    "id": "x1", "kind": "compatibility_contract", "memory_kind": "M1",
+                    "source_ids": ["e1"], "used_by": ["e3"], **routing}]}))
+                result = load_external_scopes(path, self.records, 3)
+                self.assertEqual([s["track"] for s in result["scopes"]], ["memory"])
                 self.assertEqual(len(result["events"]), 1)
-            result = load_external_scopes(path, self.records, 3, {"code", "general"},
-                                          max_groups={"general": 0, "code": 1})
-            self.assertEqual([s["track"] for s in result["scopes"]], ["code"])
-            self.assertEqual(len(result["events"]), 1)
+            result = load_external_scopes(path, self.records, 3, max_groups=0)
+            self.assertEqual(result["scopes"], [])
+            self.assertEqual(result["rejected"][0]["reason"], "external_group_budget")
+
+    def test_missing_or_unknown_memory_type_is_not_guessed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "external-events.json"
+            for memory_kind in (None, "M7", "external_state_application"):
+                path.write_text(json.dumps({"version": 1, "events": [{
+                    "id": "x1", "kind": "external_observation", "memory_kind": memory_kind,
+                    "source_ids": ["e1"], "used_by": ["e3"]}]}))
+                result = load_external_scopes(path, self.records, 3)
+                self.assertEqual(result["scopes"], [])
+                self.assertEqual(result["rejected"][0]["reason"], "invalid_memory_kind")
 
     def test_failure_avoidance_reaches_precheck_with_closed_answer_sources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -90,7 +100,7 @@ class ExternalSourceTests(unittest.TestCase):
             path.write_text(json.dumps({"version": 1, "events": [{
                 "id": "x4", "kind": "failure_avoidance", "memory_kind": "M4",
                 "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "both"}]}))
-            loaded = load_external_scopes(path, self.records, 3, {"general", "code"})
+            loaded = load_external_scopes(path, self.records, 3)
         facts = [{"id": "f1", "sources": ["e1"], "statement": self.records[0]["text"]}]
         for scope in loaded["scopes"]:
             with self.subTest(track=scope["track"]):
@@ -98,18 +108,18 @@ class ExternalSourceTests(unittest.TestCase):
                 group = {"scope": scope, "facts": facts, "qa_mode": scope["track"]}
                 for candidate in (None, {"answer_points": [{
                         "text": facts[0]["statement"], "sources": ["e1"]}]}):
-                    check = static_evidence_check(group, index, "failure_avoidance", candidate)
+                    check = static_evidence_check(group, index, "M4", candidate)
                     self.assertEqual(check["status"], "supported")
                 bad = {"answer_points": [{"text": "Unprovided result", "sources": ["e99"]}]}
-                check = static_evidence_check(group, index, "failure_avoidance", bad)
+                check = static_evidence_check(group, index, "M4", bad)
                 self.assertEqual(check["reason"], "answer_source_out_of_scope")
-                check = static_evidence_check(group, index, "correction_update")
+                check = static_evidence_check(group, index, "M6")
                 self.assertEqual(check["reason"], "external_type_mismatch")
 
     def test_m6_decision_and_correction_keep_distinct_answer_targets(self):
         variants = [
-            ("external_observation", "external_state_application"),
-            ("user_correction", "correction_update"),
+            ("external_observation", "M6"),
+            ("user_correction", "M6"),
         ]
         for kind, target in variants:
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
@@ -117,10 +127,11 @@ class ExternalSourceTests(unittest.TestCase):
                 path.write_text(json.dumps({"version": 1, "events": [{
                     "id": "x6", "kind": kind, "memory_kind": "M6",
                     "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "both"}]}))
-                loaded = load_external_scopes(path, self.records, 3, {"general", "code"})
+                loaded = load_external_scopes(path, self.records, 3)
                 self.assertEqual(loaded["rejected"], [])
-                self.assertEqual(len(loaded["scopes"]), 2)
+                self.assertEqual(len(loaded["scopes"]), 1)
                 for scope in loaded["scopes"]:
+                    self.assertEqual(scope["external_kind"], kind)
                     self.assertEqual(scope["memory_kind"], "M6")
                     self.assertEqual(scope["evidence_group"]["target_types"], [target])
                     facts = [{"id": "f1", "sources": ["e1"],
@@ -194,12 +205,12 @@ class ExternalSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "external-events.json"
             path.write_text(json.dumps({"version": 1, "events": [
-                {"id": "missing-use", "kind": "user_correction",
+                {"id": "missing-use", "kind": "user_correction", "memory_kind": "M6",
                  "source_ids": ["e1"], "used_by": []},
-                {"id": "bad-source", "kind": "user_correction",
+                {"id": "bad-source", "kind": "user_correction", "memory_kind": "M6",
                  "source_ids": ["e99"], "used_by": ["e3"]},
             ]}), encoding="utf-8")
-            loaded = load_external_scopes(path, self.records, 3, {"code", "general"})
+            loaded = load_external_scopes(path, self.records, 3)
 
         reasons = {row["id"]: row["reason"] for row in loaded["rejected"]}
         self.assertIn("missing-use", reasons)
@@ -210,12 +221,12 @@ class ExternalSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "external-events.json"
             path.write_text(json.dumps({"version": 1, "events": [
-                {"id": "same-order", "kind": "user_correction",
+                {"id": "same-order", "kind": "user_correction", "memory_kind": "M6",
                  "source_ids": ["e1"], "used_by": ["e1"]},
-                {"id": "earlier-use", "kind": "user_correction",
+                {"id": "earlier-use", "kind": "user_correction", "memory_kind": "M6",
                  "source_ids": ["e2"], "used_by": ["e1"]},
             ]}), encoding="utf-8")
-            loaded = load_external_scopes(path, self.records, 3, {"code", "general"})
+            loaded = load_external_scopes(path, self.records, 3)
 
         reasons = {row["id"]: row["reason"] for row in loaded["rejected"]}
         self.assertEqual(reasons["same-order"], "usage_not_after_source")
@@ -242,13 +253,13 @@ class ExternalSourceTests(unittest.TestCase):
             ]}), encoding="utf-8")
             events = directory / "external-events.json"
             events.write_text(json.dumps({"version": 1, "events": [{
-                "id": "x1", "kind": "verification_result",
+                "id": "x1", "kind": "verification_result", "memory_kind": "M5",
                 "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "code",
             }]}), encoding="utf-8")
             output = directory / "run"
             with patch.object(cli, "build_graph", side_effect=AssertionError("graph built")):
                 status = cli.main([
-                    str(dialogue), "--output", str(output), "--qa-mode", "code",
+                    str(dialogue), "--output", str(output), "--qa-count", "5",
                     "--qa-source", "external", "--external-events", str(events),
                 ])
 

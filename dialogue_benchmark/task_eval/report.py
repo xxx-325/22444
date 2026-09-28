@@ -104,6 +104,12 @@ def write_report(output, manifest):
               "Reads/searches are call details, not an additional score. Old traces remain unchanged.",
               "", "Every trial, including failures and uncertain results, is listed. No route score is computed."]
     lines += manifest.get("notes", [])
+    if tasks:
+        lines += ["", "## QA to requirement", "",
+                  "| Task | Source QA | Type | Outcome |", "|---|---|---|---|"]
+        for task in tasks:
+            lines.append("| %s | %s | %s | %s |" % tuple(_cell(v) for v in (
+                task["task"], task.get("qa_id", "not saved"), task.get("type", "not saved"), task["status"])))
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     write_html(output, manifest)
 
@@ -179,10 +185,10 @@ def write_html(output, manifest):
         summary_path = root / "construction-summary.json"
         if not summary_path.exists():
             summary_path = root / "construction.json"
-        cards.append('<article><h2>%s · %s</h2><p>%s</p><details><summary>Source QA and actual generation input</summary>'
+        cards.append('<article><h2>%s · %s · %s</h2><p>%s</p><details><summary>Source QA and actual generation input</summary>'
                      '<pre>%s</pre>%s</details><h3>Model-authored requirement</h3><pre>%s</pre>'
                      '<details><summary>Construction attempts and reasons</summary><pre>%s</pre></details>%s</article>' % (
-            safe(item["task"]), safe(item["status"]), " · ".join(filter(None, [
+            safe(item["task"]), safe(item.get("type", qa.get("type", "Type not saved"))), safe(item["status"]), " · ".join(filter(None, [
                 link(root / "frozen", "Frozen criteria and tests"),
                 link(summary_path, "Requirements and attempt reasons"),
                 link(root / "comparison.json", "Comparison"),

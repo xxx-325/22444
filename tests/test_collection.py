@@ -81,6 +81,9 @@ class CollectionTests(unittest.TestCase):
         elif name == "evaluation":
             self.assertIn("--episode-manifest", command)
             self.assertIn("external", command)
+            self.assertEqual(command[command.index("--qa-count") + 1], "8")
+            self.assertNotIn("--general-count", command)
+            self.assertNotIn("--code-count", command)
             paired = getattr(self, "paired", False)
             save(target / "pipeline.json", dict(status="completed", **(
                 {} if paired else {"stop_reason": "no_eligible_qa"})))

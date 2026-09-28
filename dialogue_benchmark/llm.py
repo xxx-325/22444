@@ -32,6 +32,9 @@ from .quality import (
 )
 from .protocol import (
     QA_TYPE_GUIDANCE,
+    MEMORY_TYPE_GUIDANCE,
+    MEMORY_TYPES,
+    MEMORY_QA_RULES,
     MISSING_KINDS,
     SIMPLE_ATOMICITY_RULE,
     SIMPLE_TEMPORAL_WORDING_RULE,
@@ -1132,7 +1135,9 @@ Return at most 12 useful facts per request, each stated concisely.
 EXTERNAL_FACT_PROMPT = """Extract only externally supplied historical facts from the
 provided dialogue window. Prefer a user correction, a real environment or downstream
 observation, a perturbation-revealed failure, a compatibility exception, or a completed
-test result. Keep the condition, affected object, and observed consequence. Do not
+test conclusion that affects future work. Keep the condition, affected object, and
+observed consequence. A file count or byte total alone is not a reusable conclusion.
+An external limit that constrains future output is. Do not
 extract file names, signatures, current implementation details, plans, or facts that
 are merely visible in unchanged code. A fact must be stated in the supplied dialogue
 or public tool result; do not infer one from silence. Separate an old rule from a later
@@ -1152,7 +1157,7 @@ A relation never proves cause, importance, or correctness. Time order alone is n
 
 题干像后续工作中的真实追问，只问一个决定或一条因果/行为链。不列多个无关问题，也不把答案写进题干。
 问“为什么修复有效”时，题干用“补丁后的构造/实现”指代修复，不写出修复后的具体常量、条件或表达式。
-计划记录可以回答当时约定，不必等实施结果。普通题从约束清单中选一项，不问整个清单。
+计划记录可以回答当时约定，不必等实施结果。从约束清单中选一项，不问整个清单。
 答案可以多行，但每行只写一个可以单独判真的结论：
 - 同一个对象从旧值改为新值是一条；一个条件导致一个结果是一条。
 - 不同对象/动作必须分行；改动、改动原因、验证结果分别写，不挤在同一行。
@@ -1185,7 +1190,7 @@ semantics alone is not a memory question. Keep actual code and test conditions.
 Do not turn a document rule into an executed code behavior.
 """
 
-SIMPLE_TYPE_GUIDANCE = QA_TYPE_GUIDANCE
+SIMPLE_TYPE_GUIDANCE = {**QA_TYPE_GUIDANCE, **MEMORY_TYPE_GUIDANCE}
 
 SIMPLE_FOCUS_PROMPT = """Select one concrete Chinese task focus for this fixed purpose:
 TARGET_DEFINITION.
@@ -1855,9 +1860,10 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None, external_only=
         result["stage_status"]["facts"] = "failed"
         return result
     try:
-        fact_prompt, _, _ = _prompt_for_mode(qa_mode, None, 1)
         if external_only:
             fact_prompt = EXTERNAL_FACT_PROMPT
+        else:
+            fact_prompt, _, _ = _prompt_for_mode(qa_mode, None, 1)
         source_ids = _scope_material_source_ids(scope)
         fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)
         _check_simple_request_budget(fact_prompt, fact_payload,
@@ -1883,7 +1889,8 @@ def _simple_target_type(qa_mode, target_type, allowed_types):
         values = list(allowed_types)
         if len(values) == 1:
             target_type = values[0]
-    allowed = GENERAL_QA_TYPES if qa_mode == "general" else CODE_QA_TYPES
+    allowed = MEMORY_TYPES if qa_mode == "memory" else (
+        GENERAL_QA_TYPES if qa_mode == "general" else CODE_QA_TYPES)
     if target_type not in allowed:
         raise ValueError("simple generation requires one valid target_type")
     if allowed_types is not None and target_type not in set(allowed_types):
@@ -1921,6 +1928,9 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             if qa_mode == "code":
                 focus_prompt += SIMPLE_CODE_FOCUS_RULES
                 qa_prompt += SIMPLE_CODE_QA_RULES
+            elif qa_mode == "memory":
+                focus_prompt += MEMORY_QA_RULES
+                qa_prompt += MEMORY_QA_RULES
             else:
                 focus_prompt += SIMPLE_GENERAL_FOCUS_RULES
             max_questions = 1
@@ -2555,9 +2565,12 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
             return result
         simple_review_stage = "review_target"
         try:
-            if candidate.get("type") in QA_TYPE_GUIDANCE:
+            if candidate.get("type") in SIMPLE_TYPE_GUIDANCE:
                 target_prompt = TARGET_REVIEW_PROMPT.replace(
-                    "TARGET_DEFINITION", QA_TYPE_GUIDANCE[candidate["type"]])
+                    "TARGET_DEFINITION", SIMPLE_TYPE_GUIDANCE[candidate["type"]])
+                if qa_mode == "memory":
+                    target_prompt += MEMORY_QA_RULES + (
+                        "\nChoose drifted if the answer does not resolve such a future decision.")
                 distinctiveness_payload, _ = simple_evidence_payload(
                     scope, sources, facts=result["facts"], candidate=candidate)
                 if isinstance(candidate.get("_generation_focus"), dict):

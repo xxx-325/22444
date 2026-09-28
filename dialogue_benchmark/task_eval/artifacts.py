@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 from ..storage import load
-from ..protocol import QA_TYPES
+from ..protocol import QA_TYPES, MEMORY_TYPES
 
 
 def save(path, value):
@@ -74,8 +74,9 @@ def qa_inputs(qa_run):
     qa_run = Path(qa_run)
     public = read(qa_run / "qa-public.json")["questions"]
     run_manifest = read(qa_run / "manifest.json") if (qa_run / "manifest.json").exists() else {}
-    if any(question.get("type") not in QA_TYPES for question in public):
-        raise ValueError("QA input must use the six memory-purpose types; regenerate older QA")
+    types = MEMORY_TYPES if run_manifest.get("qa_source") == "external" else QA_TYPES
+    if any(question.get("type") not in types for question in public):
+        raise ValueError("QA types do not match the source mode; regenerate QA")
     normalized_path = qa_run / "normalized.json"
     normalized = read(normalized_path) if normalized_path.exists() else []
     public_records = None

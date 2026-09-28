@@ -5,6 +5,7 @@ import re
 from .normalize import SOURCE_KINDS, source_kind_for
 from .protocol import (
     QA_TYPES,
+    MEMORY_TYPES,
     SIMPLE_ATOMICITY_STATES,
     SIMPLE_EVIDENCE_STATES,
     simple_point_ids,
@@ -12,7 +13,7 @@ from .protocol import (
 
 CODE_QA_TYPES = QA_TYPES
 GENERAL_QA_TYPES = QA_TYPES
-QA_MODES = {"general", "code"}
+QA_MODES = {"general", "code", "memory"}
 DIFFICULTIES = {"easy", "medium", "hard"}
 TRACKS = {"history_core", "inference_control"}
 _COMPOUND_POINT = re.compile(
@@ -23,7 +24,7 @@ _INTERNAL_PUBLIC_ID = re.compile(
     # references only when they are used as standalone prose tokens, not when
     # followed by a call or filename suffix.
     r"(?<![A-Za-z0-9_])(?:e|f)\d+(?![A-Za-z0-9_.(])|"
-    r"(?<![A-Za-z0-9_])(?:code|general)_s\d+_c\d+_f\d+(?![A-Za-z0-9_])|"
+    r"(?<![A-Za-z0-9_])(?:code|general|memory)_s\d+_c\d+_f\d+(?![A-Za-z0-9_])|"
     r"(?<![A-Za-z0-9_])(?:stage|chunk|scope)[-_]?\d+(?![A-Za-z0-9_])",
     re.I,
 )
@@ -85,7 +86,7 @@ def scope_source_ids(scope, qa_mode=None):
     additionally cites reconstructed file versions.
     """
     if qa_mode is not None and qa_mode not in QA_MODES | {"both"}:
-        raise ValueError("qa_mode must be general, code, or both")
+        raise ValueError("qa_mode must be general, code, memory, or both")
     if qa_mode == "general":
         return _dialogue_source_ids(scope, visible_messages_only=True)
     ids = _dialogue_source_ids(scope)
@@ -292,8 +293,8 @@ def _deterministic_type_guard(question, mode, question_type, scope, fact_sources
 
 def validate_candidates(document, facts, scope, qa_mode=None, allowed_types=None):
     """Validate source closure and the shared task-oriented taxonomy."""
-    if qa_mode not in {None, "general", "code", "both"}:
-        raise ValueError("qa_mode must be general, code, both, or None")
+    if qa_mode not in QA_MODES | {None, "both"}:
+        raise ValueError("qa_mode must be general, code, memory, both, or None")
     if allowed_types is not None:
         if isinstance(allowed_types, str):
             raise ValueError("allowed_types must be a collection, not text")
@@ -325,6 +326,8 @@ def validate_candidates(document, facts, scope, qa_mode=None, allowed_types=None
             reason = "unknown_type"
         elif mode == "code" and question_type not in CODE_QA_TYPES:
             reason = "unknown_category" if question.get("category") is not None else "unknown_type"
+        elif mode == "memory" and question_type not in MEMORY_TYPES:
+            reason = "unknown_type"
         elif allowed_types is not None and question_type not in allowed_types:
             reason = "type_not_requested"
         elif mode == "general" and (question.get("category") is not None
@@ -415,7 +418,7 @@ def validate_simple_candidates(document, facts, scope, qa_mode="code"):
     closure; it deliberately does not reject compound wording or infer labels.
     """
     if qa_mode not in QA_MODES:
-        raise ValueError("qa_mode must be general or code")
+        raise ValueError("qa_mode must be general, code, or memory")
     if not isinstance(document, dict) or not isinstance(document.get("questions"), list):
         raise ValueError("LLM response must contain questions[]")
     facts_by_id = {fact.get("id"): fact for fact in facts

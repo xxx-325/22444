@@ -23,7 +23,7 @@ from .llm import (ChatClient, extract_facts, generate_from_facts,
                   repair_simple_validation_rejection, review_candidates,
                   stage_error)
 from .normalize import load_dialogue
-from .protocol import MISSING_KINDS
+from .protocol import MISSING_KINDS, MEMORY_TYPES
 from .quality import CODE_QA_TYPES, GENERAL_QA_TYPES
 from .security import credential_detected
 from .storage import save_projection
@@ -38,7 +38,7 @@ DEFAULT_CODE_TYPES = tuple(sorted(CODE_QA_TYPES))
 _USER_PATH = re.compile(r"(?<![A-Za-z0-9:/])(?:/(?:Users|home)/[^/\s`'\"<>，。]+|[A-Za-z]:[\\/]Users[\\/][^\\/\s`'\"<>，。]+)(?=[\\/\s`'\"<>，。]|$)")
 _INTERNAL_PUBLIC_ID = re.compile(
     r"(?<![A-Za-z0-9_])(?:e|f)\d+(?![A-Za-z0-9_.(])|"
-    r"(?<![A-Za-z0-9_])(?:code|general)_s\d+_c\d+_f\d+(?![A-Za-z0-9_])|"
+    r"(?<![A-Za-z0-9_])(?:code|general|memory)_s\d+_c\d+_f\d+(?![A-Za-z0-9_])|"
     r"(?<![A-Za-z0-9_])(?:stage|chunk|scope)[-_]?\d+(?![A-Za-z0-9_])",
     re.I,
 )
@@ -102,8 +102,12 @@ def _build_parser():
                         help="Maximum candidate subgraph size before bounded evidence chunking")
     parser.add_argument("--model-request-chars", type=int, default=32000,
                         help="Maximum serialized request size for a model stage")
-    parser.add_argument("--qa-mode", choices=("general", "code", "both"), default="code",
-                        help="QA tracks to generate (default: code)")
+    parser.add_argument("--qa-mode", choices=("general", "code", "both"),
+                        help="Graph QA tracks to generate (default: code)")
+    parser.add_argument("--qa-count", type=int,
+                        help="External QA approved, safe, unique target and publication cap")
+    parser.add_argument("--group-budget", type=int,
+                        help="Maximum external event groups to explore")
     parser.add_argument("--general-types",
                         help="Comma-separated memory-purpose types for the general track")
     parser.add_argument("--code-types", help="Comma-separated code QA categories")
@@ -124,7 +128,7 @@ def _build_parser():
     parser.add_argument("--chunk-overlap", type=int, default=2,
                         help="Overlapping dialogue records between chunks")
     parser.add_argument("--parallel-workers", type=int, default=6,
-                        help="Shared concurrent model tasks across both tracks")
+                        help="Shared concurrent model tasks")
     parser.add_argument("--expansion-budget", type=int, default=3,
                         help="Maximum directed evidence expansions while completing a group")
     parser.add_argument("--review-mode", choices=("simple", "split", "single"),
@@ -149,13 +153,26 @@ def _build_parser():
 
 
 def _parse_options(args, parser):
+    external = args.qa_source == "external"
+    graph_options = ("qa_mode", "general_types", "code_types", "general_count",
+                     "code_count", "general_group_budget", "code_group_budget", "max_questions")
+    if external:
+        if any(getattr(args, name) is not None for name in graph_options):
+            parser.error("External QA uses --qa-count and --group-budget, not general/code options")
+        if args.review_mode != "simple" or args.questions_per_group != 1:
+            parser.error("External QA uses simple review and one candidate per event group")
+        args.qa_mode = "memory"
+    else:
+        if args.qa_count is not None or args.group_budget is not None:
+            parser.error("--qa-count and --group-budget require --qa-source external")
+        args.qa_mode = args.qa_mode or "code"
     try:
         general_types = _csv_types(args.general_types, GENERAL_QA_TYPES, "--general-types")
         code_types = _csv_types(args.code_types, CODE_QA_TYPES, "--code-types")
     except ValueError as error:
         parser.error(str(error))
     for name in ("general_count", "code_count", "general_group_budget",
-                 "code_group_budget", "questions_per_group", "max_questions"):
+                 "code_group_budget", "questions_per_group", "max_questions", "qa_count", "group_budget"):
         value = getattr(args, name)
         if value is not None and value <= 0:
             parser.error("--%s must be positive" % name.replace("_", "-"))
@@ -190,6 +207,13 @@ def _parse_options(args, parser):
             or args.parallel_workers <= 0 or args.expansion_budget < 0):
         parser.error("Invalid hop, chunk, worker, or positive budget")
 
+    if external:
+        count = args.qa_count if args.qa_count is not None else 10
+        return {"enabled_general": False, "enabled_code": False, "enabled_memory": True,
+                "memory_count": count,
+                "memory_group_budget": args.group_budget if args.group_budget is not None else max(10, count * 4),
+                "memory_types": tuple(sorted(MEMORY_TYPES)),
+                "questions_per_group": 1, "qa_source": "external"}
     enabled_general = args.qa_mode in {"general", "both"}
     enabled_code = args.qa_mode in {"code", "both"}
     general_count = (args.general_count if args.general_count is not None else 10)
@@ -252,7 +276,7 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
     if not tasks:
         return {"facts": [], "questions": [], "rejected": [], "usage": [],
                 "stage_errors": [], "stage_status": [],
-                "scopes": {"general": [], "code": []}}
+                "scopes": {}}
 
     def run(item):
         index, track, scope = item
@@ -312,7 +336,7 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
                 break
     merged = {"facts": [], "questions": [], "rejected": [], "usage": [],
               "stage_errors": [], "stage_status": [],
-              "scopes": {"general": [], "code": []}}
+              "scopes": {track: [] for _, track, _ in tasks}}
     facts_by_key = {}
     for index, track, scope, result, usage in sorted(results, key=lambda item: item[0]):
         merged["usage"].extend(usage)
@@ -367,8 +391,8 @@ def generate_simple_target(group, evidence_index, target_type, client,
     evidence expansion and the model request are not filtered by a taxonomy;
     the cited answer is labelled statically after generation.
     """
-    if qa_mode not in {"general", "code"}:
-        raise ValueError("qa_mode must be general or code")
+    if qa_mode not in {"general", "code", "memory"}:
+        raise ValueError("qa_mode must be general, code, or memory")
     if not isinstance(expansion_budget, int) or expansion_budget < 0:
         raise ValueError("expansion_budget must be a non-negative integer")
 
@@ -461,6 +485,8 @@ def generate_simple_target(group, evidence_index, target_type, client,
 
     def record_expansion(missing_kind, missing_object=None, static_direction=False):
         nonlocal active_group, expansion_rounds, expanded_static_precheck
+        if qa_mode == "memory":
+            return False, "external_event_evidence_incomplete"
         if expansion_rounds >= expansion_budget:
             return False, "expansion_budget_exhausted"
         expanded, audit = expand(
@@ -1005,7 +1031,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                 ]),
                 "limit_rejected": stage_limit_by_track.get(track, 0),
             }
-            for track in ("general", "code")
+            for track in sorted(set(raw_by_track) | set(unique_by_track))
             if track in raw_by_track or track in unique_by_track
         },
     }
@@ -1082,12 +1108,12 @@ def _publication_view(questions, limits, workspaces=(), duplicate_decisions=(),
 def _question_mode(item, default="code"):
     if isinstance(item, dict):
         mode = item.get("qa_mode")
-        if mode in {"general", "code"}:
+        if mode in {"general", "code", "memory"}:
             return mode
-        if item.get("track") in {"general", "code"}:
+        if item.get("track") in {"general", "code", "memory"}:
             return item["track"]
         question = item.get("question")
-        if isinstance(question, dict) and question.get("qa_mode") in {"general", "code"}:
+        if isinstance(question, dict) and question.get("qa_mode") in {"general", "code", "memory"}:
             return question["qa_mode"]
     return default
 
@@ -1141,6 +1167,10 @@ def _public_question(question):
     if mode == "code":
         item.update(category=question.get("category", item["type"]),
                     track=question.get("track"))
+    if mode == "memory":
+        for key in ("difficulty", "difficulty_origin", "difficulty_distance",
+                    "stage_count", "reasoning_hops", "graph_hops"):
+            item.pop(key, None)
     return item
 
 
@@ -1200,7 +1230,7 @@ def _filter_private_questions(questions, rejected, workspaces=()):
     per-track quota.  This lets a safe candidate later in deterministic merge
     order fill a slot occupied by an unsafe one.
     """
-    safe, counts = [], {"total": 0, "by_track": {"general": 0, "code": 0}}
+    safe, counts = [], {"total": 0, "by_track": {}}
     counts.update(path_redacted=0, credential_detected=0, redaction_deduplicated=0)
     counts["track_details"] = {}
     seen = set()
@@ -1262,7 +1292,7 @@ def _add_path_stats(result, stats):
     question_stats.setdefault("by_track", {})
     for key in ('path_redacted', 'credential_detected', 'redaction_deduplicated'):
         question_stats[key] = question_stats.get(key, 0) + stats.get(key, 0)
-    for mode in ("general", "code"):
+    for mode in set(question_stats["by_track"]) | set(stats.get("by_track", {})):
         track_stats = question_stats["by_track"].setdefault(mode, {})
         for key, value in stats.get("track_details", {}).get(mode, {}).items():
             track_stats[key] = track_stats.get(key, 0) + value
@@ -1357,6 +1387,7 @@ def main(argv=None):
         created = True
         os.chmod(args.output, 0o700)
         external_mode = options["qa_source"] == "external"
+        tracks = ("memory",) if external_mode else ("general", "code")
         if external_mode:
             # External-only selection is driven by the dialogue producer's
             # public-source event sidecar; it intentionally does not build the
@@ -1375,18 +1406,11 @@ def main(argv=None):
         code_scopes, adaptive_meta = [], None
         external_bundle = None
         if external_mode:
-            enabled_tracks = {track for track in ("general", "code")
-                              if options["enabled_" + track]}
             external_bundle = load_external_scopes(
-                args.external_events, records, cutoff, enabled_tracks,
+                args.external_events, records, cutoff,
                 max_chars=args.model_request_chars,
-                max_groups={track: options[track + "_group_budget"]
-                            for track in enabled_tracks})
+                max_groups=options["memory_group_budget"])
             save(args.output, "external-events.json", external_bundle)
-            code_scopes = [scope for scope in external_bundle["scopes"]
-                           if scope["track"] == "code"]
-            general_scope = next((scope for scope in external_bundle["scopes"]
-                                  if scope["track"] == "general"), None)
         if not external_mode and options["enabled_general"]:
             general_scope = build_general_scope(records, cutoff, args.max_context_chars, graph)
             general_scope["track"] = "general"
@@ -1420,14 +1444,11 @@ def main(argv=None):
                   "stage_errors": [], "stage_status": [], "usage": [],
                   "question_stats": _empty_question_stats(),
                   "all_questions": []}
-        track_results = {
-            "general": {"facts": [], "questions": [], "rejected": [],
-                        "stage_errors": [], "stage_status": [], "usage": []},
-            "code": {"facts": [], "questions": [], "rejected": [],
-                     "stage_errors": [], "stage_status": [], "usage": []},
-        }
+        track_results = {track: {"facts": [], "questions": [], "rejected": [],
+                                "stage_errors": [], "stage_status": [], "usage": []}
+                         for track in tracks}
         chunk_summaries, fact_tasks = [], []
-        track_task_counts = {"general": 0, "code": 0}
+        track_task_counts = {track: 0 for track in tracks}
         groups = []
         unique_chunk_count = 0
         if args.allow_network:
@@ -1438,7 +1459,7 @@ def main(argv=None):
                 scopes_by_track.append(("code", code_scopes))
             task_index = 0
             seen_chunks = {}
-            structural_scopes = {"general": [], "code": []}
+            structural_scopes = {track: [] for track in tracks}
             for track, scopes in scopes_by_track:
                 # Extract each source once across overlapping graph candidates.
                 # QA grouping still uses the source-linked fact index afterwards.
@@ -1503,7 +1524,7 @@ def main(argv=None):
                 raise ValueError("Saved facts use a different chunk layout")
             # Report missing evidence per enabled track.  A healthy other
             # track must not hide a scope failure in this one.
-            for track in ("general", "code"):
+            for track in tracks:
                 if options["enabled_" + track] and not track_task_counts[track]:
                     result["stage_errors"].append({
                         "track": track, "stage": "scope",
@@ -1532,7 +1553,7 @@ def main(argv=None):
                     "stage_status": facts_result["stage_status"],
                 })
                 for track, relation_scopes in structural_scopes.items():
-                    facts_result["scopes"][track].extend(relation_scopes)
+                    facts_result["scopes"].setdefault(track, []).extend(relation_scopes)
                 result = {
                     "facts": facts_result["facts"], "questions": [],
                     "rejected": list(facts_result["rejected"]),
@@ -1550,13 +1571,13 @@ def main(argv=None):
                 result["stage_errors"].extend(
                     {"track": track, "stage": "scope",
                      "error_type": "no_evidence"}
-                    for track in ("general", "code")
+                    for track in tracks
                     if options["enabled_" + track] and not track_task_counts[track]
                 )
                 result["stage_status"].extend(
                     {"track": track, "phase": "scope",
                      "scope": "failed", "error_type": "no_evidence"}
-                    for track in ("general", "code")
+                    for track in tracks
                     if options["enabled_" + track] and not track_task_counts[track]
                 )
 
@@ -1566,7 +1587,7 @@ def main(argv=None):
                 group_index = 0
                 if external_mode:
                     external_scopes = external_bundle["scopes"]
-                    for track in ("general", "code"):
+                    for track in tracks:
                         if not options["enabled_" + track]:
                             continue
                         track_scopes = [scope for scope in external_scopes
@@ -1606,7 +1627,7 @@ def main(argv=None):
                             "grouping": "external_events",
                             "groups": len([g for g in groups if g["qa_mode"] == track]),
                         })
-                for track in ("general", "code"):
+                for track in tracks:
                     if external_mode:
                         continue
                     if not options["enabled_" + track]:
@@ -1657,7 +1678,7 @@ def main(argv=None):
                         group_index += 1
                 save(args.output, "evidence-groups.json", groups)
 
-                limits = {t: options[t + "_count"] for t in ("general", "code") if options["enabled_" + t]}
+                limits = {t: options[t + "_count"] for t in tracks if options["enabled_" + t]}
                 budgets = {t: options[t + "_group_budget"] for t in limits}
                 workspaces = [r["workspace"] for r in records if r.get("workspace")]
                 duplicate_state = {"reviewed_pairs": set(), "decisions": []}
@@ -1776,7 +1797,7 @@ def main(argv=None):
                         "post_review": sum(q.get("qa_mode") == track for q in result["all_questions"]),
                         "post_limit": qa_result["counts"][track]}
                 _add_path_stats(result, qa_result["path_stats"])
-                for track in ("general", "code"):
+                for track in tracks:
                     track_results[track]["questions"] = [
                         q for q in result["questions"] if q.get("qa_mode", track) == track]
                     track_results[track]["facts"] = [
@@ -1806,6 +1827,10 @@ def main(argv=None):
             # public projection logic.  Keeping that write in one place also
             # makes static and network runs share the same file contract.
 
+        for name, value in (("facts.json", result["facts"]), ("evidence-groups.json", groups)):
+            if not (args.output / name).exists():
+                save(args.output, name, value)
+
         # Project public questions only after all stages have completed.  A
         # raw candidate remains in private audit artifacts; public fields use
         # the projected paths and must not contain detected credentials.
@@ -1820,15 +1845,15 @@ def main(argv=None):
         result["question_stats"].setdefault("by_track", {})
         public_counts = {track: len([
             item for item in public_questions if item.get("qa_mode") == track
-        ]) for track in ("general", "code")}
-        for track in ("general", "code"):
+        ]) for track in tracks}
+        for track in tracks:
             track_stats = dict(_empty_question_stats())
             track_stats.update(
                 result["question_stats"]["by_track"].get(track, {}))
             track_stats.pop("by_track", None)
             track_stats["published"] = public_counts[track]
             result["question_stats"]["by_track"][track] = track_stats
-        for track in ("general", "code"):
+        for track in tracks:
             track_results[track]["questions"] = [
                 question for question in result.get("questions", [])
                 if question.get("qa_mode", track) == track
@@ -1860,24 +1885,26 @@ def main(argv=None):
                 result.get("question_stats", {}).get("by_track", {}).get(track, {}))
             track_stats.pop("by_track", None)
             track_results[track]["question_stats"] = track_stats
-            save(args.output, "facts-%s.json" % track,
-                 track_results[track]["facts"])
+            if not external_mode:
+                save(args.output, "facts-%s.json" % track,
+                     track_results[track]["facts"])
             track_status = _status(
                 track_results[track],
                 enabled=options["enabled_" + track],
                 network=args.allow_network,
             )
             track_results[track]["status"] = track_status
-            save(args.output, "%s-qa.json" % track, {
-                "status": track_status,
-                "enabled": options["enabled_" + track],
-                "qa_mode": track,
-                "questions": [_public_question(q)
-                              for q in track_results[track]["questions"]],
-                "counts": track_results[track]["counts"],
-                "question_stats": track_results[track]["question_stats"],
-                "stage_errors": track_results[track]["stage_errors"],
-            })
+            if not external_mode:
+                save(args.output, "%s-qa.json" % track, {
+                    "status": track_status,
+                    "enabled": options["enabled_" + track],
+                    "qa_mode": track,
+                    "questions": [_public_question(q)
+                                  for q in track_results[track]["questions"]],
+                    "counts": track_results[track]["counts"],
+                    "question_stats": track_results[track]["question_stats"],
+                    "stage_errors": track_results[track]["stage_errors"],
+                })
 
         if args.allow_network:
             # Use the publishable set when determining the run status.  A
@@ -1889,7 +1916,7 @@ def main(argv=None):
             result["status"] = _status(status_view)
         public = {"status": result.get("status", "static_only"),
                   "qa_mode": args.qa_mode, "questions": [],
-                  "counts": {"general": 0, "code": 0},
+                  "counts": {track: 0 for track in tracks},
                   "tracks": {
                       track: {
                           "enabled": options["enabled_" + track],
@@ -1897,7 +1924,7 @@ def main(argv=None):
                               "status", "disabled"),
                           "count": public_counts[track],
                       }
-                      for track in ("general", "code")
+                      for track in tracks
                   }}
         for item in public_questions:
             public["questions"].append(item)
@@ -1961,7 +1988,7 @@ def main(argv=None):
             "coverage": coverage_report(
                 [r for r in records if r.get("order", 0) <= cutoff],
                 [v for v in graph["versions"] if v.get("observed_at", 0) <= cutoff],
-                facts_result["scopes"] if args.allow_network and fact_tasks else {},
+                facts_result["scopes"] if args.allow_network and fact_tasks else {track: [] for track in tracks},
                 result.get("facts", []), groups, result.get("stage_status", []),
                 result.get("questions", []),
                 attempted_group_ids=result.get("progress", {}).get("attempted_group_ids", [])),
@@ -1978,18 +2005,18 @@ def main(argv=None):
             "external_event_count": len(external_bundle["events"]) if external_mode else 0,
             "external_event_rejections": external_bundle["rejected"] if external_mode else [],
             "review_mode": args.review_mode,
-            "general_types": list(options["general_types"]),
-            "code_types": list(options["code_types"]),
-            "general_count": options["general_count"],
-            "code_count": options["code_count"],
-            "general_group_budget": options["general_group_budget"],
-            "code_group_budget": options["code_group_budget"],
+            **({"qa_count": options["memory_count"],
+                "group_budget": options["memory_group_budget"],
+                "memory_types": list(options["memory_types"])} if external_mode else {
+                "general_types": list(options["general_types"]),
+                "code_types": list(options["code_types"]),
+                "general_count": options["general_count"],
+                "code_count": options["code_count"],
+                "general_group_budget": options["general_group_budget"],
+                "code_group_budget": options["code_group_budget"]}),
             "questions_per_group": options["questions_per_group"],
             "expansion_budget": args.expansion_budget,
-            "configured_limits": {
-                "general": options["general_count"],
-                "code": options["code_count"],
-            },
+            "configured_limits": {track: options[track + "_count"] for track in tracks},
             "model": args.model, "usage": result.get("usage", []),
             "source_kinds": {
                 "records": {kind: sum(1 for record in records
@@ -2004,11 +2031,11 @@ def main(argv=None):
                 "repository": "provided" if args.repository else None,
                 "results": {}, "errors": [], "filtered": 0,
             }),
-            "scopes": {
+            "scopes": {"memory": len(external_bundle["scopes"])} if external_mode else {
                 "general": 1 if general_scope is not None else 0,
                 "code": len(code_scopes),
             },
-            "stages": stage_counts,
+            "stages": {} if external_mode else stage_counts,
             "chunks": {
                 "total": len(chunk_summaries),
                 "unique": unique_chunk_count,
@@ -2023,14 +2050,12 @@ def main(argv=None):
                     "question_stats": dict(
                         track_results[track].get("question_stats", {})),
                 }
-                for track in ("general", "code")
+                for track in tracks
             },
             "facts": {
                 "total": len(result.get("facts", [])),
-                "general": len([fact for fact in result.get("facts", [])
-                                if fact.get("qa_mode") == "general"]),
-                "code": len([fact for fact in result.get("facts", [])
-                             if fact.get("qa_mode") == "code"]),
+                **{track: sum(fact.get("qa_mode") == track
+                              for fact in result.get("facts", [])) for track in tracks},
             },
             "questions": {
                 # ``generated`` remains a compatibility alias for the
@@ -2067,7 +2092,7 @@ def main(argv=None):
                 "total": len(result.get("stage_errors", [])),
                 "by_type": stage_error_types,
             },
-            "limitations": ["Partial evidence, not a complete repository",
+            "limitations": ["Public external-event evidence only"] if external_mode else ["Partial evidence, not a complete repository",
                             "Python AST only; arbitrary shell output remains raw evidence",
                             "Syntactic call references require semantic verification",
                             "Human review required; difficulty is provisional"],

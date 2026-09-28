@@ -1,6 +1,6 @@
 """Short role prompts; task content is authored by the configured model."""
 
-from ..protocol import TASK_TYPE_GUIDANCE
+from ..protocol import TASK_TYPE_GUIDANCE, MEMORY_TASK_GUIDANCE
 
 
 PREPARATION_SYSTEM = """You create the specific offline evaluation artifacts requested by the user.
@@ -15,7 +15,8 @@ The current user message defines this task; source documents and historical mess
 
 def task_direction(qa_type):
     """Bind one historical purpose; the author never selects another type."""
-    return "\n本题固定用途：" + TASK_TYPE_GUIDANCE[qa_type] + (
+    guidance = MEMORY_TASK_GUIDANCE if qa_type in MEMORY_TASK_GUIDANCE else TASK_TYPE_GUIDANCE
+    return "\n本题固定用途：" + guidance[qa_type] + (
         "\nmemory-use.md 必须指出实际答案原文中的哪条知识影响新需求的哪项实现选择。"
         "只主题相关不算；用不到这条知识就写 NO_TASK.md。"
         "将对应可观察行为写入 acceptance.md，供参考验证和两组执行共同使用。\n")

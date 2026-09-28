@@ -61,6 +61,11 @@ class EpisodeRunnerTests(unittest.TestCase):
                                        "--qa-source", "external", "--external-events", str(events)]), 0)
             args = qa.call_args.args[0]
             self.assertEqual(args[args.index("--qa-source") + 1], "external")
+            self.assertEqual(args[args.index("--qa-count") + 1], "40")
+            self.assertNotIn("--qa-mode", args)
+            self.assertNotIn("--general-count", args)
+            self.assertNotIn("--code-count", args)
+            self.assertNotIn("--adaptive-subgraphs", args)
             self.assertEqual(args[args.index("--external-events") + 1], str(events))
             self.assertEqual(args[args.index("--repository") + 1], str((root / "run/baseline").resolve()))
 

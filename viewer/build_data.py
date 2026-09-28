@@ -17,6 +17,7 @@ from dialogue_benchmark.cli import _USER_PATH
 from dialogue_benchmark.security import credential_detected
 from dialogue_benchmark.selection import build_audit
 from dialogue_benchmark.storage import load as load_artifact
+from dialogue_benchmark.protocol import MEMORY_TYPE_LABELS
 
 
 def load(run, name):
@@ -110,7 +111,7 @@ def build(run):
             fact_map.setdefault(fact["id"], fact)
     for fact in fact_map.values():
         orders = [nodes[s]["order"] for s in fact.get("sources", []) if s in nodes]
-        node(dict(id=fact["id"], kind="fact", lane="general" if fact.get("qa_mode") == "general" else "code", label="事实", order=sum(orders) / len(orders) if orders else 0,
+        node(dict(id=fact["id"], kind="fact", lane=fact.get("qa_mode", "code"), label="事实", order=sum(orders) / len(orders) if orders else 0,
                   sources=fact.get("sources", []), qa_mode=fact.get("qa_mode"), text=fact["statement"], source_kind=fact.get("source_kind")))
         for source in fact.get("sources", []):
             edge(source, fact["id"], "fact_source")
@@ -166,11 +167,14 @@ def build(run):
     output = clean(dict(meta=dict(run=run.name, title="Lambda Forge" if run.name == "validation-quality-final-20260909-v5" else "真实对话", records=len(records), visible_messages=sum(r["kind"] == "message" for r in records),
                        versions=len(graph["versions"]), facts=len(fact_map), groups=len(groups), questions=len(questions),
                        cutoff=manifest.get("cutoff"), source_kinds=dict(Counter(r.get("source_kind", "unknown") for r in records)),
-                       expansion_mode="illustrative_graph_traversal", missing_sources=unknown),
+                       qa_source=manifest.get("qa_source", "graph"),
+                       expansion_mode="external_events" if manifest.get("qa_source") == "external" else "illustrative_graph_traversal", missing_sources=unknown),
                    nodes=list(nodes.values()), edges=list(edges.values()), groups=groups, questions=questions,
                    candidate_records=candidate_records,
                    progress=manifest.get("progress", {}),
-                   targets={mode: manifest.get(mode + "_count") for mode in ("general", "code")},
+                   targets=({"memory": manifest.get("qa_count")} if manifest.get("qa_mode") == "memory"
+                            else {mode: manifest.get(mode + "_count") for mode in ("general", "code")}),
+                   memory_types=MEMORY_TYPE_LABELS,
                    snapshots=graph.get("snapshots", []), adaptive=adaptive,
                    rejections=dict(Counter(r.get("reason", "unknown") for r in audit.get("rejected", []))),
                    coverage=manifest.get("coverage", {})))

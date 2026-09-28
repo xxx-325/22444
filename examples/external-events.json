@@ -4,16 +4,16 @@
     {
       "id": "external-compat-1",
       "kind": "compatibility_contract",
+      "memory_kind": "M1",
       "source_ids": ["e12"],
-      "used_by": ["e27"],
-      "qa_mode": "code"
+      "used_by": ["e27"]
     },
     {
       "id": "external-test-1",
       "kind": "verification_result",
+      "memory_kind": "M5",
       "source_ids": ["e31"],
-      "used_by": ["e34"],
-      "qa_mode": "code"
+      "used_by": ["e34"]
     }
   ]
 }

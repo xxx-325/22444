@@ -6,8 +6,10 @@
     return;
   }
   const G = window.EvidenceGraph, model = G.model(data);
-  const summaryView = window.EvidenceOverview.build(model);
-  const detailView = window.EvidenceOverview.detailed(summaryView);
+  const memoryMode = Object.hasOwn(data.targets || {}, "memory");
+  const modes = memoryMode ? ["memory"] : ["general", "code"];
+  const summaryView = memoryMode ? null : window.EvidenceOverview.build(model);
+  const detailView = memoryMode ? null : window.EvidenceOverview.detailed(summaryView);
   let overview = detailView;
   const $ = id => document.getElementById(id);
   $("run-title").textContent = data.meta.title || "真实对话";
@@ -29,26 +31,41 @@
     }
     return list;
   }
-  const modeName = mode => mode === "general" ? "普通 QA" : "代码 QA";
-  const types = {constraint_followthrough:'约束遵循',correction_update:'纠正应用',external_state_application:'外部状态应用',failure_avoidance:'失败规避',verification_reuse:'验证复用',compatibility_preservation:'兼容保留'};
+  const modeName = mode => ({memory: "QA", general: "普通 QA", code: "代码 QA"})[mode];
+  const types = {...data.memory_types, constraint_followthrough:'约束遵循',correction_update:'纠正应用',external_state_application:'外部状态应用',failure_avoidance:'失败规避',verification_reuse:'验证复用',compatibility_preservation:'兼容保留'};
   const difficulties = {easy: "简单", medium: "中等", hard: "困难"};
   const steps = ["关键主线", "挑选种子", "扩展一圈", "继续延伸", "实际证据组", "查看 QA"];
-  const defaultGroup = data.groups.find(g => g.qa_mode === "code" && g.question_ids.length && g.source_ids.length > 2) || data.groups[0];
+  const defaultGroup = data.groups.find(g => g.qa_mode === "code" && g.question_ids.length && g.source_ids.length > 2) || data.groups[0] || (memoryMode ? {id:"", qa_mode:"memory", fact_ids:[], source_ids:[], projection_ids:[], question_ids:[]} : null);
   if (!defaultGroup) { $("run-description").textContent = "该次运行没有保存证据组，无法回放抽取过程。"; return; }
-  const state = {step: 0, group: defaultGroup, seed: G.seedFor(model, defaultGroup), selected: null, mode: "general", groupOnly: false, timer: null, qaView: "final", auditStatus: "all"};
+  const state = {step: 0, group: defaultGroup, seed: G.seedFor(model, defaultGroup), selected: null, mode: modes[0], memoryType: "all", groupOnly: false, timer: null, qaView: "final", auditStatus: "all"};
   let transform = {x: 0, y: 0, scale: 1};
   const nodeElements = new Map(), edgeElements = [];
   let cardsById=new Map();
 
   $("run-description").textContent = `${data.meta.records} 条规范化记录 · 其中 ${data.meta.visible_messages} 条可见消息（不是 ${data.meta.records} 轮对话） · ${data.meta.versions} 个文件版本`;
-  for (const [value, label] of [[data.meta.facts, "抽取事实"], [data.meta.groups, "证据组"], [data.questions.filter(q => q.qa_mode === "general").length, "普通题"], [data.questions.filter(q => q.qa_mode === "code").length, "代码题"]]) {
+  if (memoryMode) {
+    for (const selector of [".notice", "#steps", ".workbench", "#method"]) document.querySelector(selector).hidden = true;
+    $("run-description").textContent = `${data.meta.visible_messages} 条可见消息 · 外部历史 → QA → 后续需求`;
+    document.querySelector(".qa-section > .muted").textContent = "按记忆类型查看问题、答案、来源及审核结果。每道合格 QA 可继续派生一个需求。";
+    document.querySelector(".evidence-section h2").textContent = "历史证据原文";
+    $("source-meta").textContent = "点击题目下的来源";
+    $("source-detail").replaceChildren(el("p", "点击来源编号查看实际历史记录。"));
+    $("qa-section").after(document.querySelector(".evidence-section"));
+    $("memory-type-filter").hidden = false;
+    for (const [kind, label] of Object.entries(data.memory_types || {})) {
+      const option = el("option", `${kind} · ${label}`); option.value = kind; $("qa-type").append(option);
+    }
+    $("qa-type").addEventListener("change", e => {state.memoryType=e.target.value;renderQA();});
+  }
+  for (const mode of ["general", "code", "memory"]) $("tab-"+mode).hidden = !modes.includes(mode);
+  for (const [value, label] of [[data.meta.facts, "抽取事实"], [data.meta.groups, "证据组"], ...modes.map(mode => [data.questions.filter(q => q.qa_mode === mode).length, modeName(mode)])]) {
     const box = el("div", null, "metric"); box.append(el("strong", value), el("span", label)); $("metrics").append(box);
   }
   steps.forEach((name, i) => {
     const b = button(null, () => { stop(); go(i); }, "step");
     b.append(el("span", String(i + 1).padStart(2, "0"), "number"), el("span", name)); $("steps").append(b);
   });
-  for (const mode of ["general", "code"]) {
+  for (const mode of modes) {
     const section = el("optgroup"); section.label = modeName(mode);
     data.groups.filter(g => g.qa_mode === mode).forEach(g => {
       const first = model.nodes.get(g.fact_ids[0]);
@@ -133,6 +150,7 @@
   }
 
   function renderStep() {
+    if (memoryMode) return;
     const frame = paint(), group = state.group;
     [...$("steps").children].forEach((b, i) => {if(i === state.step)b.setAttribute("aria-current","step");else b.removeAttribute("aria-current");});
     $("step-count").textContent = `${state.step + 1} / 6`;
@@ -217,7 +235,7 @@
   function selectNode(id, scroll=false) {
     const n=model.nodes.get(id);if(!n)return;
     stop();
-    state.selected=id;paint();
+    state.selected=id;if (!memoryMode) paint();
     $("source-meta").textContent=`${id} · ${n.source_kind || n.kind}`;
     const detail=$("source-detail");detail.replaceChildren();
     const info=el("div");info.append(el("h3",n.lane==="object" ? n.label : `${n.label} · ${id}`));
@@ -225,9 +243,11 @@
     for(const [label,value] of [["项目路径",n.path],["来源顺序",n.order || null],["原始时间",n.timestamp],["原始来源行",n.original_source_line],["上一文件版本",n.previous],["原始来源",n.source],["版本状态",n.status]])if(value){dl.append(el("dt",label),el("dd",value));}
     info.append(dl);
     const related=G.groupsForSeed(model,id);
-    info.append(el("p",`当前只是查看。固定起点仍是 ${state.seed}。`,"muted"));
-    if(related.length){info.append(button("设为起点，重新演示",()=>{chooseGroup((related.find(g=>g.id===state.group.id)||related[0]).id,id);$("steps").scrollIntoView({behavior:"auto"});},"primary"));info.append(el("p",`可在 ${related.length} 个证据组中演示；优先选直接引用它的组。`,"muted"));}
-    else info.append(el("p","此节点未进入已保存的证据投影，不补造出题路径。","muted"));
+    if (!memoryMode) {
+      info.append(el("p",`当前只是查看。固定起点仍是 ${state.seed}。`,"muted"));
+      if(related.length){info.append(button("设为起点，重新演示",()=>{chooseGroup((related.find(g=>g.id===state.group.id)||related[0]).id,id);$("steps").scrollIntoView({behavior:"auto"});},"primary"));info.append(el("p",`可在 ${related.length} 个证据组中演示；优先选直接引用它的组。`,"muted"));}
+      else info.append(el("p","此节点未进入已保存的证据投影，不补造出题路径。","muted"));
+    }
     const content=el("div");
     const relatedSources=[...(n.sources||[]),n.source,n.previous].filter(Boolean);
     if(relatedSources.length)content.append(sourceLinks(relatedSources));
@@ -248,6 +268,7 @@
     const rows=(data.candidate_records||[]).filter(row => {
       const q=row.current||row.original||{};
       return (q.origin_qa_mode||q.qa_mode||"code")===state.mode && (!state.groupOnly||q.evidence_group_id===state.group.id) &&
+        (state.memoryType==="all" || q.type===state.memoryType) &&
         (state.auditStatus==="all" || row.review_status===state.auditStatus || row.selection_status===state.auditStatus);
     });
     const panel=$("qa-list");panel.replaceChildren();
@@ -257,9 +278,9 @@
     for(const row of rows){
       const q=row.current||row.original||{}, card=el("article",null,"qa-card"), head=el("header");
       head.append(tag(row.candidate_id), tag(types[q.type||q.category]||q.type||q.category||"类型未保存"),
-                  tag(difficulties[q.difficulty]||q.difficulty||"难度未保存"),
                   tag(({approved:"自动审核通过",needs_review:"待复核",rejected:"审核或校验拒绝",not_reviewed:"审核未保存"})[row.review_status]||row.review_status),
                   tag(selectionNames[row.selection_status]||row.selection_status));
+      if (!memoryMode) head.append(tag(difficulties[q.difficulty]||q.difficulty||"难度未保存"));
       card.append(head,el("h3",q.question||"题干未保存"));
       if(row.record_note)card.append(el("p",row.record_note,"review-warning"));
       for(const [field,label] of [["answer_points","要回答的原子点"],["forbidden_points","有依据的禁止点"]]){
@@ -272,7 +293,7 @@
       if(q.use_case)card.append(el("p",`预期用途：${q.use_case}`));
       if(q.difficulty_reason)card.append(el("p",`难度依据：${q.difficulty_reason}`));
       card.append(sourceLinks(q.fact_ids));
-      if(q.evidence_group_id&&data.groups.some(g=>g.id===q.evidence_group_id))
+      if(!memoryMode&&q.evidence_group_id&&data.groups.some(g=>g.id===q.evidence_group_id))
         card.append(button("定位证据子图 ↑",()=>{chooseGroup(q.evidence_group_id);go(4);$("steps").scrollIntoView({behavior:"auto"});},"text-button"));
       const detail=el("details");detail.append(el("summary","展开原始审核、拒绝原因与修正前后"));
       for(const [label,value] of [["原始审核",q.review],["拒绝记录",row.rejections],["仓库可恢复性",row.recoverability],["发布选择原因",row.selection_reason],["重复目标",row.duplicate_of],["校验前候选",row.original],["修正前后版本",row.revisions]]){
@@ -284,21 +305,22 @@
   function renderQA() {
     for(const view of ["final","audit"])$("view-"+view).setAttribute("aria-pressed",String(state.qaView===view));
     $("audit-status").disabled=state.qaView!=="audit";
-    $("target-progress").textContent=["general","code"].map(mode=>{
+    $("target-progress").textContent=modes.map(mode=>{
       const count=data.questions.filter(q=>q.qa_mode===mode).length,target=data.targets?.[mode];
       return `${modeName(mode)}：${count} / ${target??"目标未保存"} · ${stopNames[data.progress?.stop_reasons?.[mode]]||"旧运行未保存补题停止原因"}`;
     }).join("　｜　");
-    for(const mode of ["general","code"]){const b=$("tab-"+mode);b.textContent=`${modeName(mode)} · ${data.questions.filter(q=>q.qa_mode===mode).length}`;b.setAttribute("aria-selected",String(mode===state.mode));b.tabIndex=mode===state.mode?0:-1;}
+    for(const mode of modes){const b=$("tab-"+mode);b.textContent=`${modeName(mode)} · ${data.questions.filter(q=>q.qa_mode===mode).length}`;b.setAttribute("aria-selected",String(mode===state.mode));b.tabIndex=mode===state.mode?0:-1;}
     $("qa-list").setAttribute("aria-labelledby","tab-"+state.mode);
     if(state.qaView==="audit"){renderAudit();return;}
-    const list=data.questions.filter(q=>q.qa_mode===state.mode&&(!state.groupOnly||q.evidence_group_id===state.group.id));
+    const list=data.questions.filter(q=>q.qa_mode===state.mode&&(!state.groupOnly||q.evidence_group_id===state.group.id)&&(state.memoryType==="all"||q.type===state.memoryType));
     $("qa-total").textContent=`共 ${data.questions.length} 道`;
     $("qa-context").textContent=state.groupOnly?`仅看当前证据组：${state.group.id} · ${list.length} 道${modeName(state.mode)}`:`全部已保存${modeName(state.mode)} · ${list.length} 道`;
     const panel=$("qa-list");panel.replaceChildren();
-    if(!list.length)panel.append(el("p","当前筛选没有公开题。可以切换轨道，或点击“查看全部题目”。","empty"));
+    if(!list.length)panel.append(el("p","当前筛选没有公开题。可查看全部候选及未发布原因。","empty"));
     for(const q of list){
       const card=el("article",null,"qa-card");card.id="qa-"+q.id;
-      const head=el("header");head.append(tag(`${types[q.type]||q.type} · ${q.type}`),tag(`${difficulties[q.difficulty]||q.difficulty}（运行标注）`));
+      const head=el("header");head.append(tag(`${types[q.type]||q.type} · ${q.type}`));
+      if (!memoryMode) head.append(tag(`${difficulties[q.difficulty]||q.difficulty}（运行标注）`));
       const status=tag(q.status==="approved"?"原记录：自动通过":"原记录：待复核");status.classList.add("status");if(q.status!=="approved")status.classList.add("pending");head.append(status);
       card.append(head,el("h3",q.question));
       for(const [field,title,css] of [["answer_points","要回答的点",""],["forbidden_points","不能答错的点","forbidden"]]){
@@ -307,13 +329,14 @@
         (q[field]||[]).forEach((point,i)=>{const item=el("div",null,"point "+css);item.append(el("p",`${i+1}. ${point.text}`),sourceLinks(point.sources));card.append(item);});
       }
       const actions=el("div",null,"qa-actions");
-      actions.append(button("定位证据子图 ↑",()=>{chooseGroup(q.evidence_group_id);go(4);$("steps").scrollIntoView({behavior:"auto"});},"text-button"));
+      if (!memoryMode) actions.append(button("定位证据子图 ↑",()=>{chooseGroup(q.evidence_group_id);go(4);$("steps").scrollIntoView({behavior:"auto"});},"text-button"));
       card.append(actions);
-      const review=el("details");review.append(el("summary","查看用途、难度依据与原始审核"));
+      const review=el("details");review.append(el("summary",memoryMode ? "查看原始审核" : "查看用途、难度依据与原始审核"));
       review.append(el("p","这是原始模型审核结果。请同时读状态和理由；本页不重新判题或消除二者的冲突。","review-warning"));
       for(const [label,value] of [["预期用途",q.use_case],["难度理由",q.difficulty_reason],["轨道边界",q.track],["适用截止",q.cutoff===undefined?null:`第 ${q.cutoff} 条规范化记录`],["审核理由",q.review?.reason]])if(value)review.append(el("p",`${label}：${value}`));
       for(const [key,label] of [["history_evidence_required","历史证据必需"],["current_snapshot_alone_sufficient","仅当前快照即可回答"],["history_requirement_correct","历史定位正确"]])if(q.review&&key in q.review)review.append(el("p",`${label}（原始布尔标注）：${q.review[key]}`));
-      review.append(el("p",`语义阶段 ${q.stage_count??"未记录"} · 图跳数 ${q.graph_hops??"未记录"} · 推理跳数 ${q.reasoning_hops??"未记录"}`),sourceLinks(q.fact_ids));
+      if (!memoryMode) review.append(el("p",`语义阶段 ${q.stage_count??"未记录"} · 图跳数 ${q.graph_hops??"未记录"} · 推理跳数 ${q.reasoning_hops??"未记录"}`));
+      review.append(sourceLinks(q.fact_ids));
       card.append(review);panel.append(card);
     }
   }
@@ -326,7 +349,7 @@
   for(const view of ["final","audit"])$("view-"+view).addEventListener("click",()=>{state.qaView=view;state.groupOnly=false;renderQA();});
   $("audit-status").addEventListener("change",e=>{state.auditStatus=e.target.value;renderQA();});
   $("all-qa").addEventListener("click",()=>{state.groupOnly=false;renderQA();});
-  for(const mode of ["general","code"]){const b=$("tab-"+mode);b.addEventListener("click",()=>{state.mode=mode;state.groupOnly=false;renderQA();});b.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();const other=mode==="general"?"code":"general";state.mode=other;state.groupOnly=false;renderQA();$("tab-"+other).focus();}});}
+  for(const mode of modes){const b=$("tab-"+mode);b.addEventListener("click",()=>{state.mode=mode;state.groupOnly=false;renderQA();});b.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();const other=modes[(modes.indexOf(mode)+1)%modes.length];state.mode=other;state.groupOnly=false;renderQA();$("tab-"+other).focus();}});}
   $("method-link").addEventListener("click",()=>{$("method").open=true;$("method").scrollIntoView({behavior:"auto"});});
   for(const [id,view] of [["density-detail",detailView],["density-summary",summaryView]])$(id).addEventListener("click",()=>{
     stop();overview=view;transform={x:0,y:0,scale:1};drawGraph();applyTransform();renderStep();
@@ -344,5 +367,6 @@
   $("graph").addEventListener("pointermove",e=>{if(!drag)return;const box=$("graph").getBoundingClientRect(),ratio=Math.max(overview.width/box.width,overview.height/box.height);transform.x=drag.tx+(e.clientX-drag.x)*ratio;transform.y=drag.ty+(e.clientY-drag.y)*ratio;applyTransform();});
   for(const event of ["pointerup","pointercancel"])$("graph").addEventListener(event,()=>{drag=null;});
   document.addEventListener("visibilitychange",()=>{if(document.hidden)stop();});
-  drawGraph();renderStep();renderQA();selectNode(state.seed);
+  if (!memoryMode) {drawGraph();renderStep();}
+  renderQA();selectNode(state.seed);
 })();

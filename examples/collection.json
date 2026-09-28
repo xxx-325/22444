@@ -17,8 +17,7 @@
     }
   ],
   "evaluation": {
-    "general_count": 4,
-    "code_count": 4,
+    "qa_count": 8,
     "task_count": 1,
     "task_budget": 2,
     "task_workers": 1,
