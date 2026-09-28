@@ -183,6 +183,8 @@ python -m dialogue_benchmark.task_eval.run \
 
 `run_episode.py --source-run /path/to/completed-session --simulator-path /path/to/agent-session-simulator --env-file /path/to/provider.env --output runs/episode` 可依次执行完整流程，使用模拟器配置的模型。默认每轨目标 40 道通过题、目标 12 个完成两组评测的任务，最多探索 24 个需求；QA 并发 10，仓库任务并发 3。重叠子图先按来源合并再抽 facts；静态代码关系保留给后续 QA 组合，不重复塞入 facts 请求。
 
+`--model-request-chars` 设置 QA 请求的输入长度上限，默认 32,000 字符。完整外部事件组较长时，可在模型上下文容量内提高。QA 阶段失败会保留证据并以 `qa_generation_failed` 停止，与正常完成但没有合格题目的情况分别记录。
+
 大输入的初始关系候选通过共享对象定位，并按时间线限制候选数量。只有事实进入选中的证据组，才计算其扩展选项；底层版本和代码关系继续保留。`--reuse-facts /path/to/previous-qa-run` 可复用之前的 facts，不重新调用模型抽取；要求规范化记录和分块布局完全一致，同时保留原抽取失败。复用结果的旧调用不会重复计入本次 token 消耗。
 
 QA 完成后可用 `--resume-tasks` 复用 QA 和固定基线，从仓库任务阶段继续；启动前核对输入哈希。已有 `tasks/` 需先移到其他目录保留。参考文件通过容器用户可读的独立副本传入，原始私有文件权限保持不变。

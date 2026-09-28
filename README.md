@@ -411,6 +411,11 @@ HTML entry point. The task report updates after each completed task.
 runs/episode` runs all stages in order using the simulator's configured model.
 Defaults target 40 approved questions per track and 12 evaluated tasks, exploring
 up to 24 requirements. QA workers default to 10; repository workers default to 3.
+`--model-request-chars` sets the serialized QA input limit (default: 32,000
+characters). Increase it when a complete external event bundle needs more room
+within the model's context window. Failed QA stages retain their evidence and
+stop the episode as `qa_generation_failed`, separately from a completed run
+with no eligible questions.
 Inputs are extracted once per unique source across overlapping subgraphs;
 static code relations are reused for QA grouping rather than repeated in fact requests.
 For a larger input, initial relationship proposals use shared-object lookups and

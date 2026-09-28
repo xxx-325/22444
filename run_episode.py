@@ -36,6 +36,8 @@ def main(argv=None):
     parser.add_argument("--task-count", type=int, default=12)
     parser.add_argument("--task-budget", type=int, default=24)
     parser.add_argument("--parallel-workers", type=int, default=10)
+    parser.add_argument("--model-request-chars", type=int, default=32000,
+                        help="Maximum serialized QA request size, including evidence and prompt")
     parser.add_argument("--task-workers", type=int, default=3)
     parser.add_argument("--revisions", type=int, default=5)
     parser.add_argument("--reuse-facts", type=Path)
@@ -46,7 +48,7 @@ def main(argv=None):
         parser.error("External QA uses --qa-count, not separate general/code counts")
     if args.qa_source == "graph" and (args.qa_count is not None or args.group_budget is not None):
         parser.error("--qa-count and --group-budget require --qa-source external")
-    for name in ("qa_count", "group_budget", "general_count", "code_count"):
+    for name in ("qa_count", "group_budget", "general_count", "code_count", "model_request_chars"):
         if getattr(args, name) is not None and getattr(args, name) <= 0:
             parser.error("--%s must be positive" % name.replace("_", "-"))
     package = load_episode_manifest(args.episode_manifest) if args.episode_manifest else None
@@ -106,6 +108,7 @@ def main(argv=None):
         qa_args = [
             str(root / "input/dialogue.json"), "--output", str(root / "qa"),
             "--parallel-workers", str(args.parallel_workers), "--chunk-chars", "24000",
+            "--model-request-chars", str(args.model_request_chars),
             "--allow-network",
             "--endpoint", endpoint, "--model", model["model"], "--key-env", model["key_env"],
         ]
@@ -137,7 +140,11 @@ def main(argv=None):
             if status:
                 raise RuntimeError("QA generation did not complete; see qa/error.json")
         render(root)
-        if not read(root / "qa/qa-public.json")["questions"]:
+        qa_result = read(root / "qa/qa-public.json")
+        if qa_result.get("status") == "failed":
+            state["stop_reason"] = "qa_generation_failed"
+            raise RuntimeError("QA generation failed; see qa/qa-audit.json")
+        if not qa_result["questions"]:
             task_manifest = {"target": args.task_count, "tasks": [],
                              "stop_reason": "no_eligible_qa"}
             save(root / "tasks/manifest.json", task_manifest)

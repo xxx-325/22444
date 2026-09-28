@@ -58,10 +58,12 @@ class EpisodeRunnerTests(unittest.TestCase):
                  patch("run_episode.render"), patch("run_episode.compact_run"):
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                                        "--env-file", str(root / ".env"), "--output", str(root / "run"),
-                                       "--qa-source", "external", "--external-events", str(events)]), 0)
+                                       "--qa-source", "external", "--external-events", str(events),
+                                       "--model-request-chars", "96000"]), 0)
             args = qa.call_args.args[0]
             self.assertEqual(args[args.index("--qa-source") + 1], "external")
             self.assertEqual(args[args.index("--qa-count") + 1], "40")
+            self.assertEqual(args[args.index("--model-request-chars") + 1], "96000")
             self.assertNotIn("--qa-mode", args)
             self.assertNotIn("--general-count", args)
             self.assertNotIn("--code-count", args)
@@ -131,3 +133,32 @@ class EpisodeRunnerTests(unittest.TestCase):
             self.assertEqual(read(root / "run/tasks/manifest.json")["stop_reason"], "no_eligible_qa")
             self.assertTrue((root / "run/tasks/report.md").is_file())
             self.assertEqual(read(root / "run/pipeline.json")["status"], "completed")
+
+    def test_failed_qa_is_not_reported_as_an_empty_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            candidate = source / "workspace/candidate"
+            candidate.mkdir(parents=True)
+            (candidate / "a.py").write_text("value = True\n")
+            (source / "session.jsonl").write_text(json.dumps({"kind": "user", "content": "rule"}) + "\n")
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            def generated(args):
+                output = Path(args[args.index("--output") + 1])
+                save(output / "qa-public.json", {"status": "failed", "questions": []})
+                save(output / "qa-audit.json", {"stage_errors": [{"error_code": "request_budget"}]})
+                return 0
+            receipt = dict(requests=0, prompt_tokens=0, completion_tokens=0, complete=True)
+            with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.generate_qa", side_effect=generated), \
+                 patch("run_episode.run_tasks") as tasks, patch("run_episode.render"), \
+                 patch("run_episode.episode_usage", return_value=receipt):
+                with self.assertRaisesRegex(RuntimeError, "QA generation failed"):
+                    main(["--source-run", str(source), "--simulator-path", str(root),
+                          "--env-file", str(root / ".env"), "--output", str(root / "run")])
+            tasks.assert_not_called()
+            state = read(root / "run/pipeline.json")
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["stop_reason"], "qa_generation_failed")
+            self.assertEqual(read(root / "run/usage.json"), receipt)
+            self.assertFalse((root / "run/tasks").exists())
