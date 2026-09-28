@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from unittest.mock import patch
 
 from dialogue_benchmark import cli
 from dialogue_benchmark.llm import parse_text_response
-from dialogue_benchmark.repository_probe import _repository_entries, probe_candidate, repository_anchors
+from dialogue_benchmark.repository_probe import PROBE_PROMPT, _repository_entries, probe_candidate, repository_anchors
 
 
 class FakeProbeClient:
@@ -32,6 +33,7 @@ class RepositoryProbeTests(unittest.TestCase):
             self.assertEqual(_repository_entries(root), ["README.md", "src/api.py"])
 
     def test_protocol_is_small_and_rejects_answer_style_fields(self):
+        self.assertIn("observations 中 id 为 query1 的结果支持判断时，输出 EVIDENCE: query1", PROBE_PROMPT)
         result = parse_text_response(
             "PROBE: need_evidence\nREASON: read the entry\n"
             "QUERY: read|repo|config.py|-|0\nEVIDENCE: none\nEND_PROBE")
@@ -40,6 +42,66 @@ class RepositoryProbeTests(unittest.TestCase):
             parse_text_response(
                 "PROBE: recoverable\nREASON: yes\nQUERY: none\n"
                 "EVIDENCE: q1\nANSWER: leaked\nEND_PROBE")
+
+    def test_protocol_requires_a_complete_terminated_record(self):
+        complete = ("PROBE: need_evidence\nREASON: inspect entry\n"
+                    "QUERY: read|repo|api.py|-|0\nEVIDENCE: query1\nEND_PROBE")
+        for invalid in (complete.removesuffix("\nEND_PROBE"),
+                        complete.replace("REASON: inspect entry\n", ""),
+                        complete.replace("QUERY: read|repo|api.py|-|0\n", "")):
+            with self.subTest(response=invalid), self.assertRaises(ValueError):
+                parse_text_response(invalid)
+
+    def test_unclosed_probe_response_stays_uncertain_without_retry(self):
+        responses = [
+            "PROBE: need_evidence\nREASON: inspect entry\n"
+            "QUERY: read|repo|api.py|-|0\nEVIDENCE: none\nEND_PROBE",
+            "PROBE: need_evidence\nREASON: inspect the remaining implementation\n"
+            "QUERY: lookup|repo|.|export_records|0\nEVIDENCE: api.py lines 1-80",
+        ]
+        envelopes = [io.BytesIO(json.dumps({"choices": [
+            {"finish_reason": "stop", "message": {"content": response}}
+        ]}).encode()) for response in responses]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("def export_records(rows): return rows\n")
+            output = Path(directory) / "probe"
+            with patch.dict("os.environ", {"BENCHMARK_API_KEY": "test-placeholder-key"}), \
+                    patch("dialogue_benchmark.llm.urllib.request.build_opener") as opener:
+                opener.return_value.open.side_effect = envelopes
+                result = probe_candidate({"question": "Which customer selection applies?"}, root,
+                    "https://example.invalid", "m", "BENCHMARK_API_KEY", output)
+            self.assertEqual(opener.return_value.open.call_count, 2)
+            self.assertEqual(result["status"], "uncertain")
+            self.assertEqual(result["reason"], "probe_error:ModelStageError")
+            self.assertEqual(result["error_code"], "protocol_error")
+            self.assertEqual(result["query_count"], 1)
+            self.assertEqual((output / "step-002/response-text.txt").read_text(), responses[1])
+            self.assertFalse((output / "step-002/query.json").exists())
+
+    def test_probe_evidence_requires_existing_query_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("def export_records(rows): return rows\n")
+            for decision in ("need_evidence", "recoverable"):
+                for evidence in ("api.py lines 1-80", "query2"):
+                    with self.subTest(decision=decision, evidence=evidence):
+                        query = "lookup|repo|.|export_records|0" if decision == "need_evidence" else "none"
+                        FakeProbeClient.responses = [
+                            "PROBE: need_evidence\nREASON: inspect entry\n"
+                            "QUERY: read|repo|api.py|-|0\nEVIDENCE: none\nEND_PROBE",
+                            "PROBE: %s\nREASON: check selection\nQUERY: %s\nEVIDENCE: %s\nEND_PROBE"
+                            % (decision, query, evidence),
+                        ]
+                        with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                            result = probe_candidate({"question": "Which customer selection applies?"}, root,
+                                "https://example.invalid", "m", "KEY", Path(directory) / "probe")
+                        self.assertEqual(result["status"], "uncertain")
+                        self.assertEqual(result["reason"], "unknown_probe_evidence")
+                        self.assertEqual(result["query_count"], 1)
+                        self.assertEqual(len(result["usage"]), 2)
 
     def test_probe_reads_repo_and_checks_answer_claims(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -18,7 +18,7 @@ PROBE_PROMPT = """你是一个只读的仓库可恢复性探针。判断下面�
 如果至少一个必要结论必须来自旧版本、用户纠正、历史测试结果或仓库外事实，且当前仓库无法恢复，返回 history_required；
 如果还不能确定，返回 uncertain。没有搜索命中不能证明某条规则不存在。
 必须逐项考虑 answer_claims。只要有一个影响题目答案的主张无法从当前仓库直接确认，就不能返回 recoverable。
-只有真正读到的仓库内容才能作为 EVIDENCE；不要用题目、答案主张或锚点本身作为证据。
+EVIDENCE 引用已读取仓库内容对应的查询编号：例如 observations 中 id 为 query1 的结果支持判断时，输出 EVIDENCE: query1。
 
 每轮只输出以下四行和最后一行 END_PROBE，不要输出 JSON、Markdown 或解释。每次回复只能有一行 QUERY；如果还需要别的文件，下一轮再查，不能同时输出第二行 QUERY：
 PROBE: need_evidence|recoverable|history_required|uncertain
