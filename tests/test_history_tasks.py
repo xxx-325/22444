@@ -426,6 +426,167 @@ class HistoryTests(unittest.TestCase):
 
 
 class HistoryConstructionTests(unittest.TestCase):
+    def construct_test_retries(self, *, before_retry=None, author_change=None, revisions=2):
+        fixture = test_task_eval_flow.TaskPreflightTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        save(Path(fixture.item["generation_input"]), {"ref_to_source": {"资料1": "e1"}})
+        fixture.item["public_records"] = [
+            {"id": "e1", "original_id": "old", "order": 1, "kind": "message", "text": "Preserve all blanks"},
+            {"id": "e2", "original_id": "correction", "order": 2, "kind": "message", "text": "EU rejects blanks"}]
+        fixture.item["qa"]["answer_points"] = [{"text": "EU rejects blanks; other tenants preserve blanks."}]
+        public_history = prepare_history(fixture.item["public_records"], fixture.item["generation_input"])
+        targets = freeze_targets(parse_text_response(CONTRACT)["reviews"], public_history)
+        histories = []
+
+        def draft(selection, config, output, spec, budget, feedback=""):
+            fixture.fake_draft(selection, config, output, spec, budget, feedback)
+            (spec / "history-contract.txt").write_text(CONTRACT)
+            path = spec / "acceptance.md"
+            path.write_text(path.read_text() +
+                            "\n| a2 | Other blanks retained | h1 | test: test_acceptance::test_other |\n"
+                            "| a3 | EU blanks rejected | h2 | test: test_acceptance::test_eu |\n")
+
+        def task_review(task, answer, config, output, *, evidence, budget):
+            result = qualification({"oracle_answer": answer, "contracts": evidence["contracts"]})
+            save(output / "result.json", result)
+            return result
+
+        def agent(root, *args, **kwargs):
+            if root.name == "author":
+                spec = root / "workspace/checks"
+                (spec / "test_acceptance.py").write_text("# Tests for " + root.parent.name + "\n")
+                if root.parent.name == "construction-01" and author_change:
+                    author_change(spec)
+                return {"status": "finished"}
+            return fixture.fake_agent(root, *args, **kwargs)
+
+        def checks(candidate, spec, output, *args, **kwargs):
+            status = "failed" if candidate == fixture.baseline else "passed"
+            if output.parent.name == "construction-01" and output.name == "final-reference-checks":
+                status = "failed"
+            return {"status": status, "cases": [
+                {"id": "test_acceptance::test_" + name, "status": status}
+                for name in ("feature", "other", "eu")]}
+
+        def source_review(history, *args):
+            histories.append(history)
+            return {"support": "supported"}
+
+        def coverage_review(spec, baseline, candidate, changed, results, config, output, budget):
+            output.mkdir(parents=True)
+            (output / "coverage.md").write_text("Each acceptance row is covered.")
+            first = output.parent.name == "construction-00"
+            if first and before_retry:
+                before_retry(fixture, output.parent / "qualified-draft", histories[-1])
+            return {"status": "revise" if first else "complete", "rows": []}
+
+        def mutation_files(spec, candidate, changed, config, output, budget):
+            (output / "workspace").mkdir(parents=True)
+            return fixture.fake_agent(output, config, "judge", "Generate mutation files")
+
+        with patch("dialogue_benchmark.task_eval.run.select_task", return_value={
+                "status": "candidate", "history_targets": targets}), \
+             patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft) as draft_call, \
+             patch("dialogue_benchmark.task_eval.run.review_task", side_effect=task_review) as review_call, \
+             patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent) as agent_call, \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks) as check_call, \
+             patch("dialogue_benchmark.task_eval.run.review_sources", side_effect=source_review) as source_call, \
+             patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage_review) as coverage_call, \
+             patch("dialogue_benchmark.task_eval.run.write_history_mutation", side_effect=mutation_files) as mutation_call, \
+             patch("dialogue_benchmark.task_eval.run.check_history_mutations", return_value={"status": "caught"}) as replay_call:
+            from dialogue_benchmark.task_eval.run import construct
+            receipt = construct(fixture.item, fixture.root, fixture.baseline,
+                                {"execution_image": "image"}, revisions, {})
+        calls = SimpleNamespace(draft=draft_call, review=review_call, agent=agent_call,
+                                checks=check_call, sources=source_call, coverage=coverage_call,
+                                mutations=mutation_call, replay=replay_call)
+        return fixture, receipt, calls
+
+    def test_fixed_draft_retries_reuse_qualification_but_repeat_required_checks(self):
+        fixture, receipt, calls = self.construct_test_retries()
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt["accepted_attempt"], 2)
+        calls.draft.assert_called_once()
+        calls.review.assert_called_once()
+        self.assertEqual([call.args[0].name for call in calls.agent.call_args_list],
+                         ["author", "reference-solver"] * 3)
+        self.assertEqual(calls.sources.call_count, 3)
+        self.assertEqual(calls.coverage.call_count, 3)
+        self.assertEqual(calls.mutations.call_count, 2)
+        self.assertEqual(calls.replay.call_count, 2)
+        self.assertEqual([(call.args[2].parent.name, call.args[2].name)
+                          for call in calls.checks.call_args_list], [
+            ("construction-00", "baseline-checks"), ("construction-00", "reference-checks"),
+            ("construction-01", "baseline-checks"), ("construction-01", "reference-checks"),
+            ("construction-01", "final-baseline-checks"), ("construction-01", "final-reference-checks"),
+            ("construction-02", "baseline-checks"), ("construction-02", "reference-checks"),
+            ("construction-02", "final-baseline-checks"), ("construction-02", "final-reference-checks")])
+        records = read(fixture.root / "construction.json")
+        self.assertEqual([record["accepted"] for record in records], [False, False, True])
+        self.assertEqual(records[0]["reason"], "checks_revise")
+        self.assertEqual(records[1]["final_reference_checks"]["status"], "failed")
+        first = fixture.root / "construction-00"
+        for attempt in (1, 2):
+            current = fixture.root / ("construction-%02d" % attempt)
+            reused_review = read(current / "task-review/result.json")
+            self.assertEqual(reused_review.pop("reused_from"), "construction-00/task-review")
+            self.assertEqual(reused_review.pop("usage"), [])
+            self.assertEqual(reused_review, read(first / "task-review/result.json"))
+            for name in ("task.md", "memory-use.md", "history-contract.txt", "history.json"):
+                self.assertEqual((current / "qualified-draft" / name).read_bytes(),
+                                 (first / "qualified-draft" / name).read_bytes())
+        self.assertIn("construction-02", (fixture.root / "frozen/test_acceptance.py").read_text())
+
+    def test_changed_fixed_draft_or_history_cannot_reuse_clean_qualification(self):
+        for change in ("task", "contract", "requirements", "answer", "source"):
+            with self.subTest(change=change):
+                def before_retry(fixture, draft, history):
+                    if change == "answer":
+                        fixture.item["qa"]["answer_points"] = [{"text": "EU rejects blanks."}]
+                    elif change == "source":
+                        path = draft / "history-contract.txt"
+                        path.write_text(path.read_text().replace("sources: old", "sources: correction"))
+                    else:
+                        name = {"task": "task.md", "contract": "history-contract.txt",
+                                "requirements": "acceptance.md"}[change]
+                        path = draft / name
+                        text = path.read_text()
+                        path.write_text(text.replace("Pending data remains readable", "Pending data is deleted")
+                                        if change == "requirements" else text + "\nChanged after qualification.\n")
+                fixture, receipt, calls = self.construct_test_retries(before_retry=before_retry)
+                self.assertIsNone(receipt)
+                self.assertFalse((fixture.root / "frozen").exists())
+                calls.review.assert_called_once()
+                calls.sources.assert_called_once()
+                calls.coverage.assert_called_once()
+                self.assertEqual([call.args[0].name for call in calls.agent.call_args_list],
+                                 ["author", "reference-solver"])
+                records = read(fixture.root / "construction.json")
+                self.assertEqual(len(records), 2)
+                self.assertFalse(records[-1]["accepted"])
+
+    def test_later_test_author_cannot_change_qualified_task_or_requirements(self):
+        for name in ("task.md", "history-contract.txt", "acceptance.md"):
+            with self.subTest(name=name):
+                def change(spec):
+                    path = spec / name
+                    text = path.read_text()
+                    path.write_text(text.replace("Pending data remains readable", "Pending data is deleted")
+                                    if name == "acceptance.md" else text + "\nChanged during test repair.\n")
+                fixture, receipt, calls = self.construct_test_retries(author_change=change, revisions=1)
+                self.assertIsNone(receipt)
+                self.assertFalse((fixture.root / "frozen").exists())
+                calls.review.assert_called_once()
+                calls.sources.assert_called_once()
+                calls.coverage.assert_called_once()
+                self.assertEqual([call.args[0].name for call in calls.agent.call_args_list],
+                                 ["author", "reference-solver", "author"])
+                records = read(fixture.root / "construction.json")
+                self.assertEqual(records[-1]["reason"],
+                                 "invalid_acceptance" if name == "acceptance.md" else "qualified_draft_changed")
+                self.assertFalse(records[-1]["accepted"])
+
     def test_oracle_and_replayed_mutation_are_both_admission_gates(self):
         for coverage, checks_coverage, mutation, support, accepted in (
                 ("complete", "complete", "caught", "supported", True),

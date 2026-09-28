@@ -2,6 +2,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from pathlib import Path
 import shutil
 
@@ -195,6 +196,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         save(reference / "history-focus.json", public_history["initial_events"])
     attempts = []
     fixed_draft = None
+    fixed_qualification = None
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
     if preparation_feedback:
@@ -259,6 +261,24 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 draft_items = acceptance_items(spec, draft_history)
                 protected = {name: (spec / name).read_text() for name in
                              ("task.md", "memory-use.md") + (("history-contract.txt",) if public_history else ())}
+                reviewed_task, reviewed_answer = protected["task.md"], answer_text(item["qa"])
+                if fixed_qualification is not None:
+                    requirements = [{k: r[k] for k in ("id", "requirement", "basis")} for r in draft_items]
+                    if (protected != fixed_qualification["protected"]
+                            or requirements != fixed_qualification["requirements"]):
+                        raise ValueError("qualified_draft_changed")
+                    if (draft_history != fixed_qualification["history"]
+                            or reviewed_answer != fixed_qualification["answer"]
+                            or (draft_history and not qualified_oracle_complete(
+                                draft_history, fixed_qualification["review"]))):
+                        raise ValueError("qualified_history_not_verified")
+                    gate_state.update(deepcopy(fixed_qualification))
+                    decision = dict(gate_state["review"], usage=[],
+                                    reused_from=str(fixed_draft.parent.relative_to(root) / "task-review"))
+                    gate_state["review"] = decision
+                    save(run / "task-review/result.json", decision)
+                    copy_tree(spec, run / "qualified-draft")
+                    return decision
                 refs = {ref for c in (draft_history or {}).get("contracts", []) for ref in c["sources"]}
                 evidence = {"memory_use": protected["memory-use.md"], "acceptance": draft_items,
                             "qa_source": item.get("qa_source", "graph"),
@@ -270,7 +290,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                             "history_targets": (frozen_targets or {}).get("targets", []),
                             "sources": [e for e in (public_history or {}).get("events", [])
                                         if e["id"] in refs or e.get("role") == "user"]}
-                reviewed_task, reviewed_answer = protected["task.md"], answer_text(item["qa"])
                 decision = review_task(reviewed_task, reviewed_answer,
                                        config, run / "task-review", evidence=evidence, budget=budget)
                 if decision.get("status") == "clean" and frozen_targets:
@@ -296,7 +315,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                         or not qualified_oracle_complete(draft_history, decision)):
                     decision = dict(decision, status="uncertain", issue="historical_answer_not_verified")
                     save(run / "task-review/result.json", decision)
-                gate_state.update(review=decision, protected=protected,
+                gate_state.update(review=decision, protected=protected, history=draft_history, answer=reviewed_answer,
                                   requirements=[{k: r[k] for k in ("id", "requirement", "basis")} for r in draft_items])
                 copy_tree(spec, run / "qualified-draft")
                 return decision
@@ -319,7 +338,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                      status="pending" if task_review["status"] == "uncertain" else "stop",
                                      task_review=task_review))
                 break
-            fixed_draft = run / "qualified-draft"
+            if fixed_draft is None:
+                fixed_draft = run / "qualified-draft"
+                fixed_qualification = deepcopy(gate_state)
             if selection_only:
                 save(root / "construction.json", [dict(attempt=attempt, status="qualified",
                      accepted=False, task_review=task_review)])
