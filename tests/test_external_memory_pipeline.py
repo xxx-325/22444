@@ -50,12 +50,34 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             [{"id": "f1", "statement": "本周期仅批准 P1。", "sources": ["e1"]}],
             client, qa_mode="memory", target_type="M6")
         workflow_prompt, focus_prompt, qa_prompt = [prompt for prompt, _ in client.calls]
-        self.assertIn("保留公开确认的客户、对象、周期和适用条件", workflow_prompt)
+        self.assertIn("在给定历史已确认的客户、对象、周期和条件内", workflow_prompt)
+        self.assertIn("新开发能力及其业务链路", workflow_prompt)
+        self.assertIn("所需历史决定必须已经能从材料找回", workflow_prompt)
+        self.assertIn("不以取得未记录的新批准或新确认为前提", workflow_prompt)
         self.assertIn("假设中的后续批准不是已经发生的更新或局部纠正", workflow_prompt)
         for prompt in (focus_prompt, qa_prompt):
             self.assertIn("Preserve the publicly confirmed customer, object, cycle, and applicability", prompt)
             self.assertIn("A hypothetical later approval is not an actual update or scoped correction", prompt)
             self.assertIn("Do not extend a cycle-limited authorization to other cycles", prompt)
+        self.assertEqual([receipt["stage"] for receipt in client.usage], ["workflow", "focus", "qa"])
+
+    def test_m6_focus_and_qa_retrieve_confirmed_history_not_new_approval(self):
+        client = Client()
+        generate_from_facts(self.scope("M6"),
+            [{"id": "f1", "statement": "本周期仅批准 P1。", "sources": ["e1"]}],
+            client, qa_mode="memory", target_type="M6")
+        _, focus_prompt, qa_prompt = [prompt for prompt, _ in client.calls]
+        self.assertIn("从给定历史中找回已经确认", focus_prompt)
+        self.assertIn("不是向用户再次取得确认或询问未记录的新状态", focus_prompt)
+        self.assertIn("FOCUS: 围绕该业务链路需要找回的已确认历史规则", focus_prompt)
+        self.assertIn("focus 是需要找回的已确认历史决定", qa_prompt)
+        self.assertIn("只有原文记载的实际纠正才能改变答案", qa_prompt)
+        for prompt in (focus_prompt, qa_prompt):
+            self.assertIn("within its confirmed scope", prompt)
+            self.assertIn("Apply a scoped correction only if one is explicitly recorded", prompt)
+            self.assertNotIn("including any scoped correction", prompt)
+            self.assertNotIn("需要确认的历史", prompt)
+            self.assertNotIn("尚需从历史确认", prompt)
         self.assertEqual([receipt["stage"] for receipt in client.usage], ["workflow", "focus", "qa"])
 
     @unittest.skipUnless(importlib.util.find_spec("simulator"), "Add the simulator checkout to PYTHONPATH")

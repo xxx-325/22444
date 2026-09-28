@@ -138,7 +138,10 @@ User-supplied API specifications alone are not external business facts. Extracti
 keeps actual customer choices, authorizations, agreements, and external state with
 their recorded objects, cycles, and conditions. A hypothetical later approval is
 not an observed update; cycle-limited authorizations remain eligible when they
-apply to the task. One selection rule includes its scope, restrictions, and
+apply to the task. Future workflows add capabilities within that confirmed scope;
+QA retrieves recorded decisions rather than seeking a new approval or confirmation.
+Scoped corrections apply only when recorded in the supplied history.
+One selection rule includes its scope, restrictions, and
 exceptions; independent outputs or actions remain separate answer points.
 Parsed focus responses are saved before validation in local stage artifacts
 (`focus-response.json`, and `focus-refinement-response.json` when applicable).

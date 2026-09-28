@@ -25,7 +25,7 @@ MEMORY_TYPE_GUIDANCE = {
     "M3": "Ask what previously established correction to misleading code, documentation, or examples a future change must account for.",
     "M4": "Ask what a completed trial established about a failed approach or costly investigation, under conditions relevant to future work.",
     "M5": "Ask which observed runtime or environment difference a future feature must handle, preserving the actual conditions.",
-    "M6": "Ask which still-applicable decision or state from an earlier interaction future work must continue from, including any scoped correction.",
+    "M6": "Ask which recorded, still-applicable decision or state later work must carry forward within its confirmed scope. Apply a scoped correction only if one is explicitly recorded.",
 }
 MEMORY_TYPES = frozenset(MEMORY_TYPE_GUIDANCE)
 MEMORY_QA_RULES = """
