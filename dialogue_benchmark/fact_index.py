@@ -5,6 +5,7 @@ import re
 from collections import deque
 
 from .normalize import source_kind_for
+from .external import EVENT_TYPE
 from .protocol import MISSING_KINDS, QA_TYPES
 from .subgraph import _select_root_seeds
 from .quality import scope_source_ids
@@ -2126,16 +2127,8 @@ def static_evidence_check(group, evidence_index, target_type, candidate=None):
     # reject a valid public correction merely because the repository graph is
     # absent.
     external_kind = (group.get("scope") or {}).get("external_kind")
-    external_types = {
-        "user_correction": "correction_update",
-        "external_observation": "external_state_application",
-        "environment_observation": "external_state_application",
-        "perturbation_revealed": "failure_avoidance",
-        "compatibility_contract": "compatibility_preservation",
-        "verification_result": "verification_reuse",
-    }
     if external_kind:
-        expected = external_types.get(external_kind)
+        expected = EVENT_TYPE.get(external_kind)
         infos = _group_infos(group, evidence_index)
         if expected != target_type:
             return _code_evidence_result("insufficient", "external_type_mismatch", infos, cited_sources)

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from dialogue_benchmark import cli
 from dialogue_benchmark.external import (external_review_projection, filter_external_facts,
                                          load_external_scopes, external_usage_review)
+from dialogue_benchmark.fact_index import build_evidence_index, static_evidence_check
 
 
 class ExternalSourceTests(unittest.TestCase):
@@ -82,6 +83,28 @@ class ExternalSourceTests(unittest.TestCase):
                                           max_groups={"general": 0, "code": 1})
             self.assertEqual([s["track"] for s in result["scopes"]], ["code"])
             self.assertEqual(len(result["events"]), 1)
+
+    def test_failure_avoidance_reaches_precheck_with_closed_answer_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "external-events.json"
+            path.write_text(json.dumps({"version": 1, "events": [{
+                "id": "x4", "kind": "failure_avoidance", "memory_kind": "M4",
+                "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "both"}]}))
+            loaded = load_external_scopes(path, self.records, 3, {"general", "code"})
+        facts = [{"id": "f1", "sources": ["e1"], "statement": self.records[0]["text"]}]
+        for scope in loaded["scopes"]:
+            with self.subTest(track=scope["track"]):
+                index = build_evidence_index(facts, [scope], scope["track"])
+                group = {"scope": scope, "facts": facts, "qa_mode": scope["track"]}
+                for candidate in (None, {"answer_points": [{
+                        "text": facts[0]["statement"], "sources": ["e1"]}]}):
+                    check = static_evidence_check(group, index, "failure_avoidance", candidate)
+                    self.assertEqual(check["status"], "supported")
+                bad = {"answer_points": [{"text": "Unprovided result", "sources": ["e99"]}]}
+                check = static_evidence_check(group, index, "failure_avoidance", bad)
+                self.assertEqual(check["reason"], "answer_source_out_of_scope")
+                check = static_evidence_check(group, index, "correction_update")
+                self.assertEqual(check["reason"], "external_type_mismatch")
 
     def test_usage_requires_a_cited_public_action_or_result(self):
         scope = {"external_usage_ids": ["e3"]}
