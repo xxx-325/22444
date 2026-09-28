@@ -120,8 +120,10 @@ The existing one-repair limit, review, deduplication, and repository probe remai
 | M6 · Cross-session state | Still-valid prior decisions or state, including scoped corrections | Continue work from the applicable state |
 
 The producer supplies the type. Separate model calls choose a future business
-workflow, identify the historical rules it needs, and write one QA. Each call
-returns short tagged text. The model writes only the direction, question, and
+workflow, identify the historical rules it needs, and write one QA. The extracted
+external facts define the question target; surrounding material supplies context
+and corrections to those same rules. Each call returns short tagged text.
+The model writes only the direction, question, and
 source-linked answer. A useful answer changes a future implementation choice,
 behavior, boundary, or validation decision. A one-run byte total or file inventory
 alone does not qualify. A recorded receiver size limit can qualify because it
