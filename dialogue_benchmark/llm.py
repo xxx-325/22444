@@ -1171,6 +1171,8 @@ Use only the supplied fact summaries, local material references, and explicit
 version/call relations. Do not choose a convenient side detail. Do not output a
 question, answer, type, difficulty, or explanation. Name the concrete objects and
 situation, but do not state the resolved old/new values, cause, or verdict.
+The named system and future work are context. Do not turn them into extra tasks
+such as identifying the system, naming the customer, or repeating the work request.
 An operation or patch marked successful does not by itself prove runtime or business
 correctness.
 """ + SIMPLE_TEMPORAL_WORDING_RULE + """
@@ -2255,9 +2257,12 @@ def _simple_repair_issue(failure):
     if reason == "unsupported_temporal_reference":
         return "Replace unsupported absolute-recency wording with 之前 and the concrete event."
     if reason == "answer_target_mismatch":
-        return ("The candidate answers a different task. Rewrite it to answer the "
-                "original fixed TARGET_DEFINITION and focus, using the same materials. "
-                "A change list or test result alone cannot explain a failure mechanism.")
+        return ("Restore the one historical decision in TARGET_DEFINITION and focus. "
+                "Keep the system and future work as context, not extra questions. "
+                "Remove any question or answer point that only identifies a system, "
+                "customer, or work request already named in QUESTION. "
+                "Leave the unknown historical rule or result for ANSWER_POINT; "
+                "do not put its values in QUESTION. Use the same materials.")
     return str(reason or "unknown review failure")
 
 
