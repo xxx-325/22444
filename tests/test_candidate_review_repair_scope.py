@@ -13,10 +13,12 @@ class _ScriptedClient:
         self.responses = iter(responses)
         self.calls = []
         self.usage = []
+        self.target_calls = []
 
     def ask(self, prompt, payload):
         # Target routing is exercised separately in test_memory_types.
         if "review_contract: target_v1" in prompt:
+            self.target_calls.append(copy.deepcopy(payload))
             return {"reviews": [{"id": "q1", "review_contract": "target_v1",
                                  "target_alignment": "aligned"}]}
         self.calls.append((prompt, copy.deepcopy(payload)))
@@ -132,6 +134,9 @@ END_QA"""
             "review_evidence",
         ])
         self.assertEqual(result["questions"][0]["status"], "approved")
+        self.assertEqual(len(client.target_calls), 2)
+        self.assertNotEqual(client.target_calls[0], client.target_calls[1])
+        self.assertEqual(result["stage_status"]["review_target"], "completed")
         self.assertEqual(len(result.get("revisions", [])), 1)
         self.assertEqual(result["revisions"][0]["after"]["id"], candidate["id"])
         self.assertEqual(result["revisions"][0]["after"]["fact_ids"], ["f-b"])

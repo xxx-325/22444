@@ -1325,15 +1325,16 @@ For each ID, choose one value inside angle brackets and remove the brackets. Do 
 copy the alternatives literally. Do not output a reason or any other field.
 """
 
-TARGET_REVIEW_PROMPT = """Check only whether this question and its existing answer
-serve the assigned historical-memory purpose: TARGET_DEFINITION
+TARGET_REVIEW_PROMPT = """Check only whether the immutable question asks for the
+assigned historical-memory purpose: TARGET_DEFINITION
 If supplied, the focus fixes the concrete object and decision. Choose aligned only
-when the answer uses the required recorded history to resolve that decision.
-Choose drifted for a different goal, a bare current-code fact, or general knowledge.
+when the question asks to recover the required historical decision for that object.
+Choose drifted for a different goal or general knowledge.
 Also choose drifted when the question already supplies the historical rule or result
-being asked for, so the answer only repeats it or applies it without needing history.
+being asked for, leaving only repetition or application of that supplied rule.
 Choose mixed for multiple independent goals; uncertain if you cannot decide.
-Do not judge individual claim truth, atomicity, completeness, or difficulty here.
+Do not judge answer points, claim truth, completeness, or difficulty here.
+Whether the final repository alone reveals the answer is checked separately.
 Return exactly:
 REVIEW q1
 review_contract: target_v1
@@ -1919,7 +1920,9 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None, external_only=
             fact_prompt = EXTERNAL_FACT_PROMPT
         else:
             fact_prompt, _, _ = _prompt_for_mode(qa_mode, None, 1)
-        source_ids = _scope_material_source_ids(scope)
+        source_ids = (set(scope["external_source_ids"])
+                      if external_only and scope.get("external_event_id") else
+                      _scope_material_source_ids(scope))
         fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)
         _check_simple_request_budget(fact_prompt, fact_payload,
                                      scope.get("model_request_chars", 32000))
@@ -2213,6 +2216,29 @@ def _question_review_candidate(candidate):
     return {key: deepcopy(value) for key, value in candidate.items() if key in keep}
 
 
+def _target_review_request(scope, sources, facts, candidate, qa_mode):
+    """Judge the question's historical target independently of answer wording."""
+    prompt = TARGET_REVIEW_PROMPT.replace(
+        "TARGET_DEFINITION", SIMPLE_TYPE_GUIDANCE[candidate["type"]])
+    if qa_mode == "memory":
+        prompt += (
+            "\nThe question must recover external rules in facts or later scoped "
+            "corrections to those same rules for one future business workflow. "
+            "Choose drifted for another rule from surrounding materials, even if "
+            "it belongs to workflow or appears in focus. Several related rules "
+            "for the same decision are aligned, not mixed. An isolated file "
+            "inventory, byte total from one run, or test count is not a decision; "
+            "a recorded external size limit can be useful for future output. "
+            "Example calculations are not additional historical targets.")
+    payload, _ = simple_evidence_payload(scope, sources, facts=facts)
+    payload["candidates"] = [{"id": "q1", "immutable_question": candidate.get("question")}]
+    for field in ("focus", "workflow"):
+        value = candidate.get("_generation_" + field)
+        if isinstance(value, dict):
+            payload[field] = {"text": value.get("text", "")}
+    return prompt, payload
+
+
 def _numbered_immutable_points(candidate, include_sources):
     result = {}
     for key, prefix in (("answer_points", "A"), ("forbidden_points", "F")):
@@ -2385,7 +2411,7 @@ def _simple_repair_issue(failure):
 def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_mode,
                       sources, save, simple_evidence_supplement_used=False,
                       generation_context=None, repair_state=None,
-                      review_scope_resolver=None):
+                      review_scope_resolver=None, target_review_context=None):
     """Attempt one evidence-bounded correction, then review the revision afresh."""
     decision = failure.get("review", {})
     checks = set(failure.get("failed_checks", []))
@@ -2479,7 +2505,9 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
                 allow_repair=False, review_mode="simple",
                 _simple_evidence_supplement_used=simple_evidence_supplement_used,
                 generation_context=generation_context, repair_state=state,
-                review_scope_resolver=review_scope_resolver)
+                review_scope_resolver=review_scope_resolver,
+                _target_review_context=(target_review_context
+                    if checks == {"atomic_points_correct"} else None))
             revision["review_result"] = deepcopy(revised)
             return revision, revised
         except Exception as error:
@@ -2580,7 +2608,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                       checkpoint=None, allow_repair=True, review_mode="single",
                       _simple_evidence_supplement_used=False,
                       generation_context=None, repair_state=None,
-                      review_scope_resolver=None):
+                      review_scope_resolver=None, _target_review_context=None):
     """Review candidates independently in one enhanced or focused-stage flow."""
     if review_mode not in {"single", "split", "simple"}:
         raise ValueError("review_mode must be single, split, or simple")
@@ -2661,35 +2689,26 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
             return result
         simple_review_stage = "review_target"
         try:
+            target_review_context = None
             if candidate.get("type") in SIMPLE_TYPE_GUIDANCE:
-                target_prompt = TARGET_REVIEW_PROMPT.replace(
-                    "TARGET_DEFINITION", SIMPLE_TYPE_GUIDANCE[candidate["type"]])
-                if qa_mode == "memory":
-                    target_prompt += MEMORY_QA_RULES + (
-                        "\nChoose aligned only when the question asks about the external rules "
-                        "in facts or later corrections to those same rules. Choose drifted when "
-                        "it asks about another rule from the surrounding materials, even if "
-                        "that rule belongs to the same workflow or appears in focus.")
-                distinctiveness_payload, _ = simple_evidence_payload(
-                    scope, sources, facts=result["facts"], candidate=candidate)
-                if isinstance(candidate.get("_generation_focus"), dict):
-                    distinctiveness_payload["focus"] = {
-                        "text": candidate["_generation_focus"].get("text", "")
-                    }
-                if isinstance(candidate.get("_generation_workflow"), dict):
-                    distinctiveness_payload["workflow"] = {
-                        "text": candidate["_generation_workflow"].get("text", "")}
-                    target_prompt += "\nCheck that the QA resolves historical decisions within workflow, not a different feature."
+                target_prompt, distinctiveness_payload = _target_review_request(
+                    scope, sources, result["facts"], candidate, qa_mode)
                 _check_simple_request_budget(
                     target_prompt, distinctiveness_payload, qa_budget)
-                distinctiveness_document = _ask_stage(
-                    client, target_prompt,
-                    distinctiveness_payload, "review_target")
+                reused = (isinstance(_target_review_context, dict)
+                          and _target_review_context.get("prompt") == target_prompt
+                          and _target_review_context.get("payload") == distinctiveness_payload)
+                if reused:
+                    distinctiveness_document = deepcopy(_target_review_context["document"])
+                else:
+                    distinctiveness_document = _ask_stage(
+                        client, target_prompt,
+                        distinctiveness_payload, "review_target")
                 save("target-review.json", distinctiveness_document)
                 distinctive_kept, distinctive_failed = (
                     apply_target_review(
                         [candidate], distinctiveness_document))
-                result["stage_status"]["review_target"] = "completed"
+                result["stage_status"]["review_target"] = "reused" if reused else "completed"
                 distinctive_ready = [
                     item for item in distinctive_kept
                     if item.get("status") == "awaiting_atomicity_review"]
@@ -2723,6 +2742,9 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                     return result
                 candidate = distinctive_ready[0]
                 result["questions"] = [candidate]
+                target_review_context = {"prompt": target_prompt,
+                    "payload": deepcopy(distinctiveness_payload),
+                    "document": deepcopy(distinctiveness_document)}
 
             simple_review_stage = "review_relevance"
             relevance_prompt = _focused_review_prompt(
@@ -2776,7 +2798,8 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                         client, qa_mode, "simple", sources, save,
                         generation_context=generation_context,
                         repair_state=repair_state,
-                        review_scope_resolver=review_scope_resolver)
+                        review_scope_resolver=review_scope_resolver,
+                        target_review_context=target_review_context)
                     if repaired:
                         revision, revised = repaired
                         result.setdefault("revisions", []).append(revision)

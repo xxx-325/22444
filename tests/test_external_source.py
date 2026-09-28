@@ -38,9 +38,9 @@ class ExternalSourceTests(unittest.TestCase):
                          ["M1"])
         self.assertEqual(scope["edges"], [])
         self.assertEqual(scope["versions"], [])
-        self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e3"])
+        self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e2", "e3"])
 
-    def test_external_event_accepts_only_explicit_context_records(self):
+    def test_external_event_keeps_explicit_context_and_later_public_messages(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "external-events.json"
             path.write_text(json.dumps({"version": 1, "events": [{
@@ -79,10 +79,10 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual(scope["external_event_ids"], ["old", "new", "exception"])
         self.assertEqual(scope["external_source_ids"], ["e1", "e4", "e5"])
         self.assertEqual(scope["memory_kinds"], ["M1", "M6"])
-        self.assertEqual([r["id"] for r in scope["dialogue"]], ["e1", "e3", "e4", "e5"])
+        self.assertEqual([r["id"] for r in scope["dialogue"]], ["e1", "e2", "e3", "e4", "e5", "e6"])
         self.assertEqual(loaded["rejected"], [{"id": "unrelated", "reason": "external_group_budget"}])
 
-    def test_review_sees_later_public_correction_without_a_planned_event_link(self):
+    def test_scope_and_review_share_later_public_correction_without_a_planned_event_link(self):
         records = [*self.records,
             dict(id="later-code", order=4, kind="message", role="assistant",
                  text="Should the rule become optional?"),
@@ -96,7 +96,8 @@ class ExternalSourceTests(unittest.TestCase):
                 id="rule", kind="compatibility_contract", memory_kind="M1",
                 task_id="first", source_ids=["e1"], used_by=["e3"])]}))
             scope, = load_external_scopes(path, records, 6)["scopes"]
-        self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e3"])
+        self.assertEqual([row["id"] for row in scope["dialogue"]],
+                         ["e1", "e2", "e3", "later-code", "later-user"])
         self.assertEqual(scope["external_source_ids"], ["e1"])
         candidate = dict(id="q1", question="Which rule must future work follow?",
                          answer_points=[dict(text="Always keep nulls.", sources=["e1"])])
@@ -104,6 +105,7 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertTrue(audit["complete"])
         self.assertEqual([row["id"] for row in group["scope"]["dialogue"]],
                          ["e1", "e2", "e3", "later-code", "later-user"])
+        self.assertEqual(scope["dialogue"], group["scope"]["dialogue"])
         from dialogue_benchmark.llm import _evidence_review_request
         prompt, payload, refs = _evidence_review_request(
             group["scope"], group["scope"]["review_guard_sources"], [], candidate)
@@ -134,6 +136,22 @@ class ExternalSourceTests(unittest.TestCase):
             {"reviews": [{"usage": "applied@资料1", "usage_reason": "The command used the option"}]},
             scope, {"资料1": "c", "资料2": "r"})
         self.assertEqual(decision["status"], "uncertain")
+
+    def test_later_public_user_correction_can_supply_confirmation(self):
+        correction = dict(id="later", kind="message", role="user",
+                          text="Only client A omits empty notes; other clients retain them.")
+        scope = {"external_source_ids": ["e1"], "external_usage_ids": ["e3"],
+                 "dialogue": [*self.records, correction]}
+        _, decision = external_usage_review(
+            {"reviews": [{"usage": "confirmed@correction", "usage_reason": "User narrowed the same rule."}]},
+            scope, {"correction": "later"})
+        self.assertEqual(decision["status"], "confirmed")
+        self.assertEqual(decision["sources"], ["later"])
+        scope["dialogue"] = self.records
+        _, absent = external_usage_review(
+            {"reviews": [{"usage": "confirmed@correction", "usage_reason": "Not in scope."}]},
+            scope, {"correction": "later"})
+        self.assertEqual(absent["status"], "uncertain")
 
     def test_all_memory_classes_keep_their_provenance(self):
         kinds = ["user_correction", "environment_observation", "perturbation_revealed",

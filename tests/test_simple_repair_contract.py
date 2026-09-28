@@ -42,6 +42,23 @@ class ScriptedClient:
         return parse_text_response(response) if isinstance(response, str) else copy.deepcopy(response)
 
 
+class TargetScriptedClient(ScriptedClient):
+    """Make repeated target judgments visible, including a possible flip."""
+
+    def __init__(self, responses, alignments=("aligned", "drifted")):
+        super().__init__(responses)
+        self.alignments = iter(alignments)
+        self.target_calls = []
+
+    def ask(self, prompt, payload):
+        if "review_contract: target_v1" in prompt:
+            self.target_calls.append((prompt, copy.deepcopy(payload)))
+            self.usage.append({"status": "completed"})
+            return {"reviews": [dict(id="q1", review_contract="target_v1",
+                                      target_alignment=next(self.alignments))]}
+        return super().ask(prompt, payload)
+
+
 def atomicity_review(assignments):
     return """REVIEW q1
 review_contract: simple_atomicity_v1
@@ -236,6 +253,55 @@ END_QA""" % changed_question
         self.assertNotIn("after", revision)
         self.assertFalse(any(
             item.get("status") == "approved" for item in result.get("questions", [])))
+
+    def _review_tolerance_split(self, corrected_default="None", default_evidence="supported"):
+        from dialogue_benchmark.llm import simple_evidence_payload
+
+        question = "客户对账报告里，之前约定的 reconcile_delivery 容差在默认和显式传入时分别如何生效？"
+        rule = "tolerances 默认 None 时保持精确比较；仅在显式传入时按列启用容差。"
+        scope = dict(cutoff=91, dialogue=[
+            dict(id="e61", order=61, kind="message", role="user", text=rule),
+            dict(id="e91", order=91, kind="message", role="user", text="确认未传 tolerances 时精确比较。"),
+        ], events=[], versions=[], review_guard_complete=True, review_guard_sources=["e61", "e91"],
+            model_request_chars=32000)
+        facts = [dict(id="f1", statement=rule, sources=["e61"])]
+        candidate = dict(id="q1", type="M6", qa_mode="memory", question=question,
+            answer_points=[dict(text=rule, sources=["e61", "e91"])], forbidden_points=[])
+        payload, refs = simple_evidence_payload(scope, {"e61", "e91"}, facts=facts)
+        context = dict(prompt="ORIGINAL", payload=payload, ref_to_source=refs)
+        response = ("QA q1\nQUESTION: " + question + "\n"
+            "ANSWER_POINT: tolerances 默认 " + corrected_default + " 时保持精确比较。 || SOURCES: 资料1,资料2\n"
+            "ANSWER_POINT: 仅在显式传入 tolerances 时按列启用容差。 || SOURCES: 资料1,资料2\nEND_QA")
+        client = TargetScriptedClient([
+            atomicity_review("A1=compound"), response,
+            atomicity_review("A1=single;A2=single"), completeness_review(),
+            evidence_review("A1=" + default_evidence + "@资料1,资料2;A2=supported@资料1,资料2"),
+        ])
+        result = review_candidates(scope, facts, [candidate], client, qa_mode="memory",
+            review_mode="simple", generation_context=context)
+        return result, client
+
+    def test_atomic_split_reuses_unchanged_question_target_and_reviews_every_new_point(self):
+        result, client = self._review_tolerance_split()
+        self.assertEqual(result["stage_errors"], [])
+        self.assertEqual(result["questions"][0]["status"], "approved")
+        self.assertEqual(result["stage_status"]["review_target"], "reused")
+        self.assertEqual(len(client.target_calls), 1)
+        target_prompt, target_payload = client.target_calls[0]
+        self.assertEqual(set(target_payload["candidates"][0]), {"id", "immutable_question"})
+        self.assertNotIn("bare current-code fact", target_prompt)
+        self.assertIn("final repository alone reveals the answer is checked separately", target_prompt)
+        self.assertEqual([receipt["stage"] for receipt in client.usage], [
+            "review_target", "review_relevance", "review_atomicity", "repair",
+            "review_relevance", "review_atomicity", "review_completeness", "review_evidence"])
+
+    def test_reused_question_target_does_not_accept_a_changed_rule(self):
+        result, client = self._review_tolerance_split("0.01", "contradicted")
+        self.assertEqual(result["stage_errors"], [])
+        self.assertEqual(len(client.target_calls), 1)
+        self.assertEqual(result["questions"], [])
+        self.assertEqual(result["rejected"][0]["reason"], "semantic_evidence_review_failed")
+        self.assertEqual(client.usage[-1]["stage"], "review_evidence")
 
     def test_repair_budget_is_shared_and_no_second_repair_is_attempted(self):
         second = copy.deepcopy(self.candidate)

@@ -2143,7 +2143,9 @@ def static_evidence_check(group, evidence_index, target_type, candidate=None):
                 return _code_evidence_result("insufficient", "answer_source_out_of_scope", [], cited_sources)
             infos = _group_infos(group, evidence_index, cited_sources)
             if not infos:
-                return _code_evidence_result("insufficient", "answer_source_not_external", [], cited_sources)
+                # Retained context may correct a seed without citing it again.
+                # Target/evidence review must establish that semantic link.
+                return _code_evidence_result("unknown", "external_context_requires_review", [], cited_sources)
         return _code_evidence_result("supported", "declared_external_event", infos, cited_sources)
     infos = _group_infos(group, evidence_index)
     if candidate is not None:

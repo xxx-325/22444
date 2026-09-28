@@ -12,9 +12,10 @@ new repository requirements.
 The external-information workflow is: public historical events → QA → one related
 development requirement per qualifying QA → frozen acceptance → paired execution
 with and without the historical answer. It uses one QA pool and M1–M6 memory types.
-External QA evidence review also checks later public User/Code messages up to the
-cutoff for scoped corrections, even across tasks without a declared revision link.
-These messages are review context, not additional fact seeds or unrelated tool logs.
+External QA workflow selection, focus, generation, repair, and evidence review share
+later public User/Code messages up to the cutoff for scoped corrections, even across
+tasks without a declared revision link. Fact extraction uses only the event's
+declared source IDs; the shared context does not add fact seeds or unrelated tool logs.
 
 The optional graph mode treats a dialogue as a time-ordered evidence stream:
 
@@ -150,6 +151,10 @@ questions whose complete answer is already recoverable are separated from the
 external set. The default `--qa-source graph` path is unchanged.
 Review uses the declared event and its supplied context; it does not require a
 file or symbol anchor. Source closure and request-size checks still apply.
+A candidate citing only retained context, such as a later correction, has static
+evidence status `unknown` and proceeds to semantic review to establish its connection
+to the selected rules. Context alone does not establish an external fact;
+out-of-scope citations are rejected.
 Questions name the receiving system and intended work while leaving the historical
 limit or rule for the answer. The repository probe gets a final decision after its
 last allowed read; that decision cannot issue another query.
@@ -168,6 +173,10 @@ execution. Claims of application require a public tool result, including the out
 of a matching command. Relevant corrections stay in the workflow, focus, QA, review
 and task-history inputs. Repairs preserve the chosen workflow and their final source
 references. Source and request-size checks apply throughout.
+Target review checks the historical question; repository recoverability is checked
+separately. Atomic-point repairs keep the question unchanged and reuse a passed
+target judgment only when its inputs match. Revised answer points still undergo
+relevance, atomicity, completeness, and evidence review.
 A positive confirmation or application verdict must cite supplied material;
 a missing citation is recorded as invalid review evidence, not a finding of non-use.
 The workflow guides selection; questions remain short historical follow-ups rather

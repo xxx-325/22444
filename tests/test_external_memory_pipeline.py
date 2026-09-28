@@ -9,8 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark import cli
-from dialogue_benchmark.fact_index import build_evidence_index, static_candidate_labels
-from dialogue_benchmark.llm import generate_from_facts, review_candidates, parse_text_response
+from dialogue_benchmark.external import external_review_projection, filter_external_facts, load_external_scopes
+from dialogue_benchmark.fact_index import build_evidence_index, static_candidate_labels, static_evidence_check
+from dialogue_benchmark.llm import extract_facts, generate_from_facts, review_candidates, parse_text_response
 from dialogue_benchmark.protocol import MEMORY_TYPES, MEMORY_TYPE_GUIDANCE, MEMORY_TASK_GUIDANCE
 from dialogue_benchmark.task_eval.artifacts import qa_inputs, save, read
 from dialogue_benchmark.task_eval.prompts import task_direction
@@ -164,6 +165,182 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             self.assertIn("客户 A 的 note 例外", str(request["payload"]["materials"]))
         self.assertEqual(saved["focus-input.json"]["payload"]["workflow"]["text"],
                          saved["qa-input.json"]["payload"]["workflow"]["text"])
+
+    def unlinked_correction_scope(self, max_chars=32000, correction_suffix=""):
+        records = [
+            dict(id="e1", kind="message", role="user", order=1,
+                 text="对账时 amount 差异不超过 0.01 视为未变化。"),
+            dict(id="e59", kind="result", order=59, text="原对账样例通过。"),
+            dict(id="e61", kind="message", role="user", order=61,
+                 text="容差仅在显式传入 tolerances 时生效；默认 None 时精确比较。" + correction_suffix),
+            dict(id="e62", kind="message", role="user", order=62, text="另一个任务需要新增页面主题。"),
+            dict(id="e70", kind="result", order=70, text="UNRELATED_TOOL_DETAIL"),
+            dict(id="e91", kind="message", role="user", order=91,
+                 text="确认：未传 tolerances 就按精确比较，之前的容差只适用于显式开启的情况。"),
+            dict(id="e93", kind="message", role="user", order=93, text="AFTER_CUTOFF_RULE"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            save(path, {"version": 1, "events": [dict(
+                id="initial-rule", kind="compatibility_contract", memory_kind="M6",
+                source_ids=["e1"], used_by=["e59"])]})
+            return load_external_scopes(path, records, 92, max_chars=max_chars)["scopes"][0]
+
+    def test_unlinked_corrections_reach_generation_repair_and_static_source_closure(self):
+        scope = self.unlinked_correction_scope()
+        facts = [dict(id="f1", statement="amount 差异不超过 0.01 视为未变化。", sources=["e1"])]
+        question = "客户对账时，之前约定的容差规则在什么情况下适用？"
+
+        class CorrectionClient(ExternalClient):
+            def ask(self, prompt, payload):
+                if "Extract only externally supplied" in prompt:
+                    self.calls.append((prompt, payload))
+                    self.usage.append({"status": "completed"})
+                    return {"facts": [dict(id="f1", statement=facts[0]["statement"], sources=["资料1"])]}
+                if "WORKFLOW:" in prompt or "FOCUS:" in prompt or "QUESTION: 自然问题" in prompt:
+                    self.calls.append((prompt, payload))
+                    self.usage.append({"status": "completed"})
+                    if "WORKFLOW:" in prompt:
+                        return {"workflow": dict(text="扩展客户对账：比较差异 → 汇总报告", sources=["资料1"])}
+                    if "FOCUS:" in prompt:
+                        return {"focus": dict(text="确认客户对账容差的适用条件", sources=["资料1", "资料3", "资料5"])}
+                    if "review_issue" in payload:
+                        return parse_text_response("QA q1\nQUESTION: " + question + "\n"
+                            "ANSWER_POINT: 只有显式传入 tolerances 时才启用容差。 || SOURCES: 资料1,资料3,资料5\n"
+                            "ANSWER_POINT: tolerances 默认 None 时精确比较。 || SOURCES: 资料3,资料5\nEND_QA")
+                    return parse_text_response("QA q1\nQUESTION: " + question + "\n"
+                        "ANSWER_POINT: 只有显式传入 tolerances 时才启用容差，默认 None 时精确比较。"
+                        " || SOURCES: 资料1,资料3,资料5\nEND_QA")
+                if "simple_atomicity_v1" in prompt:
+                    self.calls.append((prompt, payload))
+                    self.usage.append({"status": "completed"})
+                    count = len(payload["candidates"][0]["answer_points"])
+                    return {"reviews": [dict(id="q1", review_contract="simple_atomicity_v1",
+                        point_atomicity="A1=compound" if count == 1 else "A1=single;A2=single")]}
+                if "simple_relevance_v1" in prompt:
+                    from tests.simple_test_helpers import relevance_response_for
+                    self.calls.append((prompt, payload))
+                    self.usage.append({"status": "completed"})
+                    return relevance_response_for(payload)
+                response = super().ask(prompt, payload)
+                if "point_evidence:" in prompt:
+                    response["reviews"][0].update(
+                        point_evidence="A1=supported@资料1,资料3,资料5;A2=supported@资料3,资料5",
+                        usage="confirmed@资料1,资料3,资料5",
+                        usage_reason="用户在原约定后确认了显式启用容差的条件。")
+                return response
+
+        client = CorrectionClient()
+        extracted = extract_facts(scope, client, qa_mode="memory", external_only=True)
+        self.assertEqual(extracted["stage_errors"], [])
+        extraction_payload = client.calls[0][1]
+        self.assertEqual(len(extraction_payload["materials"]), 1)
+        self.assertNotIn("默认 None", str(extraction_payload))
+        self.assertNotIn("页面主题", str(extraction_payload))
+        self.assertEqual(filter_external_facts([
+            *facts, dict(id="other", statement="新增页面主题", sources=["e62"])
+        ], [scope]), facts)
+
+        saved = {}
+        generated = generate_from_facts(scope, facts, client, qa_mode="memory", target_type="M6",
+            checkpoint=lambda name, value: saved.update({name: value}))
+        self.assertEqual(generated["stage_errors"], [])
+        group = dict(scope=scope, facts=facts, qa_mode="memory")
+        index = build_evidence_index(facts, [scope], "memory")
+        self.assertEqual(static_evidence_check(group, index, "M6", generated["questions"][0])["status"], "supported")
+
+        def resolve(candidate):
+            projected, audit = external_review_projection(group, candidate)
+            return (projected["scope"] if projected else None), audit
+
+        reviewed = review_candidates(scope, facts, generated["questions"], client,
+            qa_mode="memory", review_mode="simple", generation_context=generated["_repair_context"],
+            review_scope_resolver=resolve, checkpoint=lambda name, value: saved.update({name: value}))
+        self.assertEqual(reviewed["stage_errors"], [])
+        self.assertEqual(reviewed["questions"][0]["status"], "approved")
+        for name in ("workflow-input.json", "focus-input.json", "qa-input.json", "repair-input.json"):
+            request = saved[name]
+            self.assertTrue({"e1", "e61", "e91"} <= set(request["ref_to_source"].values()))
+            self.assertNotIn("e70", request["ref_to_source"].values())
+            self.assertNotIn("e93", request["ref_to_source"].values())
+            self.assertEqual(len(request["payload"]["facts"]), 1)
+            self.assertNotIn("页面主题", str(request["payload"]["facts"]))
+        self.assertEqual(saved["qa-input.json"]["payload"]["materials"],
+                         saved["repair-input.json"]["payload"]["materials"])
+
+    def test_public_correction_context_is_not_dropped_to_fit_generation_budget(self):
+        scope = self.unlinked_correction_scope(max_chars=3000, correction_suffix="有效条件。" * 2000)
+        facts = [dict(id="f1", statement="amount 容差为 0.01。", sources=["e1"])]
+        client = Client()
+        result = generate_from_facts(scope, facts, client, qa_mode="memory", target_type="M6")
+        self.assertEqual(client.calls, [])
+        self.assertEqual(result["stage_errors"][0]["error_code"], "request_budget")
+        self.assertEqual(result["stage_status"]["workflow"], "failed")
+
+    def external_correction_group(self):
+        scope = self.unlinked_correction_scope()
+        facts = [dict(id="f1", statement="amount 差异不超过 0.01 视为未变化。", sources=["e1"])]
+        group = dict(id="g1", scope=scope, facts=facts, qa_mode="memory", allowed_types=("M6",))
+        return group, build_evidence_index(facts, [scope], "memory")
+
+    def test_correction_only_citations_reach_semantic_review_through_cli(self):
+        group, index = self.external_correction_group()
+        candidate = dict(id="q1", type="M6", qa_mode="memory", forbidden_points=[],
+            question="客户对账时，之前约定的容差何时才适用？",
+            answer_points=[dict(text="只有显式传入 tolerances 时才启用容差。", sources=["e61", "e91"])])
+        check = static_evidence_check(group, index, "M6", candidate)
+        self.assertEqual(check["status"], "unknown")
+        self.assertEqual(check["reason"], "external_context_requires_review")
+        self.assertEqual(check["fact_ids"], [])
+
+        class CorrectionReviewClient(ExternalClient):
+            def ask(self, prompt, payload):
+                response = super().ask(prompt, payload)
+                if "point_evidence:" in prompt:
+                    response["reviews"][0].update(
+                        point_evidence="A1=supported@资料3,资料5",
+                        usage="confirmed@资料1,资料3,资料5",
+                        usage_reason="用户在原约定后确认了显式启用容差的条件。")
+                return response
+
+        client = CorrectionReviewClient()
+        generated = dict(questions=[candidate], all_candidates=[candidate],
+            stage_status={"qa": "completed"}, stage_errors=[], rejected=[], raw_generated=1)
+        with patch.object(cli, "ChatClient", return_value=client), \
+                patch.object(cli, "generate_from_facts", return_value=generated):
+            result = cli._run_qa_tasks([(0, "memory", group)], "https://example.invalid",
+                "offline-test", "KEY", 1, review_mode="simple", evidence_indexes={"memory": index})
+        self.assertEqual(result["stage_errors"], [])
+        self.assertEqual(result["rejected"], [])
+        self.assertEqual(result["questions"][0]["status"], "approved")
+        self.assertEqual(result["questions"][0]["static_evidence_status"], "unknown")
+        self.assertEqual([receipt["stage"] for receipt in client.usage], [
+            "review_target", "review_relevance", "review_atomicity", "review_completeness", "review_evidence"])
+
+    def test_external_context_outside_the_scope_is_still_rejected(self):
+        group, index = self.external_correction_group()
+        for source in ("e70", "e93", "unprovided"):
+            with self.subTest(source=source):
+                candidate = dict(answer_points=[dict(text="A rule.", sources=[source])])
+                check = static_evidence_check(group, index, "M6", candidate)
+                self.assertEqual(check["status"], "insufficient")
+                self.assertEqual(check["reason"], "answer_source_out_of_scope")
+
+    def test_unrelated_context_is_not_static_external_evidence(self):
+        group, index = self.external_correction_group()
+        candidate = dict(id="q1", type="M6", qa_mode="memory", forbidden_points=[],
+            question="客户的新页面需要哪种主题？",
+            answer_points=[dict(text="新增页面主题。", sources=["e62"])])
+        check = static_evidence_check(group, index, "M6", candidate)
+        self.assertEqual(check["status"], "unknown")
+        self.assertEqual(check["reason"], "external_context_requires_review")
+        self.assertEqual(check["fact_ids"], [])
+        client = Client(alignment="drifted")
+        reviewed = review_candidates(group["scope"], group["facts"], [candidate], client,
+            qa_mode="memory", review_mode="simple", allow_repair=False)
+        self.assertEqual(reviewed["questions"], [])
+        self.assertEqual(reviewed["rejected"][0]["reason"], "answer_target_mismatch")
+        self.assertEqual([receipt["stage"] for receipt in client.usage], ["review_target"])
 
     def scope(self, kind):
         return {"cutoff": 2, "track": "memory", "memory_kind": kind,
