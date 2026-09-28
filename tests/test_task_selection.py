@@ -189,6 +189,7 @@ class SelectionTests(unittest.TestCase):
                        "agreement_object": "Maple must omit null note",
                        "agreement_scope": "new exports must omit null note"},
             "public_repository_evidence": [{"id": "query1", "result": {"matches": []}}],
+            "repository_exploration": "Suggested future interface: require caller_rule_map.",
             "history_targets": {"targets": [{"id": "h1", "statement": "omit null note",
                                                "scope": "Maple", "behavior": "omit", "sources": ["event1"],
                                                "supersedes": []}]},
@@ -215,6 +216,8 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(public_payload["public_goal"], "Add Maple batch export")
         self.assertNotIn("agreement_object", public_payload)
         self.assertNotIn("agreement_scope", public_payload)
+        self.assertNotIn("repository_exploration", public_payload)
+        self.assertNotIn("caller_rule_map", str(public_payload))
         self.assertEqual(public_payload["repository_evidence"], selection["public_repository_evidence"])
         private_payload = calls[1][1]
         self.assertIn("Omit note=null", private_payload["historical_answer"])

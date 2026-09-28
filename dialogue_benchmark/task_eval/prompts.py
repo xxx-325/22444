@@ -80,7 +80,8 @@ PUBLIC_TASK_SIMPLE = """根据给定的新用途和当前仓库，写一项简�
 4. 哪些既有入口仍保持原行为。
 新入口使用当前仓库未占用的名称；现有函数和别名保持其签名与调用行为。
 public_goal 若要求处理业务数据，新入口就接收这些数据并返回处理结果，不能退化成只返回配置值的查询函数。
-historical_question 指出需要从历史确定的内容；这些条件由新入口内部采用，不能要求调用者再次传入。
+historical_question 指出需要从历史确定的内容。新入口的必需参数只接收本次业务数据；
+历史规则是实现应当知道的既定条件，不是函数参数、配置文件或额外的调用者输入。
 用实际项目和对象名称写正文，不把 public_goal 这样的字段名写进需求。
 仓库资料用于了解项目及已有接口，不代表新入口应采用的客户规则。
 具体字段处理、参数取值和状态映射由历史约定决定，本次不要猜测或补写；也不要让调用者再传这些规则。
@@ -152,8 +153,9 @@ full 必须引用 task 或 public_repository 中的真实来源；不能引用�
 answer：injected_answer 是否补齐仍缺的必要信息？sufficient/insufficient/uncertain；规则不适用或已完全公开用 not_applicable。
 sufficient 必须从 injected_answer 原样摘录支持文字；不能用 private_history_targets 替答案补缺项。
 
-每条规则一行，按此列顺序输出：
-H 规则ID | applicable的值 | public的值 | answer的值 | 该规则的来源ID | 公开来源ID或none | 答案原句或none
+每条规则输出一行实际结果，无表头。七列依次为：
+H 加实际规则ID；applicable选项；public选项；answer选项；历史来源ID；公开来源ID或none；答案原句或none。
+列之间用 | 分隔，选项必须替换成上面列出的英文值。
 引用多个答案要点时，第一点写在该行末尾，其余要点可原样用 - 开头续行。
 最后一行 TASK | clean；若公开需求与历史规则矛盾，写 TASK | uncertain。
 不要输出解释或 JSON。
