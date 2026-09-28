@@ -20,7 +20,7 @@ MEMORY_TYPE_LABELS = {
     "M4": "高成本试错", "M5": "运行时差异", "M6": "跨会话状态",
 }
 MEMORY_TYPE_GUIDANCE = {
-    "M1": "Ask which previously agreed user rule must apply to a concrete future feature, and under which conditions.",
+    "M1": "Ask for the previously agreed user rule needed by a concrete future feature. State the known customer and situation in the question, and preserve the rule's recorded scope in the answer.",
     "M2": "Ask which recorded fact about an external system or business context changes the behavior required of a future feature.",
     "M3": "Ask what previously established correction to misleading code, documentation, or examples a future change must account for.",
     "M4": "Ask what a completed trial established about a failed approach or costly investigation, under conditions relevant to future work.",
@@ -32,6 +32,10 @@ MEMORY_QA_RULES = """
 The answer must determine behavior within one future business workflow.
 State that concrete future situation in the question. Several related historical
 rules may be necessary; keep each rule and its condition in a separate answer point.
+Ask for the missing historical decision, not a general inventory of requirements.
+Only ask separately about applicability when the evidence contains distinct cases;
+then each answer must explicitly pair a case with its rule. Do not append a generic
+conditions question to a fixed situation. Express each rule once, without paraphrase points.
 Every point must change a decision in that same workflow.
 An isolated file inventory, byte total from one run, or test count is not such a decision.
 A recorded external size limit can be useful when it determines how future output must behave.
