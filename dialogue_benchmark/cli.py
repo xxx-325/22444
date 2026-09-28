@@ -1609,10 +1609,10 @@ def main(argv=None):
                             facts = [fact for fact in track_facts
                                      if event_id in fact.get("external_event_ids", [])]
                             if not facts:
-                                result["stage_errors"].append({
-                                    "track": track, "stage": "external_facts",
+                                result["stage_status"].append({
+                                    "track": track, "phase": "grouping", "grouping": "skipped",
                                     "external_event_id": event_id,
-                                    "error_type": "no_external_fact",
+                                    "reason": "no_external_fact",
                                 })
                                 continue
                             target_type = scope["evidence_group"]["target_types"][0]

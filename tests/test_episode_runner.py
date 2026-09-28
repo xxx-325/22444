@@ -1,9 +1,12 @@
 import json
 import hashlib
+import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from dialogue_benchmark.task_eval.artifacts import read, save
 from run_episode import main
@@ -203,3 +206,82 @@ class EpisodeRunnerTests(unittest.TestCase):
             self.assertEqual(state["stop_reason"], "qa_generation_failed")
             self.assertEqual(read(root / "run/usage.json"), receipt)
             self.assertFalse((root / "run/tasks").exists())
+
+    def run_external_fact_episode(self, content, *, expected_error=None, request_chars=32000, http_error=None):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "source"
+        candidate = source / "workspace/candidate"
+        candidate.mkdir(parents=True)
+        (candidate / "a.py").write_text("value = True\n")
+        (source / "session.jsonl").write_text(json.dumps({
+            "kind": "user", "text": "Maple 本次晚班作业选择每批 2 条，批次前缀 MP。"}) + "\n")
+        save(source / "external-events.json", {"version": 1, "events": [{
+            "id": "x1", "kind": "compatibility_contract", "memory_kind": "M1", "source_ids": ["e1"]}]})
+        config = {"judge": {"base_url": "https://example.invalid", "model": "offline-test",
+                            "key_env": "BENCHMARK_OFFLINE_TEST_KEY"}}
+        envelope = {"choices": [{"finish_reason": "stop", "message": {"content": content}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}
+        with patch("run_episode.configure", return_value=config), \
+             patch("dialogue_benchmark.llm.urllib.request.build_opener") as transport, \
+             patch.dict(os.environ, {"BENCHMARK_OFFLINE_TEST_KEY": "offline-fixture-token"}), \
+             patch("run_episode.run_tasks") as tasks, patch("run_episode.render"), \
+             patch("dialogue_benchmark.repository_probe.probe_candidate") as probe:
+            transport.return_value.open.return_value = io.BytesIO(json.dumps(envelope).encode())
+            transport.return_value.open.side_effect = http_error
+            args = ["--source-run", str(source), "--simulator-path", str(root),
+                    "--env-file", str(root / ".env"), "--output", str(root / "run"),
+                    "--qa-source", "external", "--external-events", str(source / "external-events.json"),
+                    "--qa-count", "1", "--parallel-workers", "1",
+                    "--model-request-chars", str(request_chars)]
+            if expected_error:
+                with self.assertRaisesRegex(RuntimeError, "QA generation failed"):
+                    main(args)
+            else:
+                self.assertEqual(main(args), 0)
+            tasks.assert_not_called()
+            probe.assert_not_called()
+            self.assertEqual(transport.return_value.open.call_count, 0 if expected_error == "request_budget" else 1)
+        return root / "run"
+
+    def test_successful_empty_external_facts_complete_without_tasks(self):
+        output = self.run_external_fact_episode("NO_FACTS")
+        public = read(output / "qa/qa-public.json")
+        self.assertEqual(public["status"], "completed_no_questions")
+        self.assertEqual(public["questions"], [])
+        self.assertEqual(read(output / "qa/facts.json"), [])
+        extraction = read(output / "qa/fact-extraction.json")
+        self.assertEqual(extraction["stage_errors"], [])
+        self.assertEqual(extraction["stage_status"][0]["facts"], "completed")
+        self.assertEqual(extraction["usage"][0]["status"], "completed")
+        audit = read(output / "qa/qa-audit.json")
+        self.assertEqual(audit["stage_errors"], [])
+        skipped, = [row for row in audit["stage_status"] if row.get("reason") == "no_external_fact"]
+        self.assertEqual(skipped["grouping"], "skipped")
+        self.assertEqual(audit["progress"]["stop_reasons"], {"memory": "pool_exhausted"})
+        self.assertEqual(audit["progress"]["requests"], 1)
+        self.assertEqual(read(output / "qa/manifest.json")["failures"]["total"], 0)
+        state = read(output / "pipeline.json")
+        self.assertEqual((state["status"], state["stop_reason"]), ("completed", "no_eligible_qa"))
+        self.assertEqual(read(output / "tasks/manifest.json")["tasks"], [])
+        self.assertTrue((output / "tasks/report.md").is_file())
+
+    def test_external_fact_http_protocol_and_budget_errors_remain_failed(self):
+        for error, content, request_chars in (("http_error", "NO_FACTS", 32000),
+                                              ("protocol_error", "untagged response", 32000),
+                                              ("request_budget", "NO_FACTS", 1000)):
+            with self.subTest(error=error):
+                http_error = HTTPError("https://example.invalid", 503, "Offline fixture", None, None) \
+                    if error == "http_error" else None
+                output = self.run_external_fact_episode(content, expected_error=error,
+                    request_chars=request_chars, http_error=http_error)
+                self.assertEqual(read(output / "qa/qa-public.json")["status"], "failed")
+                errors = read(output / "qa/stage-errors.json")
+                self.assertEqual([row["error_code"] for row in errors], [error])
+                self.assertEqual(read(output / "qa/manifest.json")["failures"]["total"], 1)
+                extraction = read(output / "qa/fact-extraction.json")
+                self.assertEqual(extraction["stage_status"][0]["facts"], "failed")
+                state = read(output / "pipeline.json")
+                self.assertEqual((state["status"], state["stop_reason"]), ("failed", "qa_generation_failed"))
+                self.assertFalse((output / "tasks").exists())

@@ -36,13 +36,36 @@ class ExternalClient(Client):
 
 class ExternalMemoryPipelineTests(unittest.TestCase):
     def test_external_fact_prompt_separates_customer_choice_from_api_specs(self):
-        client = ExternalClient()
-        extract_facts(self.scope("M6"), client, qa_mode="memory", external_only=True)
+        choice = "Maple 本次晚班作业选择每批 2 条，批次前缀 MP。"
+        scope = self.scope("M6")
+        scope["dialogue"][0]["text"] = (
+            "新增 dispatch(records, batch_size=10, prefix='B')，正整数校验失败时抛 ValueError。\n"
+            + choice + "请据此运行本次作业。")
+
+        class ChoiceClient(Client):
+            def ask(self, prompt, payload):
+                self.calls.append((prompt, payload))
+                self.usage.append({"status": "completed"})
+                return parse_text_response("FACT f1\nSOURCES: 资料1\nSOURCE_KIND: conversation\nTEXT: "
+                                           + choice + "\nEND_FACT")
+
+        client = ChoiceClient()
+        result = extract_facts(scope, client, qa_mode="memory", external_only=True)
+        self.assertEqual(result["stage_errors"], [])
+        fact, = filter_external_facts(result["facts"], [scope])
+        self.assertEqual(fact["statement"], choice)
+        self.assertEqual(fact["sources"], ["e1"])
+        self.assertEqual(len(client.calls), 1)
+        material, = client.calls[0][1]["materials"]
+        self.assertEqual(material["original_records"][0]["text"], scope["dialogue"][0]["text"])
         prompt = " ".join(client.calls[0][0].split())
         self.assertIn("API requirements and corrections are not external business facts by themselves", prompt)
         self.assertIn("customer's actual choice, authorization, business agreement, or external state", prompt)
         self.assertIn("including its object and applicable scope", prompt)
         self.assertIn("Generic API behavior and sample data are context, not separate fact targets", prompt)
+        self.assertIn("customer selection for one named job or cycle remains a fact", prompt)
+        self.assertIn("do not infer a permanent policy", prompt)
+        self.assertIn("Later stages assess future usefulness and final-repository recoverability", prompt)
 
     def test_memory_authoring_preserves_cycle_and_hypothetical_approval(self):
         client = Client()

@@ -998,9 +998,14 @@ def parse_text_response(content):
                                         "answer_quote": fields[6], "issue": "none"})
             elif line.startswith("TASK |"):
                 fields = [part.strip() for part in line.split("|", 1)]
-                if len(fields) != 2 or fields[1] not in {"clean", "leaked", "uncertain"}:
+                if len(fields) != 2 or not fields[1]:
                     raise ValueError("Invalid task review row")
-                task_review = {"id": "task", "leakage": fields[1], "issue": "none"}
+                verdict, sep, issue = fields[1].partition(":")
+                verdict, issue = verdict.strip(), issue.strip() if sep else "none"
+                if verdict not in {"clean", "leaked", "uncertain"} or not issue \
+                        or (verdict == "clean") != (issue == "none"):
+                    raise ValueError("Invalid task review row")
+                task_review = {"id": "task", "leakage": verdict, "issue": issue}
             elif (line.startswith(("- ", "* ")) and history_reviews
                   and task_review is None):
                 # Preserve quoted answer bullets as one field. The downstream
@@ -1147,16 +1152,17 @@ provided dialogue window. User-supplied API requirements and corrections are not
 external business facts by themselves. Keep the customer's actual choice,
 authorization, business agreement, or external state, including its object and
 applicable scope. Generic API behavior and sample data are context, not separate
-fact targets. Prefer corrections to those facts, a real environment or downstream
-observation, a perturbation-revealed failure, a compatibility exception, or a completed
-test conclusion that affects future work. Keep the condition, affected object, and
-observed consequence. A file count or byte total alone is not a reusable conclusion.
-An external limit that constrains future output is. Do not
-extract standalone file names, signatures, current implementation details, plans, or facts that
+fact targets. An explicit customer selection for one named job or cycle remains a
+fact even beside API requirements or expressed as parameters or code. Preserve that
+scope; do not infer a permanent policy or claim the requested work was completed.
+Keep recorded corrections, external constraints, observations, failures and test
+conclusions with their conditions and consequences. A file count or byte total
+alone is not a conclusion. Do not extract standalone file names, signatures,
+current implementation details, hypothetical plans, or facts that
 are merely visible in unchanged code. A fact must be stated in the supplied dialogue
 or public tool result; do not infer one from silence. Separate an old rule from a later
-correction and keep only the still-applicable rule as a separate fact. Return at most
-8 facts. The later QA stage will decide whether the final repository can recover it.
+correction and apply each correction only within its stated scope. Return at most
+8 facts. Later stages assess future usefulness and final-repository recoverability.
 """ + FACT_FORMAT
 
 SIMPLE_QA_PROMPT = """根据输入生成一道中文问答。固定任务：TARGET_DEFINITION。
