@@ -20,13 +20,12 @@ PROBE_PROMPT = """你是一个只读的仓库可恢复性探针。判断下面�
 必须逐项考虑 answer_claims。只要有一个影响题目答案的主张无法从当前仓库直接确认，就不能返回 recoverable。
 EVIDENCE 引用已读取仓库内容对应的查询编号：例如 observations 中 id 为 query1 的结果支持判断时，输出 EVIDENCE: query1。
 
-每轮只输出以下四行和最后一行 END_PROBE，不要输出 JSON、Markdown 或解释。每次回复只能有一行 QUERY；如果还需要别的文件，下一轮再查，不能同时输出第二行 QUERY：
+每轮只输出以下四行，每个标签必须出现一次，不要输出 JSON、Markdown 或解释。如果还需要别的文件，下一轮再查：
 PROBE: need_evidence|recoverable|history_required|uncertain
 REASON: 一句简短理由
 QUERY: op|repo|path|text|offset；不查询写 none
 EVIDENCE: query1,query2；没有证据写 none
-END_PROBE
-只有 need_evidence 可以带 QUERY；其余三种结论的 QUERY 必须为 none。
+need_evidence 必须带具体 QUERY；其余三种结论的 QUERY 必须为 none。
 
 查询格式只有两种：
 lookup|repo|.|文字|0  （查文件名和文件内容）
@@ -152,11 +151,10 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
             steps.append({"step": index + 1, "error": final["reason"]})
             break
         decision = probe.get("decision")
-        # Treat a terminal decision with a concrete query as a request for
-        # that query. This is a formatting correction, not a semantic change.
         if decision != "need_evidence" and str(probe.get("query", "none")).casefold() != "none":
-            decision = "need_evidence"
-            probe["decision"] = decision
+            final = {"status": "uncertain", "reason": "invalid_probe_response"}
+            steps.append({"step": index + 1, "error": final["reason"]})
+            break
         refs = [value.strip() for value in str(probe.get("evidence", "none")).split(",")
                 if value.strip() and value.strip().casefold() != "none"]
         if set(refs) - {item["id"] for item in state["observations"]}:

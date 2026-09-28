@@ -872,22 +872,16 @@ def parse_text_response(content):
         return _parse_file_response(content)
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if lines and lines[0].startswith("PROBE:"):
-        if lines[-1] != "END_PROBE":
-            raise ValueError("Unclosed repository probe response")
-        allowed = {"PROBE", "REASON", "QUERY", "EVIDENCE"}
+        required = {"PROBE", "REASON", "QUERY", "EVIDENCE"}
         fields = {}
-        for line in lines[:-1]:
+        for line in lines:
             if ":" not in line:
                 raise ValueError("Invalid repository probe line")
             key, value = line.split(":", 1)
             key, value = key.strip(), value.strip()
-            if key not in allowed or key in fields or not value:
+            if key not in required or key in fields or not value:
                 raise ValueError("Invalid repository probe field")
             fields[key] = value
-        # EVIDENCE is optional for a fresh query; models often omit the
-        # explicit `none` while still following the rest of the protocol.
-        fields.setdefault("EVIDENCE", "none")
-        required = {"PROBE", "REASON", "QUERY", "EVIDENCE"}
         if set(fields) != required:
             raise ValueError("Incomplete repository probe response")
         decision = fields["PROBE"]
@@ -895,10 +889,8 @@ def parse_text_response(content):
             raise ValueError("Invalid repository probe decision")
         if decision == "need_evidence" and fields["QUERY"].casefold() == "none":
             raise ValueError("Repository probe needs a query")
-        # A weak probe sometimes states a provisional conclusion and includes
-        # the next read on the same line. The host normalizes that to another
-        # evidence step; rejecting the whole probe would turn a useful history
-        # decision into an opaque protocol failure.
+        if decision != "need_evidence" and fields["QUERY"].casefold() != "none":
+            raise ValueError("Terminal repository probe cannot request a query")
         return {"probe": {"decision": decision,
                            "reason": fields["REASON"],
                            "query": fields["QUERY"],

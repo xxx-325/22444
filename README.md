@@ -106,6 +106,11 @@ cases for review. Probe receipts are kept under
 `recoverability/`, and the audit marks filtered candidates as
 `filtered_recoverable`, not as quality rejections.
 
+Each probe reply has exactly four required tags: `PROBE`, `REASON`, `QUERY`, and
+`EVIDENCE`, with no end marker. Incomplete or conflicting replies fail closed;
+evidence references must identify earlier repository queries, and a recoverable
+answer still requires cited repository content.
+
 ### External-only QA source
 
 External QA uses one target, `--qa-count`, and one exploration limit,
