@@ -106,6 +106,30 @@ class ExternalSourceTests(unittest.TestCase):
                 check = static_evidence_check(group, index, "correction_update")
                 self.assertEqual(check["reason"], "external_type_mismatch")
 
+    def test_m6_decision_and_correction_keep_distinct_answer_targets(self):
+        variants = [
+            ("external_observation", "external_state_application"),
+            ("user_correction", "correction_update"),
+        ]
+        for kind, target in variants:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "external-events.json"
+                path.write_text(json.dumps({"version": 1, "events": [{
+                    "id": "x6", "kind": kind, "memory_kind": "M6",
+                    "source_ids": ["e1"], "used_by": ["e3"], "qa_mode": "both"}]}))
+                loaded = load_external_scopes(path, self.records, 3, {"general", "code"})
+                self.assertEqual(loaded["rejected"], [])
+                self.assertEqual(len(loaded["scopes"]), 2)
+                for scope in loaded["scopes"]:
+                    self.assertEqual(scope["memory_kind"], "M6")
+                    self.assertEqual(scope["evidence_group"]["target_types"], [target])
+                    facts = [{"id": "f1", "sources": ["e1"],
+                              "statement": self.records[0]["text"]}]
+                    index = build_evidence_index(facts, [scope], scope["track"])
+                    group = {"scope": scope, "facts": facts, "qa_mode": scope["track"]}
+                    self.assertEqual(static_evidence_check(group, index, target)["status"],
+                                     "supported")
+
     def test_usage_requires_a_cited_public_action_or_result(self):
         scope = {"external_usage_ids": ["e3"]}
         for value, expected in [("not_applied", "not_applied"), ("uncertain", "uncertain"),
