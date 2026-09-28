@@ -13,7 +13,7 @@ from .task_eval.artifacts import read, save
 
 EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=2, task_workers=1, revisions=3,
-                           model_request_chars=96000)
+                           model_request_chars=96000, qa_only=False)
 
 
 def sum_usage(rows):
@@ -78,6 +78,10 @@ def validate_plan(plan):
     for key, value in plan.get("evaluation", {}).items():
         if key not in EVALUATION_DEFAULTS and key != "group_budget":
             raise ValueError("Unknown evaluation option: " + key)
+        if key == "qa_only":
+            if type(value) is not bool:
+                raise ValueError("qa_only must be a boolean")
+            continue
         if type(value) is not int or value <= 0:
             raise ValueError(key + " must be positive")
     seen = set()
@@ -105,6 +109,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             runtime[role]["max_output_tokens"] = None
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     state = dict(status="running", projects=[], stages=[],
+                 qa_only=plan.get("evaluation", {}).get("qa_only", False),
                  plan_sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
                  limits={k: plan[k] for k in ("max_total_requests", "max_total_tokens")},
                  budget_boundary="Finish each started stage, then check cumulative usage before the next stage")
@@ -232,6 +237,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     "--simulator-path", str(simulator), "--env-file", str(env_file), "--output", str(target)]
                 defaults = dict(EVALUATION_DEFAULTS)
                 defaults.update(plan.get("evaluation", {}))
+                if defaults.pop("qa_only"):
+                    command.append("--qa-only")
                 for key, value in defaults.items():
                     command.extend(["--" + key.replace("_", "-"), str(value)])
                 completed = stage("evaluation", target, command, Path(__file__).resolve().parents[1],
@@ -264,6 +271,7 @@ def write_collection_report(output, state):
     """Reuse the paired-trial report and keep construction statistics separate."""
     from .task_eval.report import write_report
     tasks = []
+    qa_only = state.get("qa_only", False)
     lines = ["# Collection construction", "", "Status: " + state["status"], "",
              "| Project | Scenario | Outcome | Published QA | Completed pairs |",
              "|---|---|---|---:|---:|"]
@@ -272,7 +280,8 @@ def write_collection_report(output, state):
             path = project["id"] + "/" + scenario["id"]
             lines.append("| %s | %s | %s | %s | %s |" % (
                 project["id"], scenario["id"], scenario["status"],
-                scenario.get("published_qa", 0), scenario.get("paired_tasks", 0)))
+                scenario.get("published_qa", 0),
+                "Not scheduled" if qa_only else scenario.get("paired_tasks", 0)))
             tasks.extend(dict(t, task=path + "/evaluation/tasks/" + t["task"])
                          for t in scenario.get("tasks", []))
     lines += ["", "## Construction and evaluation usage", "",
@@ -285,7 +294,11 @@ def write_collection_report(output, state):
             usage.get("total_tokens", "unknown"), usage.get("complete", False)))
     usage = state["usage"]
     lines += ["", "Total: %s requests; %s recorded tokens; complete=%s." % (
-        usage["requests"], usage["total_tokens"], usage["complete"]),
-        "", "[Paired execution results and totals](report.md)", ""]
+        usage["requests"], usage["total_tokens"], usage["complete"]), ""]
+    if qa_only:
+        lines += ["This collection produces dialogue and recall QA. Repository tasks and paired trials are not scheduled.", ""]
+    else:
+        lines += ["[Paired execution results and totals](report.md)", ""]
     (output / "collection.md").write_text("\n".join(lines), encoding="utf-8")
-    write_report(output, {"tasks": tasks})
+    if not qa_only:
+        write_report(output, {"tasks": tasks})

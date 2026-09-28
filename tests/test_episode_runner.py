@@ -10,6 +10,44 @@ from run_episode import main
 
 
 class EpisodeRunnerTests(unittest.TestCase):
+    def test_qa_only_retains_answers_and_evidence_without_starting_tasks(self):
+        for questions in ([], [{"id": "q1", "qa_mode": "memory", "type": "M1",
+                                "question": "Which customer rule applies?"}]):
+            with self.subTest(questions=questions), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source"
+                candidate = source / "workspace/candidate"
+                candidate.mkdir(parents=True)
+                (candidate / "a.py").write_text("value = True\n")
+                (source / "session.jsonl").write_text(json.dumps({"kind": "user", "content": "rule"}) + "\n")
+                config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+                def generated(args):
+                    output = Path(args[args.index("--output") + 1])
+                    save(output / "qa-public.json", {"status": "completed", "questions": questions})
+                    save(output / "manifest.json", {"qa_mode": "memory", "usage": [
+                        dict(prompt_tokens=10, completion_tokens=5)]})
+                    return 0
+                with patch("run_episode.configure", return_value=config), \
+                     patch("run_episode.generate_qa", side_effect=generated), \
+                     patch("run_episode.run_tasks") as tasks, \
+                     patch("run_episode.compact_run") as compact, \
+                     patch("render_run.build", return_value={}):
+                    self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
+                        "--env-file", str(root / ".env"), "--output", str(root / "run"), "--qa-only"]), 0)
+                tasks.assert_not_called()
+                compact.assert_not_called()
+                self.assertFalse((root / "run/tasks").exists())
+                self.assertEqual(read(root / "run/qa/qa-public.json")["questions"], questions)
+                self.assertEqual(read(root / "run/usage.json")["total_tokens"], 15)
+                state = read(root / "run/pipeline.json")
+                self.assertEqual(state["status"], "completed")
+                self.assertEqual(state["stop_reason"], "qa_only" if questions else "no_eligible_qa")
+                page = (root / "run/report.html").read_text()
+                self.assertIn("记忆召回 QA", page)
+                self.assertNotIn('href="tasks/', page)
+                self.assertNotIn("需求生成尚未完成", page)
+                self.assertTrue((root / "run/qa-viewer/index.html").is_file())
+
     def test_cleanup_failure_keeps_the_usage_receipt_saved_before_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

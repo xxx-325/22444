@@ -27,6 +27,9 @@ def render(root):
     counts = Counter(q.get("qa_mode", "code") for q in questions)
     manifest = json.loads((qa / "manifest.json").read_text())
     progress = manifest.get("progress", {})
+    pipeline = root / "pipeline.json"
+    qa_only = (json.loads(pipeline.read_text()).get("parameters", {}).get("qa_only", False)
+               if pipeline.exists() else False)
     qa_rows = []
     modes = (("memory", "QA"),) if manifest.get("qa_mode") == "memory" else (("general", "普通题"), ("code", "代码题"))
     for mode, label in modes:
@@ -50,28 +53,34 @@ def render(root):
             tasks.get("target", "—"), len(evaluated), passed, tasks.get("stop_reason", "运行中"))
     baseline = json.loads((root / "baseline.json").read_text())
     receipt = json.loads((root / "input/conversion.json").read_text())
-    page = '''<!doctype html><html lang="zh"><meta charset="utf-8"><title>Dialogue → QA → 新需求</title>
+    title = "Dialogue → 记忆召回 QA" if qa_only else "Dialogue → QA → 新需求"
+    task_section = ('<section><h2>运行范围</h2><p>本次生成有对话来源的记忆召回 QA，'
+                    '未安排新需求或有无记忆编码对照。</p></section>') if qa_only else '''
+<section><h2>新需求与两组代码</h2><p>模型提出新需求、生成验收标准并验证参考实现；随后分别运行无记忆和注入历史答案两组。</p>
+<p>%s</p><a href="tasks/report.html">打开需求、测试、代码与轨迹对比</a> ·
+<a href="tasks/report.md">完成情况与操作统计</a> · <a href="tasks/manifest.json">任务状态</a></section>''' % escape(task_summary)
+    page = '''<!doctype html><html lang="zh"><meta charset="utf-8"><title>%s</title>
 <style>body{font:17px/1.8 system-ui;max-width:900px;margin:60px auto;padding:0 24px;color:#19283d;background:#f5f7fb}
 section{background:white;padding:24px;border-radius:14px;margin:22px 0;border:1px solid #dce3ed}a{color:#235dac}code{overflow-wrap:anywhere}
 table{width:100%%;border-collapse:collapse;font-size:14px}th,td{text-align:left;border-bottom:1px solid #dce3ed;padding:8px}</style>
-<h1>Dialogue → QA → 新需求</h1><p>%s</p>%s
+<h1>%s</h1><p>%s</p>%s
 <section><h2>QA 与证据</h2><p>%s</p>
 <table><tr><th>题集</th><th>目标</th><th>已发布</th><th>不同题干</th><th>停止原因</th></tr>%s</table>
 <p>保留原始运行结果；“不同题干”仅合并完全相同的题干，不代表语义去重或人工质量认证。</p>
 <a href="qa-viewer/index.html">打开证据与完整候选审阅</a> · <a href="qa/qa-public.json">最终 QA</a> ·
 <a href="qa/qa-audit.json">审核记录</a> · <a href="qa/stages/">最终 QA 的实际生成输入</a></section>
-<section><h2>新需求与两组代码</h2><p>模型提出新需求、生成验收标准并验证参考实现；随后分别运行无记忆和注入历史答案两组。</p>
-<p>%s</p><a href="tasks/report.html">打开需求、测试、代码与轨迹对比</a> ·
-<a href="tasks/report.md">完成情况与操作统计</a> · <a href="tasks/manifest.json">任务状态</a></section>
+%s
 <section><h2>固定基线</h2><p>对话结束后的代码，独立保存在本次运行中。</p><code>%s</code><p>
 <a href="baseline/">基线代码</a> · <a href="baseline.json">版本凭据</a> · <a href="input/conversion.json">输入转换记录</a></p>
-<p>每份结果代码都附带基于此提交的补丁和恢复校验记录。各需求互不串接。</p></section></html>''' % (
+%s</section></html>''' % (
+        title, title,
         escape("%s 条用户消息 / %s 条可见消息 / %s 条规范化记录" % (
             receipt["visible_messages"].get("user", 0),
             sum(receipt["visible_messages"].values()), receipt["records"])),
         ('<p><a href="observations.md">本轮结果与方法问题</a> · '
          '<a href="verification.json">版本和数量核验</a></p>') if (root / "observations.md").exists() else "",
-        escape(qa_summary), "".join(qa_rows), escape(task_summary), escape(baseline["base_commit"]))
+        escape(qa_summary), "".join(qa_rows), task_section, escape(baseline["base_commit"]),
+        "" if qa_only else "<p>每份结果代码都附带基于此提交的补丁和恢复校验记录。各需求互不串接。</p>")
     (root / "report.html").write_text(page, encoding="utf-8")
     print(root / "report.html")
 

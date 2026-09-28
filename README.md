@@ -212,9 +212,18 @@ An episode with no exported external history is recorded as `no_external_history
 and skips QA/task execution. M4/M5 scenarios require prepared runtime conditions; design counts and public event
 counts are reported separately. Root Git lineage groups project families.
 
+For recall dataset construction, set `evaluation.qa_only` to `true`, or use
+`run_episode.py --qa-only`. The run ends after QA review and repository recoverability
+checks, saving the dialogue input, all candidates, source evidence and QA viewer.
+It creates no repository tasks or paired trials. Both future evaluation conditions
+use the same code and ordinary project documentation; historical knowledge documents
+and QA answer keys stay outside their shared repository. Retrieved memory can be
+supplied separately to the memory condition.
+
 `collection.md` lists construction outcomes and costs; `report.md` and
 `report.html` reuse the paired-trial report. `collection.json` retains the full
-stage records. Exact provider request bodies and responses are kept in private
+stage records. QA-only collections use `collection.md` and each episode's QA page
+without a paired-trial report. Exact provider request bodies and responses are kept in private
 verified compressed traces before disposable runtime files are removed.
 
 The input file may be a unified JSON document or a supported native rollout.

@@ -29,6 +29,8 @@ def main(argv=None):
     parser.add_argument("--source-event", action="append", default=[])
     parser.add_argument("--source-object", action="append", default=[])
     parser.add_argument("--design-probe", action="store_true")
+    parser.add_argument("--qa-only", action="store_true",
+                        help="Finish after QA extraction without creating or evaluating repository tasks")
     parser.add_argument("--qa-count", type=int, help="External QA target (default: 40)")
     parser.add_argument("--group-budget", type=int, help="External event exploration budget")
     parser.add_argument("--general-count", type=int, help="Graph general QA target (default: 40)")
@@ -44,6 +46,8 @@ def main(argv=None):
     parser.add_argument("--resume-tasks", action="store_true",
                         help="Reuse completed QA and start repository tasks in an empty tasks directory")
     args = parser.parse_args(argv)
+    if args.qa_only and args.resume_tasks:
+        parser.error("--qa-only cannot be combined with --resume-tasks")
     if args.qa_source == "external" and (args.general_count is not None or args.code_count is not None):
         parser.error("External QA uses --qa-count, not separate general/code counts")
     if args.qa_source == "graph" and (args.qa_count is not None or args.group_budget is not None):
@@ -144,12 +148,14 @@ def main(argv=None):
         if qa_result.get("status") == "failed":
             state["stop_reason"] = "qa_generation_failed"
             raise RuntimeError("QA generation failed; see qa/qa-audit.json")
-        if not qa_result["questions"]:
-            task_manifest = {"target": args.task_count, "tasks": [],
-                             "stop_reason": "no_eligible_qa"}
-            save(root / "tasks/manifest.json", task_manifest)
-            write_report(root / "tasks", task_manifest)
-            state.update(status="completed", stop_reason="no_eligible_qa")
+        if args.qa_only or not qa_result["questions"]:
+            if not args.qa_only:
+                task_manifest = {"target": args.task_count, "tasks": [],
+                                 "stop_reason": "no_eligible_qa"}
+                save(root / "tasks/manifest.json", task_manifest)
+                write_report(root / "tasks", task_manifest)
+            state.update(status="completed", stop_reason=(
+                "qa_only" if qa_result["questions"] else "no_eligible_qa"))
             save(root / "usage.json", episode_usage(root))
             usage_saved = True
             phase("complete")

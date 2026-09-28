@@ -89,12 +89,14 @@ class CollectionTests(unittest.TestCase):
             self.assertNotIn("--general-count", command)
             self.assertNotIn("--code-count", command)
             paired = getattr(self, "paired", False)
+            qa_only = "--qa-only" in command
             save(target / "pipeline.json", dict(status="completed", **(
-                {} if paired else {"stop_reason": "no_eligible_qa"})))
-            save(target / "qa/qa-public.json", dict(questions=[{"id": "q1"}] if paired else []))
-            save(target / "tasks/manifest.json", dict(tasks=[dict(task="task-01", status="completed",
-                comparison={"without_memory": {"result": "failed", "metrics": {}, "trial": "trial-1"},
-                            "with_memory": {"result": "passed", "metrics": {}, "trial": "trial-2"}})] if paired else []))
+                {"stop_reason": "qa_only"} if qa_only else {} if paired else {"stop_reason": "no_eligible_qa"})))
+            save(target / "qa/qa-public.json", dict(questions=[{"id": "q1"}] if paired or qa_only else []))
+            if not qa_only:
+                save(target / "tasks/manifest.json", dict(tasks=[dict(task="task-01", status="completed",
+                    comparison={"without_memory": {"result": "failed", "metrics": {}, "trial": "trial-1"},
+                                "with_memory": {"result": "passed", "metrics": {}, "trial": "trial-2"}})] if paired else []))
             save(target / "usage.json", dict(requests=1, prompt_tokens=10, completion_tokens=2, complete=True))
         else:
             self.fail("Unexpected stage")
@@ -159,6 +161,37 @@ class CollectionTests(unittest.TestCase):
             plan["projects"][0]["id"] = "../project"
             with self.assertRaises(ValueError):
                 validate_plan(plan)
+
+    def test_qa_only_is_forwarded_without_creating_an_empty_pair_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            plan["evaluation"] = {"qa_only": True}
+            save(root / "input.json", plan)
+            self.reject_first = False
+            result = self.invoke(root)
+            evaluation = [c for c in self.commands if "--episode-manifest" in c]
+            self.assertEqual(len(evaluation), 2)
+            self.assertTrue(all("--qa-only" in c for c in evaluation))
+            self.assertTrue(all(c[c.index("--qa-only") + 1] != "True" for c in evaluation))
+            self.assertTrue(result["qa_only"])
+            self.assertEqual([s["published_qa"] for s in result["projects"][0]["scenarios"]], [1, 1])
+            self.assertFalse(any((root / "run").glob("planner/*/evaluation/tasks")))
+            report = (root / "run/collection.md").read_text()
+            self.assertIn("Not scheduled", report)
+            self.assertNotIn("(report.md)", report)
+            self.assertFalse((root / "run/report.md").exists())
+
+    def test_qa_only_requires_an_actual_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self.plan(Path(directory))
+            for value in (True, False):
+                plan["evaluation"] = {"qa_only": value}
+                validate_plan(plan)
+            for value in ("true", 1, None):
+                plan["evaluation"] = {"qa_only": value}
+                with self.assertRaisesRegex(ValueError, "qa_only must be a boolean"):
+                    validate_plan(plan)
 
     def test_valid_empty_history_skips_evaluation_and_continues(self):
         with tempfile.TemporaryDirectory() as directory:

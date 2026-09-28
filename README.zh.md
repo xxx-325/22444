@@ -137,7 +137,13 @@ python run_collection.py --config /path/to/collection.json \
 
 完成包没有公开外部历史时，记录 `no_external_history` 并跳过 QA／需求执行，继续处理固定列表中的其他场景。
 
+构建召回题集时，设置 `evaluation.qa_only: true`，或使用 `run_episode.py --qa-only`。
+流程在 QA 审核和仓库可恢复性检查后结束，保留对话输入、全部候选、来源证据及 QA 审阅页面，
+不创建新需求或成对编码试验。后续评测的两组使用相同代码及普通项目文档；历史知识文档和
+QA 标准答案放在共享仓库之外，有记忆组可通过独立输入获得检索到的记忆。
+
 `collection.md` 展示各阶段产出及构造成本，`report.md`、`report.html` 复用成对评测报告，`collection.json` 保存完整阶段记录。清理临时运行文件前，实际模型请求正文及响应会先进入经过校验的私有压缩轨迹。
+仅 QA 模式使用 `collection.md` 和各对话的 QA 页面，不生成成对评测报告。
 
 ## 仓库任务试验
 
