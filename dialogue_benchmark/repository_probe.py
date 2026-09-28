@@ -19,6 +19,7 @@ PROBE_PROMPT = """你是一个只读的仓库可恢复性探针。判断下面�
 如果还不能确定，返回 uncertain。没有搜索命中不能证明某条规则不存在。
 必须逐项考虑 answer_claims。只要有一个影响题目答案的主张无法从当前仓库直接确认，就不能返回 recoverable。
 核对规则是否可恢复，不是新功能是否已实现。不能仅因仓库没有新功能 API、作者或批准人的姓名，就断定行为规则不可恢复。
+recoverable 和 history_required 都必须引用实际仓库内容；没有内容证据时返回 uncertain。
 EVIDENCE 引用已读取仓库内容对应的查询编号：例如 observations 中 id 为 query1 的结果支持判断时，输出 EVIDENCE: query1。
 
 每轮只输出以下四行，每个标签必须出现一次，不要输出 JSON、Markdown 或解释。如果还需要别的文件，下一轮再查：
@@ -198,7 +199,7 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
             final = {"status": "uncertain", "reason": "invalid_probe_decision"}
             steps.append({"step": index + 1, "error": final["reason"]})
             break
-        if decision == "recoverable":
+        if decision in {"recoverable", "history_required"}:
             observations = {item["id"]: item for item in state["observations"]}
             cited_results = [observations[ref]["result"] for ref in refs
                              if ref in observations]
@@ -208,9 +209,9 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
                        for match in result.get("matches", []))
                 for result in cited_results)
             if not refs or not cited_results or not has_content:
-                final = {"status": "uncertain", "reason": "recoverable_without_repository_evidence"}
+                final = {"status": "uncertain", "reason": decision + "_without_repository_evidence"}
             else:
-                final = {"status": "recoverable", "reason": probe.get("reason", ""),
+                final = {"status": decision, "reason": probe.get("reason", ""),
                          "evidence": refs}
         else:
             final = {"status": decision, "reason": probe.get("reason", ""),

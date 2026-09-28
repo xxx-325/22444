@@ -100,16 +100,18 @@ python -m dialogue_benchmark.cli examples/dialogue.json \
 When a final repository snapshot is available, add `--repository /path/to/checkout`.
 After QA review and before quotas are applied, a host-controlled probe may look up
 and read relevant files. It receives the question, answer claims to verify, and
-code anchors, without historical sources. Only repository content counts as
-evidence that an answer is recoverable. External-only publication holds uncertain
+code anchors, without historical sources. Only repository content supports a
+definitive recoverability decision. External-only publication holds uncertain
 cases for review. Probe receipts are kept under
 `recoverability/`, and the audit marks filtered candidates as
 `filtered_recoverable`, not as quality rejections.
 
 Each probe reply has exactly four required tags: `PROBE`, `REASON`, `QUERY`, and
 `EVIDENCE`, with no end marker. Incomplete or conflicting replies fail closed;
-evidence references must identify earlier repository queries, and a recoverable
-answer still requires cited repository content.
+evidence references must identify earlier repository queries. Both `recoverable`
+and `history_required` decisions require cited file content from a read or content
+search. Citing only empty results or filename-only matches leaves the result
+`uncertain`.
 
 ### External-only QA source
 
@@ -148,6 +150,8 @@ QA retrieves recorded decisions rather than seeking a new approval or confirmati
 Scoped corrections apply only when recorded in the supplied history.
 One selection rule includes its scope, restrictions, and
 exceptions; independent outputs or actions remain separate answer points.
+A complete set or mapping that defines one rule stays in one answer point so its
+membership boundary remains intact.
 Parsed focus responses are saved before validation in local stage artifacts
 (`focus-response.json`, and `focus-refinement-response.json` when applicable).
 

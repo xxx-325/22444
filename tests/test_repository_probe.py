@@ -162,7 +162,7 @@ class RepositoryProbeTests(unittest.TestCase):
             root = Path(directory) / "repo"
             root.mkdir()
             (root / "api.py").write_text("def export_records(rows): return rows\n")
-            for decision in ("need_evidence", "recoverable"):
+            for decision in ("need_evidence", "recoverable", "history_required"):
                 for evidence in ("api.py lines 1-80", "query2"):
                     with self.subTest(decision=decision, evidence=evidence):
                         query = "lookup|repo|.|export_records|0" if decision == "need_evidence" else "none"
@@ -345,43 +345,98 @@ class RepositoryProbeTests(unittest.TestCase):
                     self.assertEqual(result["query_count"], 0)
                     self.assertEqual(len(result["usage"]), 1)
 
-    def test_recoverable_without_valid_cited_evidence_stays_uncertain(self):
+    def test_terminal_decisions_without_queries_require_uncertainty(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             root.mkdir()
             (root / "api.py").write_text("return None\n")
-            for evidence in (None, "", "none", "query2", "api.py lines 1-80"):
-                with self.subTest(evidence=evidence):
-                    terminal = "PROBE: recoverable\nREASON: behavior is visible\nQUERY: none"
-                    if evidence is not None:
-                        terminal += "\nEVIDENCE: " + evidence
+            for decision, expected_reason in (
+                    ("recoverable", "recoverable_without_repository_evidence"),
+                    ("history_required", "history_required_without_repository_evidence"),
+                    ("uncertain", "not enough context")):
+                with self.subTest(decision=decision):
                     FakeProbeClient.responses = [
-                        "PROBE: need_evidence\nREASON: inspect entry\n"
-                        "QUERY: read|repo|api.py|-|0\nEVIDENCE: none", terminal]
+                        "PROBE: %s\nREASON: not enough context\nQUERY: none\nEVIDENCE: none"
+                        % decision]
                     with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
                         result = probe_candidate({"question": "api.py 的行为是什么？"}, root,
                             "https://example.invalid", "m", "KEY", Path(directory) / "probe")
                     self.assertEqual(result["status"], "uncertain")
-                    self.assertEqual(result["query_count"], 1)
-                    self.assertEqual(len(result["usage"]), 2)
+                    self.assertEqual(result["reason"], expected_reason)
+                    self.assertEqual(result["query_count"], 0)
+                    self.assertEqual(len(result["usage"]), 1)
 
-    def test_empty_or_filename_only_lookup_cannot_support_recoverable(self):
+    def test_definitive_decisions_without_valid_cited_evidence_stay_uncertain(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             root.mkdir()
             (root / "api.py").write_text("return None\n")
-            for keyword in ("missing_symbol", "api.py"):
-                with self.subTest(keyword=keyword):
+            for decision in ("recoverable", "history_required"):
+                for evidence in (None, "", "none", "query2", "api.py lines 1-80"):
+                    with self.subTest(decision=decision, evidence=evidence):
+                        terminal = "PROBE: %s\nREASON: behavior checked\nQUERY: none" % decision
+                        if evidence is not None:
+                            terminal += "\nEVIDENCE: " + evidence
+                        FakeProbeClient.responses = [
+                            "PROBE: need_evidence\nREASON: inspect entry\n"
+                            "QUERY: read|repo|api.py|-|0\nEVIDENCE: none", terminal]
+                        with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                            result = probe_candidate({"question": "api.py 的行为是什么？"}, root,
+                                "https://example.invalid", "m", "KEY", Path(directory) / "probe")
+                        self.assertEqual(result["status"], "uncertain")
+                        self.assertEqual(result["query_count"], 1)
+                        self.assertEqual(len(result["usage"]), 2)
+
+    def test_queries_without_content_cannot_support_definitive_decisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("return None\n")
+            for decision in ("recoverable", "history_required"):
+                for query in ("lookup|repo|.|missing_symbol|0", "lookup|repo|.|api.py|0",
+                              "read|repo|api.py|-|1"):
+                    with self.subTest(decision=decision, query=query):
+                        FakeProbeClient.responses = [
+                            "PROBE: need_evidence\nREASON: inspect entry\n"
+                            "QUERY: read|repo|api.py|-|0\nEVIDENCE: none",
+                            "PROBE: need_evidence\nREASON: search further\n"
+                            "QUERY: %s\nEVIDENCE: query1" % query,
+                            "PROBE: %s\nREASON: behavior checked\nQUERY: none\nEVIDENCE: query2"
+                            % decision,
+                        ]
+                        with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                            result = probe_candidate({"question": "api.py 的 missing_symbol 行为是什么？"}, root,
+                                "https://example.invalid", "m", "KEY", Path(directory) / "probe")
+                        self.assertEqual(result["status"], "uncertain")
+                        self.assertEqual(result["reason"], decision + "_without_repository_evidence")
+                        self.assertEqual(result["query_count"], 2)
+                        self.assertEqual(len(result["usage"]), 3)
+
+    def test_lookup_content_supports_definitive_decisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "api.py").write_text("def send(rows, *, limit): pass\n")
+            for decision, question, reason in (
+                    ("recoverable", "How does send obtain its limit?", "the caller supplies it"),
+                    ("history_required", "Which customer limit applies?", "the limit must come from outside")):
+                with self.subTest(decision=decision):
                     FakeProbeClient.responses = [
                         "PROBE: need_evidence\nREASON: search\n"
-                        "QUERY: lookup|repo|.|%s|0\nEVIDENCE: none" % keyword,
-                        "PROBE: recoverable\nREASON: yes\nQUERY: none\nEVIDENCE: query1",
+                        "QUERY: lookup|repo|.|limit|0\nEVIDENCE: none",
+                        "PROBE: %s\nREASON: %s\nQUERY: none\nEVIDENCE: query1"
+                        % (decision, reason),
                     ]
                     with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
-                        result = probe_candidate({"question": "api.py 的 missing_symbol 行为是什么？"}, root,
+                        result = probe_candidate({"question": question}, root,
                             "https://example.invalid", "m", "KEY", Path(directory) / "probe")
-                    self.assertEqual(result["status"], "uncertain")
-                    self.assertEqual(result["reason"], "recoverable_without_repository_evidence")
+                    self.assertEqual(result["status"], decision)
+                    self.assertEqual(result["reason"], reason)
+                    self.assertEqual(result["evidence"], ["query1"])
+                    self.assertEqual(result["observations"][0]["result"]["matches"], [
+                        {"match": "api.py:1:def send(rows, *, limit): pass"}])
+                    self.assertEqual(result["query_count"], 1)
+                    self.assertEqual(len(result["usage"]), 2)
 
     def test_recoverable_candidate_is_filtered_before_quota(self):
         question = {"id": "q1", "qa_mode": "code", "status": "approved",
