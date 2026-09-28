@@ -213,6 +213,8 @@ def _review_history_targets(task, answer, config, output, evidence, budget):
                                   "result": evidence["repository_exploration"]})
     payload = {"public_task": task, "public_repository": public_repository,
                "private_history_targets": targets, "injected_answer": answer}
+    if evidence.get("development_workflow"):
+        payload["development_workflow"] = evidence["development_workflow"]
     try:
         allowed_history_sources = sorted({source for target in targets for source in target.get("sources", [])})
         allowed_public_sources = sorted({query.get("id") for query in public_repository})

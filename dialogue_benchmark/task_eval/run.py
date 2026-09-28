@@ -181,7 +181,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     # lets task construction freeze a private external rule instead of copying
     # the answer into the public task.
     qa_source_ids = set()
-    for point in item.get("original_candidate", {}).get("answer_points", []):
+    candidate = item.get("reviewed_candidate", item.get("original_candidate", {}))
+    for point in candidate.get("answer_points", []) + candidate.get("forbidden_points", []):
         if isinstance(point, dict):
             qa_source_ids.update(source for source in point.get("sources", [])
                                  if isinstance(source, str) and source)
@@ -221,7 +222,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 "detail": str(error), "report": "",
             })
     selection = (reused[0] if reused else select_task(item["qa"], public_history, baseline, config,
-                 root / "selection", budget, exploration=exploration_text))
+                 root / "selection", budget, exploration=exploration_text,
+                 workflow=item.get("development_workflow")))
     if reused:
         save(root / "selection/result.json", selection)
     selection["qa_source"] = item.get("qa_source", "graph")
@@ -260,6 +262,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 refs = {ref for c in (draft_history or {}).get("contracts", []) for ref in c["sources"]}
                 evidence = {"memory_use": protected["memory-use.md"], "acceptance": draft_items,
                             "qa_source": item.get("qa_source", "graph"),
+                            "development_workflow": item.get("development_workflow", ""),
                             "repository_exploration": selection.get("repository_exploration", ""),
                             "repository_queries": [q for q in selection.get("evidence", {}).get("queries", [])
                                                    if q["query"]["target"] == "repo"],

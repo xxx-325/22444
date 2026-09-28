@@ -656,6 +656,11 @@ def _evidence_review_request(scope, source_ids, facts, candidate):
                    "repetition, or uncertain when evidence is incomplete. For applied, append @ and "
                    "the supplied material references showing the use. Explain that action/result "
                    "in usage_reason. Do not invent an execution.\n")
+        prompt += ("A user-confirmed rule for future work need not have been executed. For an answer "
+                   "about that agreement, use confirmed@ followed by its User message references. "
+                   "This confirms the agreement, never a claimed execution or failure. An assistant "
+                   "completion report alone does not prove application. For applied, cite a public tool "
+                   "result and check whether the operation completed; a command alone only proves an attempt.\n")
     return prompt, payload, refs
 
 
@@ -1013,14 +1018,15 @@ def parse_text_response(content):
                 return {"questions": [], "missing_kind": missing_kind,
                         "missing_object": missing_object}
         raise ValueError("Invalid NO_QA response")
-    if lines and lines[0].startswith("FOCUS:"):
+    if lines and lines[0].startswith(("FOCUS:", "WORKFLOW:")):
         if len(lines) != 2 or not lines[1].startswith("SOURCES:"):
             raise ValueError("Invalid FOCUS response")
+        label = "workflow" if lines[0].startswith("WORKFLOW:") else "focus"
         focus = lines[0].split(":", 1)[1].strip()
         sources = _parse_sources(lines[1].split(":", 1)[1].strip())
         if not focus or not sources:
             raise ValueError("Invalid FOCUS response")
-        return {"focus": {"text": focus, "sources": sources}}
+        return {label: {"text": focus, "sources": sources}}
     facts, questions, reviews = [], [], []
     index = 0
     while index < len(lines):
@@ -1224,6 +1230,29 @@ is available, return NO_QA alone. Do not copy the alternatives or add prose.
 """
 
 SIMPLE_CODE_FOCUS_RULES = SIMPLE_CODE_QA_RULES
+
+MEMORY_WORKFLOW_PROMPT = """为后续开发选择一条有实际用途的业务链路。
+输入是已公开的历史原文和事实。选择其中涉及的真实业务，用一句话说明未来目标及相连的业务步骤。
+例如“增加批量交付恢复：确认接收状态 → 处理待完成交付 → 汇总结果”。这只是格式示例。
+这里只选业务方向，不回答历史规则，不规定代码修改顺序，也不声称新功能已实现。
+选择需要复用所给外部知识的链路；孤立的文件数、运行字节数或测试计数不构成开发目标。
+目标及步骤中不要泄露历史取值、例外或处理结论。来源必须是输入中的公开材料。
+严格输出两行：
+WORKFLOW: 一个未来业务目标及其相连步骤
+SOURCES: 资料1,资料2
+没有合适链路只输出 NO_QA。
+"""
+
+MEMORY_FOCUS_PROMPT = """针对已选 workflow，确定一道需要历史信息才能回答的自然追问方向。
+TARGET_DEFINITION
+阅读原文，选出共同决定这条链路行为的有效外部规则；一题可以需要多条相互关联的规则。
+保留条件和局部例外，后续纠正只替代其明确范围。不要把旧执行结果当成未来固定要求。
+focus 说明需要确认什么，不给出答案，不另选开发目标，不收集无关规则。
+严格输出两行：
+FOCUS: 围绕该业务链路需要确认的历史规则
+SOURCES: 资料1,资料2
+没有足够公开依据只输出 NO_QA。
+"""
 
 SIMPLE_GENERAL_FOCUS_RULES = """
 普通题围绕固定任务选择一项历史信息：后续做哪个具体动作前，需要确认什么？
@@ -1929,7 +1958,11 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 focus_prompt += SIMPLE_CODE_FOCUS_RULES
                 qa_prompt += SIMPLE_CODE_QA_RULES
             elif qa_mode == "memory":
+                focus_prompt = MEMORY_FOCUS_PROMPT.replace("TARGET_DEFINITION", definition)
                 focus_prompt += MEMORY_QA_RULES
+                qa_prompt = qa_prompt.replace(
+                    "从约束清单中选一项，不问整个清单。",
+                    "同一业务链路需要几条关联规则时逐条回答，保留各自条件。")
                 qa_prompt += MEMORY_QA_RULES
             else:
                 focus_prompt += SIMPLE_GENERAL_FOCUS_RULES
@@ -1954,9 +1987,28 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
         if simple_mode:
             failed_stage = "focus"
             focus_sources = (_scope_material_source_ids(scope)
-                             if full_range_question else fact_sources)
-            focus_payload, focus_ref_to_source = simple_focus_payload(
+                             if full_range_question or qa_mode == "memory" else fact_sources)
+            focus_builder = simple_evidence_payload if qa_mode == "memory" else simple_focus_payload
+            focus_payload, focus_ref_to_source = focus_builder(
                 scope, focus_sources, result["facts"])
+            workflow = None
+            if qa_mode == "memory":
+                failed_stage = "workflow"
+                _check_simple_request_budget(MEMORY_WORKFLOW_PROMPT, focus_payload, qa_budget)
+                save("workflow-input.json", {"system_prompt": SYSTEM, "prompt": MEMORY_WORKFLOW_PROMPT,
+                                             "payload": focus_payload, "ref_to_source": focus_ref_to_source})
+                result["generation_request_count"] += 1
+                document = _ask_stage(client, MEMORY_WORKFLOW_PROMPT, focus_payload, "workflow")
+                if document == {"questions": []}:
+                    save("workflow.json", document)
+                    result["stage_status"].update(workflow="completed", focus="not_submitted", qa="not_submitted")
+                    return result
+                workflow = _restore_local_focus({"focus": document.get("workflow")}, focus_ref_to_source)["focus"]
+                save("workflow.json", {"workflow": workflow})
+                result["stage_status"]["workflow"] = "completed"
+                result["workflow"] = deepcopy(workflow)
+                focus_payload["workflow"] = {"text": workflow["text"]}
+                failed_stage = "focus"
             _check_simple_request_budget(focus_prompt, focus_payload, qa_budget)
             save("focus-input.json", {"system_prompt": SYSTEM, "prompt": focus_prompt, "payload": focus_payload,
                                       "ref_to_source": focus_ref_to_source})
@@ -2011,7 +2063,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 for source in fact.get("sources", []) if isinstance(source, str)
             }
             material_sources = (_scope_material_source_ids(scope)
-                                if full_range_question else
+                                if full_range_question or qa_mode == "memory" else
                                 selected_focus_sources | corresponding_sources
                                 | generation_extra_sources)
             failed_stage = "qa"
@@ -2024,6 +2076,11 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 "sources": [qa_source_to_ref[source]
                             for source in focus["sources"]],
             }
+            if workflow is not None:
+                payload["workflow"] = {
+                    "text": workflow["text"],
+                    "sources": [qa_source_to_ref[source] for source in workflow["sources"]],
+                }
             _check_simple_request_budget(qa_prompt, payload, qa_budget)
             result["_repair_context"] = {
                 "prompt": qa_prompt,
@@ -2073,6 +2130,8 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                         candidate["category"] = target_type
                 if simple_mode and isinstance(focus, dict):
                     candidate["_generation_focus"] = deepcopy(focus)
+                    if workflow is not None:
+                        candidate["_generation_workflow"] = deepcopy(workflow)
         else:
             candidates, rejected = validate_candidates(
                 emitted, result["facts"], qa_scope,
@@ -2094,7 +2153,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
         save("candidates.json", candidates)
     except Exception as error:
         _record_failure(result, failed_stage, error, save, client)
-        if failed_stage == "focus":
+        if failed_stage in {"workflow", "focus"}:
             result["stage_status"]["qa"] = "not_submitted"
         return result
     return result
@@ -2374,6 +2433,15 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
                 origin_qa_mode=candidate.get("origin_qa_mode", qa_mode),
                 evidence_group_id=candidate.get("evidence_group_id"),
                 repair_attempted=True)
+            for field in ("focus", "workflow"):
+                value = original_payload.get(field)
+                if isinstance(value, dict):
+                    value = _restore_local_focus(
+                        {"focus": value}, ref_to_source)["focus"]
+                else:
+                    value = candidate.get("_generation_" + field)
+                if isinstance(value, dict):
+                    repaired_candidate["_generation_" + field] = deepcopy(value)
             if qa_mode == "code":
                 repaired_candidate["category"] = candidate.get("type")
             revision["after"] = deepcopy(repaired_candidate)
@@ -2577,6 +2645,10 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                     distinctiveness_payload["focus"] = {
                         "text": candidate["_generation_focus"].get("text", "")
                     }
+                if isinstance(candidate.get("_generation_workflow"), dict):
+                    distinctiveness_payload["workflow"] = {
+                        "text": candidate["_generation_workflow"].get("text", "")}
+                    target_prompt += "\nCheck that the QA resolves historical decisions within workflow, not a different feature."
                 _check_simple_request_budget(
                     target_prompt, distinctiveness_payload, qa_budget)
                 distinctiveness_document = _ask_stage(
@@ -2811,7 +2883,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
             if usage_decision is not None:
                 for item in evidence_kept:
                     item["external_usage_review"] = usage_decision
-                    if item.get("status") == "approved" and usage_decision["status"] != "applied":
+                    if item.get("status") == "approved" and usage_decision["status"] not in {"applied", "confirmed"}:
                         item.update(status="needs_review", quality_status="needs_review",
                                     review_error="external_usage_not_established")
             result["stage_status"]["review_evidence"] = "completed"

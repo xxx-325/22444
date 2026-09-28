@@ -63,9 +63,12 @@ class CollectionTests(unittest.TestCase):
             cfg = read(Path(command[command.index("--config") + 1]))
             self.assertIsNone(cfg["user"]["max_output_tokens"])
             save(target / "project.json", dict(status="completed"))
-            save(target / "config.json", dict(repository=str(target), base="base-sha", tasks=[{"commit": "next-sha"}]))
+            save(target / "config.json", dict(repository=str(target), base="base-sha", tasks=[{"commit": "next-sha"}],
+                                              development_plan=str(target / "development-plan.json")))
             save(target / "private/budget.json", budget)
         elif name == "scenario":
+            cfg = read(Path(command[command.index("--config") + 1]))
+            self.assertEqual(Path(cfg["development_plan"]).name, "development-plan.json")
             save(target / "frozen/report.json", dict(status="candidate_pass", design={"memory_kinds": ["M1"]}))
             save(target / "frozen/scenario.json", {})
             save(target / "budget.json", budget)
@@ -118,6 +121,8 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(project["scenarios"][1]["paired_tasks"], 0)
             for scenario in ("first", "second"):
                 self.assertEqual(read(root / "run/planner" / scenario / "config.json")["base"], "base-sha")
+                self.assertEqual(read(root / "run/planner" / scenario / "config.json")["development_plan"],
+                                 str((root / "run/planner/project/development-plan.json").resolve()))
 
     def test_budget_stops_new_stages_without_retrying_or_dropping_prior_work(self):
         with tempfile.TemporaryDirectory() as directory:

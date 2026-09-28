@@ -29,8 +29,10 @@ MEMORY_TYPE_GUIDANCE = {
 }
 MEMORY_TYPES = frozenset(MEMORY_TYPE_GUIDANCE)
 MEMORY_QA_RULES = """
-The answer must change one future implementation choice, required behavior, boundary,
-or validation decision. State that concrete future situation in the question.
+The answer must determine behavior within one future business workflow.
+State that concrete future situation in the question. Several related historical
+rules may be necessary; keep each rule and its condition in a separate answer point.
+Every point must change a decision in that same workflow.
 An isolated file inventory, byte total from one run, or test count is not such a decision.
 A recorded external size limit can be useful when it determines how future output must behave.
 Use the rule, condition, or established consequence actually present in the evidence;

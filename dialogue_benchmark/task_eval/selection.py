@@ -272,7 +272,7 @@ def repository_overview(root, limit=80):
             "relevant_paths": relevant_paths}
 
 
-def select_task(qa, history, baseline, config, output, budget, *, exploration=None):
+def select_task(qa, history, baseline, config, output, budget, *, exploration=None, workflow=None):
     from .prompts import SELECT_TASK
     output = Path(output)
     focus = _focused_history(history)
@@ -286,6 +286,8 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
              "repository_exploration": exploration or "",
              "repository_entries": sorted(p.name + ("/" if p.is_dir() else "")
                                           for p in Path(baseline).iterdir() if not p.name.startswith("."))}
+    if workflow:
+        state["development_workflow"] = workflow
     seen = set()
     known = {"qa"}
     if state["repository_exploration"]:
@@ -419,14 +421,13 @@ def extract_history_targets(qa, history, public, config, output, budget):
     from .prompts import HISTORY_TARGETS
     output = Path(output)
     focused = _focused_history(history)
-    # The closure may include nearby context needed for auditing the public
-    # task.  History targets must still start from the records actually cited
-    # by this QA; otherwise a related but uncited follow-up becomes a second
-    # contract that the answer never covered.
-    qa_source_ids = set((history or {}).get("qa_source_ids", []))
-    if qa_source_ids:
+    # Keep the QA's saved public boundary: an uncited correction can still
+    # constrain a cited rule. Do not add other dialogue topics to this closure.
+    source_ids = (set((history or {}).get("qa_source_ids", []))
+                  | set((history or {}).get("selected_event_ids", [])))
+    if source_ids:
         selected = [index for index, event in enumerate(focused)
-                    if event.get("id") in qa_source_ids]
+                    if event.get("id") in source_ids]
         keep = set(selected)
         for index in selected:
             for candidate in range(index - 1, -1, -1):

@@ -142,7 +142,12 @@ def prepare_history(records, generation_input, *, qa_source_ids=None):
     else:
         qa_source_ids = set(qa_source_ids)
     refs = set(qa_source_ids)
-    payload_scope = request.get("payload", {}).get("scope", {})
+    payload = request.get("payload", {})
+    reference_map = request.get("ref_to_source", {})
+    refs.update(reference_map[row["reference"]]
+                for row in payload.get("materials", [])
+                if row.get("reference") in reference_map)
+    payload_scope = payload.get("scope", {})
     refs.update(r["id"] for r in payload_scope.get("dialogue", []))
     evidence, selected, cited = [], [], []
     for record in records:
@@ -157,9 +162,8 @@ def prepare_history(records, generation_input, *, qa_source_ids=None):
     if not selected:
         raise ValueError("No public source records for historical task")
     aliases = {"source%d" % (i + 1): event["id"] for i, event in enumerate(evidence)}
-    # Keep the selected source closure small.  Previously every user message
-    # in the session was added here, which let task selection drift to an
-    # unrelated later topic even when the QA pointed at one external fact.
+    # Preserve the saved generation boundary, including scoped corrections.
+    # Resolve its references against public records, never material sidecars.
     initial_ids = set(selected)
     for i, event in enumerate(evidence):
         if event["id"] not in initial_ids:

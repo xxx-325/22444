@@ -36,12 +36,21 @@ def external_usage_review(document, scope, reference_map):
     if isinstance(value, str) and value in {"not_applied", "uncertain"}:
         decision.update(status=value, reason=reason if isinstance(reason, str) and reason.strip()
                         else "usage_not_established")
-    elif isinstance(value, str) and value.startswith("applied@"):
+    elif isinstance(value, str) and value.startswith(("applied@", "confirmed@")):
+        status = value.partition("@")[0]
         refs = [ref.strip() for ref in re.split(r"[,，]", value.partition("@")[2])]
         sources = [reference_map[ref] for ref in refs if ref in reference_map]
+        records = {row["id"]: row for row in scope.get("dialogue", [])}
+        eligible = set(scope.get("external_usage_ids", []))
+        if status == "confirmed":
+            eligible = {source for source in scope.get("external_source_ids", [])
+                        if records.get(source, {}).get("role") == "user"}
+        else:
+            eligible = {source for source in eligible
+                        if records.get(source, {}).get("kind") == "result"}
         if (refs and len(sources) == len(refs) and isinstance(reason, str) and reason.strip()
-                and set(sources) & set(scope.get("external_usage_ids", []))):
-            decision.update(status="applied", reason=reason, sources=sources)
+                and set(sources) & eligible):
+            decision.update(status=status, reason=reason, sources=sources)
         else:
             decision["reason"] = "invalid_usage_evidence"
     return cleaned, decision
@@ -145,13 +154,15 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "full_range_covered": False,
         "model_request_chars": max_chars,
         "external_event_id": event["id"],
+        "external_event_ids": event.get("event_ids", [event["id"]]),
         "external_kind": event["kind"],
         "memory_kind": target_type,
+        "memory_kinds": event.get("memory_kinds", [target_type]),
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
         # Later public use/result is context for composing a useful question;
         # it remains separate from the source IDs that ground extracted facts.
-        "generation_extra_sources": used_by,
+        "generation_extra_sources": list(dict.fromkeys(used_by + context_ids)),
         "evidence_group": {
             "id": group_id,
             "qa_mode": "memory",
@@ -169,6 +180,47 @@ def _has_public_source(source_ids, records_by_id):
                and isinstance(records_by_id[item].get("text"), str)
                and records_by_id[item].get("text", "").strip()
                for item in source_ids)
+
+
+def _event_groups(events, records_by_id):
+    """Connect explicit task membership and revisions, never topic similarity."""
+    by_id = {event["id"]: event for event in events}
+    links = {identity: set() for identity in by_id}
+    tasks = {}
+    for event in events:
+        identity = event["id"]
+        task = event.get("task_id")
+        if task:
+            if task in tasks:
+                links[identity].add(tasks[task])
+                links[tasks[task]].add(identity)
+            tasks[task] = identity
+        for previous in event.get("supersedes", []):
+            if previous in by_id:
+                links[identity].add(previous)
+                links[previous].add(identity)
+    remaining = set(by_id)
+    for event in events:
+        if event["id"] not in remaining:
+            continue
+        members, pending = [], [event["id"]]
+        while pending:
+            identity = pending.pop()
+            if identity not in remaining:
+                continue
+            remaining.remove(identity)
+            members.append(by_id[identity])
+            pending.extend(sorted(links[identity]))
+        members.sort(key=lambda row: (max(records_by_id[source].get("order", 0)
+                                          for source in row["source_ids"]), row["id"]))
+        # The latest disclosure supplies the primary static type. All member
+        # types and original records remain available for review.
+        merged = dict(members[-1])
+        merged["event_ids"] = [row["id"] for row in members]
+        merged["memory_kinds"] = sorted({row["memory_kind"] for row in members})
+        for field in ("source_ids", "used_by", "context_ids"):
+            merged[field] = list(dict.fromkeys(source for row in members for source in row[field]))
+        yield merged
 
 
 def load_external_scopes(path, records, cutoff, max_chars=32000,
@@ -207,7 +259,8 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
             continue
         try:
             source_ids = _resolve_ids(raw.get("source_ids"), identities, "source_ids")
-            used_by = _resolve_ids(raw.get("used_by"), identities, "used_by")
+            used_by = (_resolve_ids(raw["used_by"], identities, "used_by")
+                       if raw.get("used_by") else [])
             context_ids = raw.get("context_ids", [])
             if context_ids:
                 context_ids = _resolve_ids(context_ids, identities, "context_ids")
@@ -218,6 +271,11 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
             continue
         raw = dict(raw, id=event_id, kind=kind, source_ids=source_ids,
                    used_by=used_by, context_ids=context_ids)
+        if ("task_id" in raw and (not isinstance(raw["task_id"], str) or not raw["task_id"].strip())
+                or not isinstance(raw.get("supersedes", []), list)
+                or any(not isinstance(item, str) or not item for item in raw.get("supersedes", []))):
+            rejected.append({"id": event_id, "reason": "invalid_external_relation"})
+            continue
         source_orders = [records_by_id[item].get("order", 0) for item in source_ids]
         usage_orders = [records_by_id[item].get("order", 0) for item in used_by]
         context_orders = [records_by_id[item].get("order", 0) for item in context_ids]
@@ -228,15 +286,15 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
         if not _has_public_source(source_ids, records_by_id):
             rejected.append({"id": event_id, "reason": "no_public_message_source"})
             continue
-        if min(usage_orders) <= min(source_orders):
+        if usage_orders and min(usage_orders) <= min(source_orders):
             rejected.append({"id": event_id, "reason": "usage_not_after_source"})
             continue
-        if max_groups is not None and len(scopes) >= max_groups:
-            rejected.append({"id": event_id, "reason": "external_group_budget"})
-            continue
-        scope = _event_scope(raw, records, records_by_id, cutoff, len(scopes), max_chars)
-        scopes.append(scope)
         accepted.append(raw)
+    for event in _event_groups(accepted, records_by_id):
+        if max_groups is not None and len(scopes) >= max_groups:
+            rejected.append({"id": event["id"], "reason": "external_group_budget"})
+            continue
+        scopes.append(_event_scope(event, records, records_by_id, cutoff, len(scopes), max_chars))
     return {"version": document.get("version"), "events": accepted,
             "scopes": scopes, "rejected": rejected}
 

@@ -101,13 +101,22 @@ def qa_inputs(qa_run):
             continue
         for question in read(path).get("questions", []):
             requests[question["id"]] = (input_path, question)
+    audit_path = qa_run / "qa-audit.json"
+    reviewed = {question["id"]: question
+                for question in (read(audit_path).get("questions", []) if audit_path.exists() else [])
+                if question.get("status") == "approved"}
     result = []
     for question in public:
         if question.get("status") == "approved" and question["id"] in requests:
             path, original = requests[question["id"]]
             item = {"qa": question, "generation_input": str(path.resolve()),
                     "original_candidate": original,
+                    "reviewed_candidate": reviewed.get(question["id"], original),
                     "qa_source": run_manifest.get("qa_source", "graph")}
+            workflow = (read(path).get("payload", {}).get("workflow", {})
+                        if item["qa_source"] == "external" else {})
+            if isinstance(workflow, dict) and isinstance(workflow.get("text"), str):
+                item["development_workflow"] = workflow["text"]
             if public_records is not None:
                 item["public_records"] = public_records
             result.append(item)

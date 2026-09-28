@@ -21,11 +21,13 @@ class Client:
     def ask(self, prompt, payload):
         self.calls.append((prompt, copy.deepcopy(payload)))
         self.usage.append({"status": "completed"})
+        if "WORKFLOW:" in prompt:
+            return {"workflow": {"text": "增加批量导出：读取记录 → 导出 → 汇总结果", "sources": ["资料1"]}}
         if "Correct exactly the supplied review_issue once" in prompt:
             self.alignment = "aligned"
             return parse_text_response("QA q1\nQUESTION: 扩展导出时要继续遵守哪项限制？\n"
                                        "ANSWER_POINT: 导出必须保留空值。 || SOURCES: 资料1\nEND_QA")
-        if "Return exactly two lines when a grounded focus exists" in prompt:
+        if "FOCUS:" in prompt:
             return {"focus": {"text": "确认扩展导出时仍适用的空值限制", "sources": ["资料1"]}}
         if "review_contract: target_v1" in prompt:
             if isinstance(self.alignment, BaseException):

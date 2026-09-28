@@ -99,6 +99,33 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(result["qa_source_ids"], ["original-event"])
         self.assertEqual(result["initial_events"][0]["id"], "original-event")
 
+    def test_generation_materials_keep_public_correction_closure(self):
+        save(self.root / "input.json", {
+            "payload": {"materials": [
+                {"reference": "资料1", "text": "Original rule"},
+                {"reference": "资料2", "text": "PRIVATE_MATERIAL_TEXT"},
+                {"reference": "资料3", "text": "PRIVATE_PLAN"}]},
+            "ref_to_source": {"资料1": "e1#fragment-2", "资料2": "e3",
+                              "资料3": "private", "资料4": "e4"}})
+        records = [
+            {"id": "e1", "original_id": "old", "order": 1, "kind": "message",
+             "role": "user", "text": "All tenants preserve blanks."},
+            {"id": "e2", "original_id": "tool", "order": 2, "kind": "result",
+             "role": "tool", "text": "Unrelated bulk output"},
+            {"id": "e3", "original_id": "correction", "order": 3, "kind": "message",
+             "role": "user", "text": "EU tenants must reject blanks."},
+            {"id": "e4", "original_id": "unrelated", "order": 4, "kind": "message",
+             "role": "user", "text": "Update the page style."}]
+        for sources, expected_cited in (({"e1#fragment-2"}, ["old"]),
+                ({"e1#fragment-2", "e3"}, ["old", "correction"])):
+            with self.subTest(sources=sources):
+                result = prepare_history(records, self.root / "input.json", qa_source_ids=sources)
+                self.assertEqual(result["qa_source_ids"], expected_cited)
+                self.assertEqual(result["selected_event_ids"], ["old", "correction"])
+                self.assertEqual([e["id"] for e in result["initial_events"]], ["old", "correction"])
+                self.assertEqual(result["initial_events"][1]["text"], records[2]["text"])
+                self.assertNotIn("PRIVATE_", str(result))
+
     def test_finite_source_review_uses_updates_and_checks_real_answer_quotes(self):
         history = freeze_contract(self.root, self.history, "EU rejects blanks; other tenants preserve blanks.")
         for support, quote, complete in (

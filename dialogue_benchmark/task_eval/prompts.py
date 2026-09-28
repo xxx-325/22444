@@ -22,6 +22,8 @@ def task_direction(qa_type):
         "将对应可观察行为写入 acceptance.md，供参考验证和两组执行共同使用。\n")
 
 SELECT_TASK = """围绕这条 QA 选择一个自然的新开发需求。
+给出 development_workflow 时，沿用这条业务链路细化需求，并核查它在当前仓库中是否仍是新功能。
+这条链路是出题方向，不是历史证据。不能换成另一项方便的小功能；无法成立就 stop 或 pending。
 新功能要有实际用途，且答案中的某条历史信息会改变它的可观察行为。仅主题相关不够。
 新入口必须实际应用历史约定；若调用者还得把这条约定作为参数传进来，就没有测试到记忆的作用。
 只使用 QA 的问题和答案确定记忆主题。history_sources 是原文索引，必要时查询；
@@ -143,6 +145,7 @@ HISTORY_QUALIFY = """检查新需求是否需要给定的历史信息。输入�
 public_task 和 public_repository：两组都能获得的需求与仓库信息。
 private_history_targets：已经核实的历史规则，只供你核对；无记忆组看不到。
 injected_answer：仅有记忆组收到的答案。不要把这两种私有材料算成公开信息。
+development_workflow 若有，是 QA 对应的未来业务目标；需求换成另一条业务链路时 TASK 选 uncertain。
 
 对每条固定规则依次判断：
 applicable：新功能必须用这条规则吗？yes/no/uncertain。接口若要求调用者传入这条规则的取值或映射，选 no。
@@ -256,6 +259,7 @@ acceptance.md 只替换 Check 列，其他列原样保留。Check 使用 test: t
 """
 
 TASK_REVIEW = """核对这个候选能否测试历史答案的帮助。先找信息缺口，再给结论。
+给出 development_workflow 时，需求必须实现该业务目标；换成另一条链路选 ineligible。
 public_task 是两组都能看到的需求；historical_answer 才是有记忆组收到的答案。
 evidence.sources 是审查依据，不会额外注入给有记忆组；不能拿它替代 historical_answer。
 必要历史规则若已全部写进 public_task 或仓库，选 ineligible，即使代码还未实现。
@@ -274,13 +278,14 @@ issue: clean 时写 none，否则简短说明具体问题
 END_REVIEW
 """
 
-EXTERNAL_TASK_REVIEW = """核对这个 external-only 候选是否真的需要 QA 提供的外部观测。
-public_task 是两组都能看到的自然需求；historical_answer 是只有有记忆组收到的外部观测答案。
-repository_exploration 和 repository_queries 只说明当前快照，不能替代运行结果、具体错误来源、退出码因果或日志表现。
-如果 public_task 或当前仓库已经完整写出答案中的具体观测，选 ineligible；不要把“仓库里没有搜到”当成外部事实。
-如果需求是自然的诊断、报告或回归能力，而完成它必须依据 historical_answer 中未公开的具体观测，选 clean。
-memory_gap 必须写出尚未公开、会改变实现或验收的具体观测；answer_quote 必须逐字摘自 historical_answer。
-如果需求只是主题相关、只要求修复一次故障，或答案没有具体可复用观测，选 ineligible 或 uncertain。
+EXTERNAL_TASK_REVIEW = """核对这个候选是否真的需要 QA 提供的外部规则、状态或观测。
+给出 development_workflow 时，需求必须实现该业务目标；换成另一条链路选 ineligible。
+public_task 是两组都能看到的自然需求；historical_answer 是有记忆组收到的历史答案。
+repository_exploration 和 repository_queries 只说明当前快照，不能替代历史中明确披露的外部约定、状态或实际观测。
+如果 public_task 或当前仓库已经完整写出所需历史事实，选 ineligible；不要把“仓库里没有搜到”当成外部事实。
+如果需求是自然的新功能，完成它必须依据 historical_answer 中题面未重述的有效规则或观测，选 clean。
+memory_gap 必须写出题面与仓库缺少、会改变实现或验收的具体规则、状态或观测；answer_quote 必须逐字摘自 historical_answer。
+如果需求只是主题相关、只要求复述旧结果，或答案不能改变新功能行为，选 ineligible 或 uncertain。
 只返回：
 REVIEW
 leakage: clean|ineligible|uncertain

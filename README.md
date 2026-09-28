@@ -119,7 +119,9 @@ The existing one-repair limit, review, deduplication, and repository probe remai
 | M5 · Runtime differences | Observed environment-dependent behavior | Support the relevant execution conditions |
 | M6 · Cross-session state | Still-valid prior decisions or state, including scoped corrections | Continue work from the applicable state |
 
-The producer supplies the type; the model writes only the focus, question, and
+The producer supplies the type. Separate model calls choose a future business
+workflow, identify the historical rules it needs, and write one QA. Each call
+returns short tagged text. The model writes only the direction, question, and
 source-linked answer. A useful answer changes a future implementation choice,
 behavior, boundary, or validation decision. A one-run byte total or file inventory
 alone does not qualify. A recorded receiver size limit can qualify because it
@@ -129,8 +131,11 @@ distinction. External QA has no graph-distance difficulty label.
 The dialogue producer may also save a small `external-events.json` sidecar. It
 records public dialogue source IDs for facts that arose from a user correction,
 an environment observation, a perturbation failure, a compatibility exception,
-or a completed verification, together with the later public event that used
-the fact. It contains provenance and event kind, not a second private answer.
+or a completed verification. Later public uses are optional evidence. Events
+sharing an explicit `task_id`, or linked through `supersedes`, form one group;
+`context_ids` supplies the public request and correction context. All linked
+disclosures are collected before the group budget is applied. Private scenario
+plans never supply the answer.
 
 Run `--qa-source external --external-events /path/to/external-events.json` to
 use only those events as QA seeds. This mode does not build the evidence graph
@@ -147,11 +152,18 @@ last allowed read; that decision cannot issue another query.
 `run_episode.py --episode-manifest ... --qa-source external` reads the event file
 from the package and checks its byte hash. An explicit event file must match the
 package. Each event requires a static `memory_kind` from M1–M6; this becomes the
-QA type and is retained through requirement generation and reporting.
-Evidence review also checks actual public
-use: a promise or repeated rule alone does not establish application. Missing or
-uncertain use evidence stays pending review.
-Each event enters the unified pool once, regardless of a producer's old track
+primary QA type and is retained through requirement generation and reporting.
+For a group with several disclosures, the latest supplies the primary type;
+the scope retains every member's type. Related rules have separate answer points
+within one workflow. The workflow and its original generation input accompany
+the QA into task selection, which checks that this goal is feasible and still new
+in the final repository instead of choosing an unrelated feature.
+Evidence review accepts a user-confirmed agreement without requiring past
+execution. Claims of application require a public tool result, including the outcome
+of a matching command. Relevant corrections stay in the workflow, focus, QA, review
+and task-history inputs. Repairs preserve the chosen workflow and their final source
+references. Source and request-size checks apply throughout.
+Each connected group enters the unified pool once, regardless of a producer's old track
 label. General/code options belong to graph mode. Types are reported separately
 without quotas that force all six types to appear.
 
@@ -184,6 +196,9 @@ python run_collection.py --config /path/to/collection.json \
 
 Run with the simulator's Python environment, or supply it through `--python`.
 New projects have a tested baseline and two or three consecutive feature commits.
+A private development plan connects each increment to related outside information,
+affected decisions and disclosure triggers. Scenario preparation reads this same plan;
+the dialogue starts at the baseline and implements the increments itself.
 The host checks frozen feature tests on the prior and new versions and preserves
 previous regressions. An existing project can use `prepared_config` instead of a
 business `brief`. Scenarios start independently from that project's base; each
@@ -447,6 +462,12 @@ selection, model interaction, quality checks, and the CLI. `tests/` contains
 the regression suite. `examples/` contains synthetic, non-sensitive input.
 The viewer is a local presentation of saved artifacts and is not part of the
 evidence or memory system.
+
+Run offline regressions with `python -m unittest discover -s tests -q`.
+To include the simulator-to-QA workflow contract test, use the simulator's Python
+environment and set `PYTHONPATH=/path/to/agent-session-simulator`. The test checks
+planned steps, public disclosure and correction links, QA inputs and requirement
+handoff using fixture model responses; it does not call a provider.
 
 ## Public episode packages and historical constraints
 

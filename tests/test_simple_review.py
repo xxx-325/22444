@@ -4,6 +4,7 @@ import unittest
 from dialogue_benchmark.llm import (
     generate_from_facts,
     parse_text_response,
+    repair_simple_validation_rejection,
     review_candidates,
     simple_evidence_payload,
 )
@@ -468,6 +469,8 @@ END_REVIEW""" % evidence,
         candidate = copy.deepcopy(self.candidate)
         candidate["question"] = "配置必须支持什么格式，并保留什么兼容性？"
         candidate["forbidden_points"] = []
+        candidate["_generation_focus"] = {"text": "确认导入格式与兼容要求", "sources": ["m1"]}
+        candidate["_generation_workflow"] = {"text": "增加批量配置导入", "sources": ["m1"]}
         client = TextClient([
             self.atomicity("A1=single"),
             """REVIEW q1
@@ -502,12 +505,55 @@ END_REVIEW""",
             generation_context=self.generation_context)
         self.assertEqual(result["questions"][0]["status"], "approved")
         self.assertTrue(result["questions"][0]["repair_attempted"])
+        for field in ("_generation_focus", "_generation_workflow"):
+            self.assertEqual(result["questions"][0][field], candidate[field])
         self.assertEqual(len(result["questions"][0]["answer_points"]), 2)
         self.assertEqual(result["questions"][0]["fact_ids"], ["f1", "f2"])
         self.assertEqual([item["stage"] for item in client.usage], [
             "review_relevance", "review_atomicity", "review_completeness",
             "review_evidence", "repair", "review_relevance",
             "review_atomicity", "review_completeness", "review_evidence"])
+
+    def test_validation_repair_restores_workflow_and_rejects_drift(self):
+        class WorkflowClient(TextClient):
+            def __init__(self, responses):
+                super().__init__(responses)
+                self.target_payloads = []
+
+            def ask(self, prompt, payload):
+                if "review_contract: target_v1" in prompt:
+                    self.target_payloads.append(copy.deepcopy(payload))
+                    return {"reviews": [{"id": "q1", "review_contract": "target_v1",
+                        "target_alignment": "drifted" if payload.get("workflow") else "aligned"}]}
+                return super().ask(prompt, payload)
+
+        candidate = copy.deepcopy(self.candidate)
+        candidate.update(type="M1", qa_mode="memory")
+        candidate["forbidden_points"] = []
+        context = copy.deepcopy(self.generation_context)
+        context["payload"].update(
+            focus={"text": "确认批量导入需要沿用的格式", "sources": ["资料1"]},
+            workflow={"text": "增加批量配置导入", "sources": ["资料1"]})
+        client = WorkflowClient([
+            "QA q1\nQUESTION: 查看配置统计时需要什么格式？\n"
+            "ANSWER_POINT: 配置必须支持 yaml。 || SOURCES: 资料1\nEND_QA",
+            self.atomicity("A1=single"),
+            "REVIEW q1\nreview_contract: simple_v1\ncompleteness: complete\nEND_REVIEW",
+            "REVIEW q1\nreview_contract: simple_v1\n"
+            "point_evidence: A1=supported@资料1\nEND_REVIEW",
+        ])
+        revision, reviewed = repair_simple_validation_rejection(
+            self.scope, self.facts,
+            [{"reason": "local_reference_in_public_text", "question": candidate}],
+            client, qa_mode="memory", generation_context=context)
+        self.assertEqual(reviewed["questions"], [])
+        self.assertEqual(reviewed["rejected"][0]["reason"], "answer_target_mismatch")
+        self.assertEqual(reviewed["stage_errors"], [])
+        for field in ("focus", "workflow"):
+            self.assertEqual(revision["after"]["_generation_" + field],
+                             {"text": context["payload"][field]["text"], "sources": ["m1"]})
+            self.assertEqual(client.target_payloads[0][field]["text"],
+                             context["payload"][field]["text"])
 
 
 if __name__ == "__main__":

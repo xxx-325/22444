@@ -53,6 +53,57 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in loaded["scopes"][0]["dialogue"]],
                          ["e1", "e2", "e3"])
 
+    def test_task_rules_and_later_scoped_correction_share_one_closed_group(self):
+        records = [*self.records,
+                   {"id": "e4", "order": 4, "kind": "message", "role": "user",
+                    "text": "仅客户 A 的 note 改为省略，其他客户仍保留空值。"},
+                   {"id": "e5", "order": 5, "kind": "message", "role": "user",
+                    "text": "客户 A 的其他空字段继续保留。"},
+                   {"id": "e6", "order": 6, "kind": "message", "role": "user",
+                    "text": "无关的页面样式任务。"}]
+        events = [
+            {"id": "old", "kind": "compatibility_contract", "memory_kind": "M1",
+             "task_id": "export", "source_ids": ["e1"], "used_by": ["e3"]},
+            {"id": "new", "kind": "user_correction", "memory_kind": "M6",
+             "task_id": "export-update", "source_ids": ["e4"], "supersedes": ["old"]},
+            {"id": "exception", "kind": "compatibility_contract", "memory_kind": "M1",
+             "task_id": "export-update", "source_ids": ["e5"]},
+            {"id": "unrelated", "kind": "external_observation", "memory_kind": "M2",
+             "task_id": "styling", "source_ids": ["e6"]}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": events}))
+            loaded = load_external_scopes(path, records, 6, max_groups=1)
+        self.assertEqual(len(loaded["scopes"]), 1)
+        scope = loaded["scopes"][0]
+        self.assertEqual(scope["external_event_ids"], ["old", "new", "exception"])
+        self.assertEqual(scope["external_source_ids"], ["e1", "e4", "e5"])
+        self.assertEqual(scope["memory_kinds"], ["M1", "M6"])
+        self.assertEqual([r["id"] for r in scope["dialogue"]], ["e1", "e3", "e4", "e5"])
+        self.assertEqual(loaded["rejected"], [{"id": "unrelated", "reason": "external_group_budget"}])
+
+    def test_confirmation_and_observation_have_distinct_evidence(self):
+        scope = {"dialogue": self.records, "external_source_ids": ["e1", "e2"],
+                 "external_usage_ids": ["e2", "e3"]}
+        for value, expected in [("confirmed@资料1", "confirmed"),
+                                ("confirmed@资料2", "uncertain"),
+                                ("applied@资料2", "uncertain"),
+                                ("applied@资料3", "applied")]:
+            with self.subTest(value=value):
+                _, decision = external_usage_review(
+                    {"reviews": [{"usage": value, "usage_reason": "Concrete evidence"}]},
+                    scope, {"资料1": "e1", "资料2": "e2", "资料3": "e3"})
+                self.assertEqual(decision["status"], expected)
+
+    def test_invocation_alone_does_not_prove_application(self):
+        scope = {"dialogue": [dict(id="c", kind="call", text="export --timeout 7"),
+                               dict(id="r", kind="result", text="Permission denied")],
+                 "external_usage_ids": ["c", "r"]}
+        _, decision = external_usage_review(
+            {"reviews": [{"usage": "applied@资料1", "usage_reason": "The command used the option"}]},
+            scope, {"资料1": "c", "资料2": "r"})
+        self.assertEqual(decision["status"], "uncertain")
+
     def test_all_memory_classes_keep_their_provenance(self):
         kinds = ["user_correction", "environment_observation", "perturbation_revealed",
                  "failure_avoidance", "environment_observation", "user_correction"]
@@ -141,8 +192,8 @@ class ExternalSourceTests(unittest.TestCase):
                     self.assertEqual(static_evidence_check(group, index, target)["status"],
                                      "supported")
 
-    def test_usage_requires_a_cited_public_action_or_result(self):
-        scope = {"external_usage_ids": ["e3"]}
+    def test_usage_requires_a_cited_public_result(self):
+        scope = {"external_usage_ids": ["e3"], "dialogue": self.records}
         for value, expected in [("not_applied", "not_applied"), ("uncertain", "uncertain"),
                                 ("applied@资料1", "uncertain"),
                                 ("applied@资料3,unknown", "uncertain"),
@@ -164,7 +215,8 @@ class ExternalSourceTests(unittest.TestCase):
         fixture.scope.update(external_event_id="x1", external_source_ids=["m1"],
                              external_usage_ids=["m2"])
         for usage, status in [("not_applied", "needs_review"),
-                              ("applied@资料2", "approved")]:
+                              ("applied@资料2", "needs_review"),
+                              ("confirmed@资料1", "approved")]:
             with self.subTest(usage=usage):
                 client = TextClient([fixture.atomicity(),
                     "REVIEW q1\nreview_contract: simple_v1\ncompleteness: complete\nEND_REVIEW",
@@ -201,7 +253,7 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertIsNone(projected)
         self.assertEqual(audit["reason"], "candidate_guard_over_budget")
 
-    def test_external_event_requires_public_source_and_usage(self):
+    def test_public_disclosure_does_not_require_prior_application(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "external-events.json"
             path.write_text(json.dumps({"version": 1, "events": [
@@ -213,9 +265,10 @@ class ExternalSourceTests(unittest.TestCase):
             loaded = load_external_scopes(path, self.records, 3)
 
         reasons = {row["id"]: row["reason"] for row in loaded["rejected"]}
-        self.assertIn("missing-use", reasons)
         self.assertIn("bad-source", reasons)
-        self.assertFalse(loaded["scopes"])
+        self.assertEqual(len(loaded["scopes"]), 1)
+        self.assertEqual(loaded["scopes"][0]["external_source_ids"], ["e1"])
+        self.assertEqual(loaded["scopes"][0]["external_usage_ids"], [])
 
     def test_external_event_requires_usage_after_public_source(self):
         with tempfile.TemporaryDirectory() as directory:

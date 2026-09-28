@@ -69,6 +69,22 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(budget.requests, 2)
         self.assertEqual(budget.remaining()["max_tokens"], 1500000 - 24)
 
+    def test_qa_workflow_is_direction_not_a_new_source_of_history(self):
+        direction = "增加批量交付恢复：确认状态 → 恢复交付 → 汇总结果"
+        payloads = []
+        def ask(prompt, payload, config, output):
+            payloads.append(payload.copy())
+            save(output / "usage.json", [{"prompt_tokens": 10, "completion_tokens": 2}])
+            return {"reviews": [dict(decision="pending", reason="Need repository evidence",
+                                      sources="qa", request="none")]}
+        with patch("dialogue_benchmark.task_eval.selection.ask_model", side_effect=ask):
+            result = select_task({}, self.history, self.repo, {}, self.root / "selection",
+                                 SelectionBudget(self.root, {}), workflow=direction)
+        self.assertEqual(payloads[0]["development_workflow"], direction)
+        self.assertEqual(result["evidence"]["development_workflow"], direction)
+        self.assertEqual(result["evidence"]["history_sources"],
+                         [{"source": "source1", "role": None, "answer_source": False}])
+
     def test_duplicate_default_offset_stops_pending(self):
         result, _ = self.run_selection([
             self.query(op="read", target="repo", path="api.py"),
@@ -317,6 +333,35 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["status"], "candidate")
         self.assertIn("Maple rule", str(calls[0]["history"]))
         self.assertNotIn("Unrelated follow-up", str(calls[0]["history"]))
+
+    def test_history_target_extraction_preserves_saved_public_corrections(self):
+        from dialogue_benchmark.task_eval.history import prepare_history
+        records = [
+            {"id": "e1", "original_id": "old", "order": 1, "kind": "message",
+             "role": "user", "text": "Preserve blank notes for all tenants."},
+            {"id": "e2", "original_id": "correction", "order": 2, "kind": "message",
+             "role": "user", "text": "For EU tenants only, reject blank notes."},
+            {"id": "e3", "original_id": "unrelated", "order": 3, "kind": "message",
+             "role": "user", "text": "Use a blue page background."}]
+        save(self.root / "input.json", {"payload": {"materials": [
+            {"reference": "资料1"}, {"reference": "资料2"}]},
+            "ref_to_source": {"资料1": "e1", "资料2": "e2"}})
+        history = prepare_history(records, self.root / "input.json", qa_source_ids={"e1"})
+        rows = [
+            {"id": "h1", "statement": records[0]["text"], "scope": "non-EU tenants",
+             "behavior": "preserve blanks", "sources": "source1", "supersedes": "none"},
+            {"id": "h2", "statement": records[1]["text"], "scope": "EU tenants",
+             "behavior": "reject blanks", "sources": "source2", "supersedes": "h1"}]
+        budget = SelectionBudget(self.root, {})
+        with patch.object(budget, "call", return_value={"reviews": rows}) as call:
+            result = extract_history_targets(
+                {"question": "Which blank-note rules apply to batch exports?", "type": "M6"},
+                history, {"public_goal": "Add batch export"}, {}, self.root / "closed-targets", budget)
+        self.assertEqual(result["status"], "candidate")
+        self.assertEqual([row["source"] for row in call.call_args.args[1]["history"]],
+                         ["source1", "source2"])
+        self.assertEqual(result["targets"][1]["supersedes"], ["h1"])
+        self.assertNotIn("blue page", str(call.call_args.args[1]))
 
     def test_file_protocol_preserves_nested_history_and_layout(self):
         from dialogue_benchmark.llm import parse_text_response
