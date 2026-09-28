@@ -42,8 +42,11 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
         files = {str(path.relative_to(spec)): path.read_text() for path in spec.rglob("*")
                  if path.is_file() and path.suffix in {".py", ".md", ".txt", ".sh", ".json"}
                  and path.name not in {"history.json", "history-review.md", "acceptance.json"}}
+        frozen_regression = (spec / "regression/tests").is_dir()
         sources = {}
         for name in changed_files:
+            if frozen_regression and Path(name).parts[:1] == ("tests",):
+                continue
             before, after = Path(baseline) / name, Path(candidate) / name
             diff = unified_diff(
                 before.read_text().splitlines(keepends=True) if before.is_file() else [],
@@ -59,8 +62,14 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
                           "cases": [{"id": case["id"], "status": case["status"]}
                                     for case in result.get("cases", [])]}
                     for role, result in checks.items()}
-        response = budget.call(CHECKS_REVIEW, {"criteria_and_tests": files, "changed_sources": sources,
-                              "executed_checks": outcomes}, config, output)
+        payload = {"criteria_and_tests": files, "changed_sources": sources, "executed_checks": outcomes}
+        if frozen_regression:
+            payload["execution_context"] = (
+                "Before check execution, the host replaces /workspace/candidate/tests in a disposable "
+                "candidate copy with frozen regression/tests, so commands targeting that directory "
+                "(such as existing_suite.sh) execute the frozen tests and candidate changes under "
+                "tests/ are not part of the scored suite.")
+        response = budget.call(CHECKS_REVIEW, payload, config, output)
         rows = response.get("reviews", [])
         expected = {row["id"] for row in criteria} | {"tests"}
         if len(rows) != len(expected) or {row.get("id") for row in rows} != expected:

@@ -104,6 +104,73 @@ class FrozenRegressionExecutionTests(unittest.TestCase):
 
 
 class ReviewSourceDiffTests(unittest.TestCase):
+    def test_review_excludes_candidate_tests_only_when_frozen_directory_exists(self):
+        for frozen in ("absent", "file", "directory"):
+            with self.subTest(frozen=frozen), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                spec, baseline, candidate = (root / name for name in ("spec", "base", "candidate"))
+                spec.mkdir()
+                save(spec / "acceptance.json", [{"id": "h1"}])
+                scoring_files = {
+                    "acceptance.md": "The report must show admission before recovery.\n",
+                    "test_acceptance.py": (
+                        "def test_report(candidate):\n"
+                        "    assert 'admitted' in (candidate / 'report.md').read_text()\n"),
+                    "commands/existing_suite.sh": "python -m pytest /workspace/candidate/tests\n"}
+                if frozen == "directory":
+                    scoring_files["regression/tests/test_existing.py"] = (
+                        "def test_existing(): assert True\n")
+                elif frozen == "file":
+                    (spec / "regression").mkdir()
+                    (spec / "regression/tests").write_text("Not a frozen test directory.\n")
+                for name, content in scoring_files.items():
+                    path = spec / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(content)
+                changes = {
+                    "app.py": ("VALUE = 1\n", "VALUE = 2\n"),
+                    "tests/test_existing.py": ("def test_existing(): assert True\n",
+                                               "def test_existing(): pass\n"),
+                    "tests/test_stage_03.py": (None, "def test_stage_03(): assert True\n"),
+                    "tests/test_removed.py": ("def test_removed(): assert True\n", None),
+                    "src/tests/helper.py": ("VALUE = 1\n", "VALUE = 2\n"),
+                    "tests_extra.py": ("VALUE = 1\n", "VALUE = 2\n")}
+                for name, versions in changes.items():
+                    for checkout, content in zip((baseline, candidate), versions):
+                        if content is not None:
+                            path = checkout / name
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_text(content)
+                checks = {"reference": {"status": "passed", "tests": 2, "passed": 2,
+                                       "failed": 0, "errors": 0, "skipped": 0,
+                                       "cases": [{"id": "test_acceptance::test_report", "status": "passed"},
+                                                 {"id": "command::existing_suite", "status": "passed"}]}}
+                rows = [{"id": "h1", "coverage": "unsupported",
+                         "evidence": "The report substring assertion does not verify event order."},
+                        {"id": "tests", "coverage": "complete", "evidence": "Existing suite retained."}]
+                payloads = []
+
+                def review(prompt, payload, config, output):
+                    payloads.append(payload)
+                    return {"reviews": rows}
+
+                result = review_checks(spec, baseline, candidate, list(changes), checks, {},
+                                       root / "review", SimpleNamespace(call=review))
+                self.assertEqual(result, {"status": "revise", "rows": rows})
+                payload = payloads[0]
+                expected_sources = ({"app.py", "src/tests/helper.py", "tests_extra.py"}
+                                    if frozen == "directory" else set(changes))
+                self.assertEqual(set(payload["changed_sources"]), expected_sources)
+                self.assertIn("+VALUE = 2\n", payload["changed_sources"]["app.py"])
+                self.assertEqual(payload["criteria_and_tests"], scoring_files)
+                self.assertEqual(payload["executed_checks"], checks)
+                if frozen == "directory":
+                    self.assertIn("/workspace/candidate/tests", payload["execution_context"])
+                    self.assertIn("frozen regression/tests", payload["execution_context"])
+                    self.assertIn("not part of the scored suite", payload["execution_context"])
+                else:
+                    self.assertNotIn("execution_context", payload)
+
     def test_review_keeps_changes_and_complete_checks_without_duplicating_background(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
