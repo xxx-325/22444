@@ -34,6 +34,25 @@ class ExternalClient(Client):
         return response
 
 
+class OrderChoiceClient(Client):
+    def ask(self, prompt, payload):
+        response = super().ask(prompt, payload)
+        if "WORKFLOW:" in prompt:
+            response["workflow"]["text"] = "续办 Northwind 2025-04-18-A 班次：读取订单 → 处理待办处置 → 交付汇总"
+        elif "FOCUS:" in prompt:
+            response["focus"]["text"] = "找回 Northwind 2025-04-18-A 班次 ORD-NW-101 的已选处置及适用条件"
+        elif "QUESTION: 自然问题" in prompt:
+            return parse_text_response(
+                "QA q1\nQUESTION: Northwind 2025-04-18-A 班次的 ORD-NW-101 应按哪项已确认决定继续交付？\n"
+                "ANSWER_POINT: ORD-NW-101 在该班次按 op-5 的 release/resolved 决定继续处理。"
+                " || SOURCES: 资料3\nEND_QA")
+        elif "point_evidence:" in prompt:
+            response["reviews"][0].update(
+                point_evidence="A1=supported@资料3", usage="confirmed@资料3",
+                usage_reason="仓库确认托盘数后，客户已更新该班次该订单的处置决定。")
+        return response
+
+
 class ExternalMemoryPipelineTests(unittest.TestCase):
     def test_external_fact_prompt_separates_customer_choice_from_api_specs(self):
         choice = "Maple 本次晚班作业选择每批 2 条，批次前缀 MP。"
@@ -67,6 +86,52 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertIn("do not infer a permanent policy", prompt)
         self.assertIn("Later stages assess future usefulness and final-repository recoverability", prompt)
 
+    def test_memory_focus_keeps_order_choices_without_neighboring_api_contracts(self):
+        scope, facts = self.order_choice_scope()
+        client = OrderChoiceClient()
+        saved = {}
+        generated = generate_from_facts(scope, facts, client, qa_mode="memory", target_type="M2",
+            checkpoint=lambda name, value: saved.update({name: value}))
+        self.assertEqual(generated["stage_errors"], [])
+        self.assertEqual(generated["generation_request_count"], 3)
+        focus_request = saved["focus-input.json"]
+        focus = focus_request["payload"]
+        self.assertEqual(set(focus), {"facts", "material_references", "relations", "workflow"})
+        self.assertEqual([fact["text"] for fact in focus["facts"]],
+                         [fact["statement"] for fact in facts])
+        self.assertEqual([fact["materials"] for fact in focus["facts"]], [["资料1"], ["资料1"]])
+        self.assertEqual(focus_request["ref_to_source"], saved["workflow-input.json"]["ref_to_source"])
+        self.assertEqual(focus_request["ref_to_source"], saved["qa-input.json"]["ref_to_source"])
+        self.assertEqual([item["reference"] for item in focus["material_references"]],
+                         ["资料1", "资料2", "资料3"])
+        for item in focus["material_references"]:
+            self.assertFalse({"text", "original_records", "changes"} & set(item))
+        for text in ("active_only", "append_disposition", "render_summary", "2025-04-18T16:10:00Z"):
+            self.assertNotIn(text, str(focus))
+            for name in ("workflow-input.json", "qa-input.json"):
+                self.assertIn(text, str(saved[name]["payload"]["materials"]))
+        for prompt, _ in client.calls[:3]:
+            self.assertIn("外部事实、实际已选决定或状态", prompt)
+            self.assertIn("即使写成参数或代码", prompt)
+        self.assertIn("真实对象的已选决定和逐条状态仍是事实目标", saved["focus-input.json"]["prompt"])
+
+        reviewed = review_candidates(scope, facts, generated["questions"], client,
+            qa_mode="memory", review_mode="simple", allow_repair=False)
+        self.assertEqual(reviewed["stage_errors"], [])
+        self.assertEqual(reviewed["questions"][0]["status"], "approved")
+        self.assertEqual(reviewed["questions"][0]["answer_points"][0]["sources"], ["e3"])
+        target_prompt, target_payload = client.calls[3]
+        self.assertIn("facts fix the target", target_prompt)
+        self.assertIn("Focus and workflow are proposals and context, not target authorities", target_prompt)
+        self.assertNotIn("the focus fixes the concrete object and decision", target_prompt)
+        self.assertIn("states remain historical targets even when written as parameters or code", target_prompt)
+        for payload in (target_payload, client.calls[-1][1]):
+            self.assertIn("2025-04-18T16:10:00Z", str(payload["materials"]))
+            self.assertIn("render_summary", str(payload["materials"]))
+        self.assertEqual([receipt["stage"] for receipt in client.usage], [
+            "workflow", "focus", "qa", "review_target", "review_relevance", "review_atomicity",
+            "review_completeness", "review_evidence"])
+
     def test_memory_authoring_preserves_cycle_and_hypothetical_approval(self):
         client = Client()
         generate_from_facts(self.scope("M6"),
@@ -92,8 +157,9 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         _, focus_prompt, qa_prompt = [prompt for prompt, _ in client.calls]
         self.assertIn("从给定历史中找回已经确认", focus_prompt)
         self.assertIn("不是向用户再次取得确认或询问未记录的新状态", focus_prompt)
-        self.assertIn("FOCUS: 围绕该业务链路需要找回的已确认历史规则", focus_prompt)
-        self.assertIn("focus 是需要找回的已确认历史决定", qa_prompt)
+        self.assertIn("FOCUS: 围绕该业务链路需要找回的已确认外部事实、决定或状态", focus_prompt)
+        self.assertIn("focus 是追问方向", qa_prompt)
+        self.assertIn("facts 固定本题要找回的已确认外部事实、实际已选决定或状态", qa_prompt)
         self.assertIn("只有原文记载的实际纠正才能改变答案", qa_prompt)
         for prompt in (focus_prompt, qa_prompt):
             self.assertIn("within its confirmed scope", prompt)
@@ -162,9 +228,12 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             generated = generate_from_facts(scope, [dict(id="f1", statement=old["text"], sources=["e2"])],
                 client, qa_mode="memory", target_type="M6", checkpoint=lambda name, value: saved.update({name: value}))
             self.assertEqual([u["stage"] for u in client.usage], ["workflow", "focus", "qa"])
-            for name in ("workflow-input.json", "focus-input.json", "qa-input.json"):
+            for name in ("workflow-input.json", "qa-input.json"):
                 self.assertIn(new["text"], str(saved[name]["payload"]))
                 self.assertNotIn("UNRELEASED-POLICY", str(saved[name]))
+            self.assertIn("material_references", saved["focus-input.json"]["payload"])
+            self.assertNotIn(new["text"], str(saved["focus-input.json"]["payload"]))
+            self.assertNotIn("UNRELEASED-POLICY", str(saved["focus-input.json"]))
             question = dict(generated["questions"][0], status="approved")
             save(root / "qa/manifest.json", {"qa_source": "external"})
             save(root / "qa/qa-public.json", {"questions": [question]})
@@ -215,7 +284,7 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                 self.assertEqual(result["questions"], [])
                 self.assertEqual(result["stage_status"]["qa"], "not_submitted")
 
-    def test_corrections_reach_workflow_focus_and_qa_even_with_stale_fact(self):
+    def test_correction_references_reach_focus_and_text_reaches_workflow_and_qa(self):
         scope = self.scope("M1")
         scope["dialogue"].append({"id": "e3", "kind": "message", "role": "user", "order": 3,
                                   "text": "客户 A 的 note 例外改为省略，其他空字段继续保留。"})
@@ -231,7 +300,13 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         for name in ("workflow-input.json", "focus-input.json", "qa-input.json"):
             request = saved[name]
             self.assertIn("e3", request["ref_to_source"].values())
+        for name in ("workflow-input.json", "qa-input.json"):
+            request = saved[name]
             self.assertIn("客户 A 的 note 例外", str(request["payload"]["materials"]))
+        focus_payload = saved["focus-input.json"]["payload"]
+        self.assertNotIn("materials", focus_payload)
+        self.assertNotIn("客户 A 的 note 例外", str(focus_payload))
+        self.assertEqual(focus_payload["facts"], saved["qa-input.json"]["payload"]["facts"])
         self.assertEqual(saved["focus-input.json"]["payload"]["workflow"]["text"],
                          saved["qa-input.json"]["payload"]["workflow"]["text"])
 
@@ -336,6 +411,11 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             self.assertNotIn("页面主题", str(request["payload"]["facts"]))
         self.assertEqual(saved["qa-input.json"]["payload"]["materials"],
                          saved["repair-input.json"]["payload"]["materials"])
+        self.assertNotIn("默认 None", str(saved["focus-input.json"]["payload"]))
+        for name in ("workflow-input.json", "qa-input.json", "repair-input.json"):
+            self.assertIn("默认 None", str(saved[name]["payload"]["materials"]))
+        evidence_payload = next(payload for prompt, payload in client.calls if "point_evidence:" in prompt)
+        self.assertIn("默认 None", str(evidence_payload["materials"]))
 
     def test_public_correction_context_is_not_dropped_to_fit_generation_budget(self):
         scope = self.unlinked_correction_scope(max_chars=3000, correction_suffix="有效条件。" * 2000)
@@ -425,6 +505,26 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                 "events": [], "versions": [], "model_request_chars": 32000,
                 "evidence_group": {"id": "external-x1"}}
 
+    def order_choice_scope(self):
+        scope = self.scope("M2")
+        scope["dialogue"][0]["text"] = (
+            "load_orders 的 active_only 默认 False；append_disposition 校验 action 和 resolver。\n"
+            "Northwind 2025-04-18-A 班次实际选择：\n"
+            "append_disposition(orders, 'ORD-NW-101', action='hold', resolver='op-4', resolved=False)，托盘数未确认；\n"
+            "append_disposition(orders, 'ORD-NW-102', action='release', resolver='op-4', resolved=True)，托盘数已确认。")
+        scope["dialogue"][1]["text"] = "本班次处置已记录：ORD-NW-101 hold/unresolved；ORD-NW-102 release/resolved。"
+        scope["dialogue"].append(dict(id="e3", kind="message", role="user", order=3,
+            text="仓库于 2025-04-18T16:10:00Z 确认 ORD-NW-101 托盘数；Northwind 2025-04-18-A 班次改由 "
+                 "op-5 选择 release/resolved，授权 W-NW-101。render_summary 默认 show_latest=False，旧调用保持兼容。"))
+        scope["cutoff"] = 3
+        scope["generation_extra_sources"].append("e3")
+        scope["review_guard_sources"].append("e3")
+        facts = [dict(id="f1", sources=["e1"],
+                      statement="Northwind 2025-04-18-A 班次 ORD-NW-101 已选 hold/unresolved，由 op-4 处理，托盘数未确认。"),
+                 dict(id="f2", sources=["e1"],
+                      statement="Northwind 2025-04-18-A 班次 ORD-NW-102 已选 release/resolved，由 op-4 处理，托盘数已确认。")]
+        return scope, facts
+
     def test_six_static_types_reach_generation_review_and_requirement_direction(self):
         self.assertEqual(MEMORY_TYPES, set(MEMORY_TASK_GUIDANCE))
         for kind in sorted(MEMORY_TYPES):
@@ -486,8 +586,51 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         repair, = [payload for _, payload in client.calls if "review_issue" in payload]
         self.assertEqual(repair["facts"], context["payload"]["facts"])
         self.assertEqual(repair["materials"], context["payload"]["materials"])
-        self.assertIn("external rules selected in facts", repair["review_issue"])
+        self.assertIn("selected external facts, actual decisions, or states in facts", repair["review_issue"])
+        self.assertIn("Focus is a proposal, not target authority", repair["review_issue"])
         self.assertIn("even if focus included them", repair["review_issue"])
+
+    def test_customer_named_api_contract_is_rejected_or_repaired_to_selected_choices(self):
+        for allow_repair in (False, True):
+            with self.subTest(allow_repair=allow_repair):
+                scope, facts = self.order_choice_scope()
+                client = OrderChoiceClient()
+                generated = generate_from_facts(scope, facts, client, qa_mode="memory", target_type="M2")
+                api_focus = "找回 Northwind 班次的 active_only 过滤、append_disposition 校验及 render_summary 接口契约"
+                context = generated["_repair_context"]
+                context["payload"]["focus"]["text"] = api_focus
+                candidate = dict(generated["questions"][0],
+                    question="Northwind 班次的 load_orders、append_disposition 和 render_summary 有哪些接口契约？",
+                    answer_points=[dict(text="load_orders 的 active_only 默认 False。", sources=["e1"])],
+                    _generation_focus=dict(text=api_focus, sources=["e1"]))
+                client.alignment = "drifted"
+                reviewed = review_candidates(scope, facts, [candidate], client, qa_mode="memory",
+                    review_mode="simple", allow_repair=allow_repair, generation_context=context)
+                self.assertEqual(reviewed["stage_errors"], [])
+                target_prompt, target_payload = client.calls[3]
+                self.assertIn("Choose drifted for a surrounding API contract", target_prompt)
+                self.assertIn("even if it names the same customer", target_prompt)
+                self.assertIn("facts fix the target", target_prompt)
+                self.assertNotIn("the focus fixes the concrete object and decision", target_prompt)
+                self.assertEqual(target_payload["focus"]["text"], api_focus)
+                self.assertEqual(target_payload["facts"], context["payload"]["facts"])
+                if not allow_repair:
+                    self.assertEqual(reviewed["questions"], [])
+                    self.assertEqual(reviewed["rejected"][0]["reason"], "answer_target_mismatch")
+                    self.assertEqual([receipt["stage"] for receipt in client.usage[3:]], ["review_target"])
+                    continue
+                self.assertEqual(reviewed["questions"][0]["status"], "approved")
+                self.assertEqual(reviewed["questions"][0]["answer_points"][0]["sources"], ["e3"])
+                self.assertEqual(len(reviewed["revisions"]), 1)
+                self.assertEqual(reviewed["revisions"][0]["before"]["question"], candidate["question"])
+                repair, = [payload for _, payload in client.calls if "review_issue" in payload]
+                self.assertEqual(repair["facts"], context["payload"]["facts"])
+                self.assertEqual(repair["materials"], context["payload"]["materials"])
+                self.assertIn("Focus is a proposal, not target authority", repair["review_issue"])
+                self.assertIn("2025-04-18T16:10:00Z", str(repair["materials"]))
+                self.assertEqual([receipt["stage"] for receipt in client.usage[3:]], [
+                    "review_target", "repair", "review_target", "review_relevance", "review_atomicity",
+                    "review_completeness", "review_evidence"])
 
     def test_cli_extracts_once_publishes_one_pool_and_joins_original_task_input(self):
         with tempfile.TemporaryDirectory() as directory:
