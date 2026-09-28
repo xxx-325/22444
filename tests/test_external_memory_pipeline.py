@@ -53,7 +53,9 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         new = dict(id="new", type="M6", text="Harbor omits note nulls only", scope="Harbor",
                    trigger="Code extends delivery", behavior="Omit only null note fields", supersedes=["old"])
         unreleased = dict(old, id="private", text="UNRELEASED-POLICY")
-        drafts = [dict(facts=facts, extensions=[], repository_edits=[]) for facts in ([old, unreleased], [new])]
+        drafts = [dict(request=request, facts=facts, extensions=[], repository_edits=[])
+                  for request, facts in (("Add customer deliveries", [old, unreleased]),
+                                         ("Add delivery reports", [new]))]
         public = [dict(id="goal", kind="user", text="Add customer deliveries"),
                   dict(id="u1", kind="user", text=old["text"]),
                   dict(id="goal2", kind="user", text="Add delivery reports"),

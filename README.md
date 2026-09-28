@@ -416,6 +416,8 @@ characters). Increase it when a complete external event bundle needs more room
 within the model's context window. Failed QA stages retain their evidence and
 stop the episode as `qa_generation_failed`, separately from a completed run
 with no eligible questions.
+Collections default this limit to 96,000 characters and accept
+`evaluation.model_request_chars` to configure it.
 Inputs are extracted once per unique source across overlapping subgraphs;
 static code relations are reused for QA grouping rather than repeated in fact requests.
 For a larger input, initial relationship proposals use shared-object lookups and

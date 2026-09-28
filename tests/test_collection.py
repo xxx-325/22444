@@ -85,6 +85,7 @@ class CollectionTests(unittest.TestCase):
             self.assertIn("--episode-manifest", command)
             self.assertIn("external", command)
             self.assertEqual(command[command.index("--qa-count") + 1], "8")
+            self.assertEqual(command[command.index("--model-request-chars") + 1], "96000")
             self.assertNotIn("--general-count", command)
             self.assertNotIn("--code-count", command)
             paired = getattr(self, "paired", False)

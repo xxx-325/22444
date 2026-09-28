@@ -12,7 +12,8 @@ import sys
 from .task_eval.artifacts import read, save
 
 EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
-                           parallel_workers=2, task_workers=1, revisions=3)
+                           parallel_workers=2, task_workers=1, revisions=3,
+                           model_request_chars=96000)
 
 
 def sum_usage(rows):
