@@ -306,6 +306,29 @@ python -m dialogue_benchmark.task_eval.run \
   --count 3 --task-budget 6 --revisions 5 --workers 2
 ```
 
+Repeat an admitted task without generating or changing its requirement or checks:
+
+```sh
+python -m dialogue_benchmark.task_eval.repeat \
+  --source-task runs/task-pilot/task-01 \
+  --simulator-path /path/to/agent-session-simulator \
+  --env-file /path/to/provider.env \
+  --output runs/task-01-repeat
+```
+
+This runs exactly two fresh pairs: without memory then with memory, followed by
+with memory then without memory. The source manifest supplies the model configuration
+and total request, token and time budgets; no per-response output cap is added.
+The runner verifies the original baseline and frozen specification hashes, copies
+them into a new output, and retains the original task and oracle answer. Solvers
+receive independent baseline copies; author and reference implementations are not
+copied into their workspaces. Both groups keep the existing history clarification
+mechanism. `source.json` records provenance, each `pair-NN/manifest.json` saves the
+cumulative results, and the usual reports include failures and partial pairs.
+Neither prior results nor successful repetitions select which pairs are retained.
+Interrupted runs keep completed results and mark the remaining pair pending; use a
+new output directory for another run. Invoke this command for each admitted task.
+
 The host calls the configured model once per selection decision and executes one
 structured read-only lookup/read request, retaining exact sources, ranges, and
 pagination. Selection starts from the QA, repository observations, and an index

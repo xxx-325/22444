@@ -173,6 +173,24 @@ python -m dialogue_benchmark.task_eval.run \
   --count 3 --task-budget 6 --revisions 5 --workers 2
 ```
 
+已准入的冻结需求可直接复测，不重新生成需求或修改验收：
+
+```sh
+python -m dialogue_benchmark.task_eval.repeat \
+  --source-task runs/task-pilot/task-01 \
+  --simulator-path /path/to/agent-session-simulator \
+  --env-file /path/to/provider.env \
+  --output runs/task-01-repeat
+```
+
+每次固定执行两轮全新成对试验：首轮先无记忆后有记忆，次轮顺序反转。
+模型配置及总请求数、token、时间预算沿用源 manifest，不增加单次输出上限。
+程序核验原基线与冻结规范的哈希，在新输出目录复制输入，沿用原题面及 oracle 答案。
+各 solver 获得独立基线副本，工作区不含作者或参考实现；两组保留原有历史澄清机制。
+`source.json` 记录来源，每轮 `pair-NN/manifest.json` 保存累计结果，原有报告列出失败与未完成的成对试验。
+不依据原试验结果或复测成功与否筛选保留的轮次。中断时保留已有结果，尚未开始的一轮标为 pending；
+再次运行须使用新输出目录。对每个准入需求分别调用此命令。
+
 配置的模型读取历史 QA、生成该 QA 时实际收到的材料，以及对话结束后的只读仓库，提出新需求、测试和验收标准。独立 Code Agent 实现需求，验收者检查基线、参考实现和测试质量。默认最多修正五次，保留每次失败记录。
 历史来源与答案覆盖通过一次模型请求核对，输入为引用原文、公开对话、冻结规则和实际答案。决定与引用保存在 `history-review/`，来源不支持或答案不完整时停止入选。验收者未完成时保存错误和用量并停止构造，不在缺少审核结论时重新出题。
 测试作者只接收固定验收与历史条款；原始来源保留给资格审核和独立预检。
