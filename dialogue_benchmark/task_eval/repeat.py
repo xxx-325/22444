@@ -124,8 +124,10 @@ def main(argv=None):
         raise
     finally:
         persist()
-        if root is not None:
-            save(root / "manifest.json", manifest)
+        for row in manifest["tasks"]:
+            pair_root = output / row["task"]
+            if pair_root.is_dir():
+                save(pair_root / "manifest.json", manifest)
     print("Frozen task repetitions complete:", output, flush=True)
     return int(any(row["status"] == "error" for row in manifest["tasks"]))
 
