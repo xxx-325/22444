@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from dialogue_benchmark.task_eval.artifacts import fingerprint, read, save
+from dialogue_benchmark.task_eval.artifacts import fingerprint, qa_fingerprint, read, save
 from dialogue_benchmark.task_eval.repeat import main
 from dialogue_benchmark.task_eval.versions import pin_baseline
 
@@ -197,6 +197,14 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         manifest = read(self.output / "manifest.json")
         self.assertEqual(manifest["status"], "error")
         self.assertEqual(manifest["tasks"][1]["status"], "pending")
+
+    def test_same_id_answer_edit_is_rejected_before_repetition(self):
+        save(self.task / "frozen.json", dict(self.receipt, qa_sha256=qa_fingerprint(self.qa)))
+        save(self.task / "author-reference/qa.json", dict(self.qa, answer_points=["Different answer"]))
+        with self.assertRaisesRegex(ValueError, "Frozen QA changed"):
+            main(self.args())
+        self.assertFalse(self.calls)
+        self.assertFalse(self.output.exists())
 
     def test_existing_output_is_retained(self):
         self.output.mkdir()

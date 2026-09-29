@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from dialogue_benchmark.llm import parse_text_response
-from dialogue_benchmark.task_eval.artifacts import copy_tree, read, save, fingerprint
+from dialogue_benchmark.task_eval.artifacts import copy_tree, read, save, fingerprint, qa_fingerprint
 from dialogue_benchmark.task_eval.checks import acceptance_items, assess_acceptance, check_history_mutations, run_checks
 from dialogue_benchmark.task_eval.run import construct, evaluate, freeze, inspect_acceptance, prepare_test_reference
 from dialogue_benchmark.task_eval.runtime import review_checks, review_task, write_history_mutation
@@ -135,6 +135,15 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(inspector.call_count, 2)
         self.assertEqual(result["without_memory"]["result"], "failed")
         self.assertEqual(result["with_memory"]["result"], "passed")
+        self.assertFalse(result["with_memory"]["history_available"])
+
+    def test_changed_qa_is_rejected_before_evaluation(self):
+        receipt = {"qa_sha256": qa_fingerprint(self.item["qa"])}
+        self.item["qa"]["answer_points"] = ["Different historical answer"]
+        with patch("dialogue_benchmark.task_eval.run.run_agent") as agent:
+            with self.assertRaisesRegex(ValueError, "Frozen QA changed"):
+                evaluate(self.item, self.root, self.baseline, receipt, {}, {}, 0)
+        agent.assert_not_called()
 
     def test_failed_exploration_retains_attempted_usage(self):
         self.item["qa"]["question"] = "Which historical report rule applies?"

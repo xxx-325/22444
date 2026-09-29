@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 
 from . import prompts
-from .artifacts import copy_tree, fingerprint, labels, qa_inputs, read, save, write_diff
+from .artifacts import copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs, read, save, write_diff
 from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
 from .metrics import compare_trials
 from .runtime import configure, review_task, review_checks, repair_tests, write_tests, write_history_mutation, run_agent
@@ -707,6 +707,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             save(root / "construction.json", attempts)
             receipt = freeze(final_spec, root / "frozen", baseline)
             receipt.update(qa_id=item["qa"]["id"], accepted_attempt=attempt,
+                           qa_sha256=qa_fingerprint(item["qa"]),
                            validation=record["validation"],
                            baseline_checks=baseline_checks, reference_checks=reference_checks)
             if history:
@@ -728,6 +729,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
 
 
 def evaluate(item, root, baseline, receipt, config, agent_options, index):
+    if "qa_sha256" in receipt and receipt["qa_sha256"] != qa_fingerprint(item["qa"]):
+        raise ValueError("Frozen QA changed before evaluation")
     spec = root / "frozen"
     task = (spec / "task.md").read_text()
     items = read(spec / "acceptance.json")
@@ -760,6 +763,7 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
         result[condition] = {"result": status, "solver_status": solved["status"],
                              "judge_status": judged["status"],
                              "metrics": solved["metrics"], "checks": checks,
+                             "history_available": history is not None,
                              "acceptance": acceptance, "changed_files": changed,
                              "judge_evidence": verdict, "trial": trial.name}
         counterexample = judge / "workspace/checks/counterexample.md"

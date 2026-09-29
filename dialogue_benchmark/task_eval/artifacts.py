@@ -23,6 +23,11 @@ def read(path):
     return load(path)
 
 
+def qa_fingerprint(question):
+    return hashlib.sha256(json.dumps(question, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def install_candidate_fixture(directory):
     """Provide the same repository location in authoring and scored executions."""
     directory = Path(directory)

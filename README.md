@@ -320,10 +320,11 @@ This runs exactly two fresh pairs: without memory then with memory, followed by
 with memory then without memory. The source manifest supplies the model configuration
 and total request, token and time budgets; no per-response output cap is added.
 The runner verifies the original baseline and frozen specification hashes, copies
-them into a new output, and retains the original task and oracle answer. Solvers
+them into a new output, and retains the original task and oracle answer. New frozen
+receipts also bind the QA content; changing an answer requires a new task freeze. Solvers
 receive independent baseline copies; author and reference implementations are not
-copied into their workspaces. Both groups keep the existing history clarification
-mechanism. `source.json` records provenance, each `pair-NN/manifest.json` saves the
+copied into their workspaces. Repetitions preserve the source task's history-channel
+availability. `source.json` records provenance, each `pair-NN/manifest.json` saves the
 cumulative results, and the usual reports include failures and partial pairs.
 Neither prior results nor successful repetitions select which pairs are retained.
 Interrupted runs keep completed results and mark the remaining pair pending; use a
@@ -457,10 +458,12 @@ Static QA evidence marked `unknown` may proceed to semantic QA review; explicit
 replaces task eligibility review.
 
 Both fresh solvers start from the same pinned code. Only the memory condition
-receives the QA answer. Both can explicitly request history; the responder answers
-only that question from the same frozen public history, then resumes the session.
-Normal completion does not invoke the responder. Asking history is counted as an
-interaction, not a task failure.
+receives the QA answer. Tasks with a frozen historical contract let both solvers
+explicitly request history; the responder answers only that question from the same
+frozen public history, then resumes the session. Normal completion does not invoke
+the responder. Asking history is counted as an interaction, not a task failure.
+External-only tasks use answer injection without a history responder; reports mark
+that channel as unavailable.
 
 Test-linked acceptance results are computed directly. The Judge checks only
 predeclared inspection items with resolvable file/line evidence. Historical
@@ -583,7 +586,7 @@ the surrounding discussion stage. `--source-event EVENT_ID` or
 roots in either track. Other facts remain available for related expansion;
 selecting a root does not make nearby facts causal evidence.
 
-For these packages, task construction freezes source-backed historical statements,
+In graph mode, task construction from these packages freezes source-backed historical statements,
 their applicable scopes and explicit replacement links in `history.json`. A later
 rule overrides only its stated scope. Source review checks the public sources
 and updates; the existing per-rule qualification checks the exact QA answer
@@ -593,7 +596,7 @@ completed construction work. The informed reference proves feasibility. `--desig
 runs an independent no-memory construction probe; its success is not an admission
 requirement. The probe does not establish a scored route or alter task admission.
 
-The two scored conditions remain no memory and oracle QA answers. Both can ask
+The two scored conditions remain no memory and oracle QA answers. With this frozen contract, both can ask
 the same read-only responder for frozen historical information, continuing the
 same Code conversation. It answers only an actual question supported by the
 frozen sources; it cannot inspect candidate code or invent current environment

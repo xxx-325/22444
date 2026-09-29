@@ -40,7 +40,8 @@ def write_report(output, manifest):
             m = trial.get("metrics", {})
             lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
                 task["task"], trial.get("information_condition", condition), trial["result"],
-                trial.get("history_question_count", "not saved"), m.get("tool_calls", "not saved"),
+                ("unavailable" if trial.get("history_available") is False else
+                 trial.get("history_question_count", "not saved")), m.get("tool_calls", "not saved"),
                 m.get("file_view_calls", "not saved"), m.get("shell_read_or_search_calls", "not saved"),
                 m.get("total_tokens", "not saved")))
     lines += ["", "## Aggregate execution costs", "",
@@ -60,7 +61,9 @@ def write_report(output, manifest):
             condition, len(trials),
             "/".join(str(sum(t["result"] == v for t in trials)) for v in ("passed", "failed", "uncertain")),
             "%.1f%%" % (100 * rates[condition]) if trials else "—",
-            sum(questions) if trials and all(isinstance(v, int) for v in questions) else "not saved",
+            (sum(questions) if trials and all(isinstance(v, int) for v in questions) else
+             "unavailable" if trials and all(t.get("history_available") is False for t in trials)
+             else "not saved"),
             total("tool_calls"), total("file_view_calls"), total("shell_read_or_search_calls"),
             str(total("total_tokens")) + ("" if all(t.get("metrics", {}).get("usage_complete") for t in trials) else " (incomplete)"),
             sum(r["tokens"] for r in responder) if trials and all(r and r.get("usage_complete") for r in responder) else "not saved"))

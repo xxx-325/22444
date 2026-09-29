@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from .artifacts import copy_tree, read, save
+from .artifacts import copy_tree, qa_fingerprint, read, save
 from .metrics import compare_trials
 from .report import write_report
 from .run import evaluate, unchanged
@@ -16,6 +16,8 @@ def source_inputs(task):
     manifest = read(task.parent / "manifest.json")
     receipt = read(task / "frozen.json")
     qa = read(task / "author-reference/qa.json")
+    if "qa_sha256" in receipt and receipt["qa_sha256"] != qa_fingerprint(qa):
+        raise ValueError("Frozen QA changed before repetition")
     baseline = Path(manifest["baseline"]).resolve()
     version = baseline_version(baseline)
     if (receipt.get("validation", {}).get("VERDICT") != "accept"
