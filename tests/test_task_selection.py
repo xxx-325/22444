@@ -688,6 +688,28 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["status"], "uncertain")
         self.assertEqual(result["issue"], "historical_answer_incomplete")
 
+    def test_history_review_resolves_multiple_sources_without_accepting_unknown_ids(self):
+        from dialogue_benchmark.llm import parse_text_response
+        from dialogue_benchmark.task_eval.runtime import review_task
+        evidence = {"history_targets": [{"id": "h1", "sources": ["event1"]}],
+                    "repository_exploration": "The repository supports configurable rules."}
+        for sources, expected in (("task;repository_exploration", "clean"),
+                                  ("task,repository_exploration", "clean"),
+                                  ("task;invented_source", "uncertain")):
+            with self.subTest(sources=sources):
+                response = parse_text_response(
+                    "H h1 | yes | none | sufficient | event1 | " + sources
+                    + " | Exact historical fact\nTASK | clean")
+                with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response):
+                    result = review_task("Use the prior agreement", "Exact historical fact", {},
+                                         self.root / "multi-source-review", evidence=evidence)
+                self.assertEqual(result["status"], expected)
+                if expected == "clean":
+                    self.assertEqual(result["history_rows"][0]["public_sources"],
+                                     ["task", "repository_exploration"])
+                else:
+                    self.assertIn("unknown_public_source", result["issue"])
+
     def test_history_review_separates_private_rules_from_public_evidence(self):
         from dialogue_benchmark.task_eval.runtime import review_task
         evidence = {"history_targets": [{"id": "h1", "scope": "Maple exports on 2025-06-11",

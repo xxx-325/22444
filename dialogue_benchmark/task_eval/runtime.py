@@ -254,7 +254,8 @@ def _review_history_targets(task, answer, config, output, evidence, budget):
         protocol = (HISTORY_QUALIFY.replace("HISTORY_QUALIFY_ROWS", "\n".join(
                         row_template % target_id for target_id in target_ids))
                     + "\n历史来源只能使用：" + ",".join(allowed_history_sources or ["none"])
-                    + "。公开来源只能使用：" + ",".join(["task", *allowed_public_sources]) + "。\n")
+                    + "。公开来源只能使用：" + ",".join(["task", *allowed_public_sources])
+                    + "。多个来源用英文逗号分隔，没有来源写 none。\n")
         response = (budget.call if budget else ask_model)(protocol, payload, config, output)
         history_rows = response.get("history_reviews", [])
         task_row = response.get("task_review")
@@ -338,7 +339,7 @@ def _comma_refs(value):
         return []
     if isinstance(value, list):
         return [item for item in value if isinstance(item, str) and item]
-    return [item.strip() for item in str(value).split(",") if item.strip()]
+    return [item.strip() for item in str(value).replace(";", ",").split(",") if item.strip()]
 
 
 def review_task(task, answer, config, output, *, evidence=None, budget=None):
