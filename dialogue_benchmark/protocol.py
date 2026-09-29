@@ -29,16 +29,16 @@ MEMORY_TYPE_GUIDANCE = {
 }
 MEMORY_TYPES = frozenset(MEMORY_TYPE_GUIDANCE)
 MEMORY_QA_RULES = """
-The answer must determine behavior within one future business workflow.
+The answer must determine one concrete decision within one future business workflow.
 Use that workflow only to identify a useful situation, not as a task specification
 to paste into the question. Ask a short, natural follow-up about the missing history.
-Several related historical rules may be necessary; keep each rule and its condition
-in a separate answer point.
+Several historical facts may jointly determine that one decision; keep each
+necessary rule and its condition in a separate answer point.
 Ask for the missing historical decision, not a general inventory of requirements.
 Only ask separately about applicability when the evidence contains distinct cases;
 then each answer must explicitly pair a case with its rule. Do not append a generic
 conditions question to a fixed situation. Express each rule once, without paraphrase points.
-Every point must change a decision in that same workflow.
+Every point must change that same decision. Sharing a workflow does not make independent decisions one target.
 An isolated file inventory, byte total from one run, or test count is not such a decision.
 Do not append a calculation of example outputs or counts to a question about a rule.
 Use examples to identify its meaning or scope, not as extra recall targets.

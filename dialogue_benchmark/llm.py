@@ -1249,7 +1249,7 @@ SIMPLE_CODE_FOCUS_RULES = SIMPLE_CODE_QA_RULES
 MEMORY_WORKFLOW_PROMPT = """在给定历史已确认的客户、对象、周期和条件内，选择一项尚未完成、可验收的后续业务工作。
 输入是已公开的历史原文和事实。用一句话说明业务输入、处理步骤和交付结果，保留完成目标所需的完整链路。
 可以复用已有能力；只有完成工作确实缺少能力时才提出开发，不为应用历史决定另造函数。
-facts 是本次要考查的外部事实、实际已选决定或状态，业务链路必须用到这些具体内容；materials 用于理解其条件、使用和后续纠正。
+facts 是可选的外部事实、实际已选决定或状态集合，不是必答清单。业务链路只需用到其中一个会影响具体行为的决定及其必要条件；materials 用于理解其条件、使用和后续纠正。
 客户对具体订单、作业或班次的真实选择即使写成参数或代码，也不是 API 样例，不得改成通用接口契约。
 所需历史决定必须已经能从材料找回，不以取得未记录的新批准或新确认为前提。
 假设中的后续批准不是已经发生的更新或局部纠正。
@@ -1263,30 +1263,32 @@ SOURCES: 资料1,资料2
 没有合适链路只输出 NO_QA。
 """
 
-MEMORY_FOCUS_PROMPT = """针对已选 workflow，从给定历史中找回已经确认的外部事实、实际已选决定或状态及适用范围，作为自然追问方向。
+MEMORY_FOCUS_PROMPT = """针对已选 workflow，从给定历史中找回已经确认的外部事实、实际已选决定或状态，选择其中一个会改变后续具体行为的决定作为自然追问方向。
 TARGET_DEFINITION
-一题可以需要多条共同决定该链路行为的历史信息。
-以 facts 的选定内容为追问对象，workflow 只作业务背景；不从来源元数据推断邻近的接口行为或其他需求。
+facts 是候选集合，不要求全部覆盖；focus 固定一个客户、对象和适用范围内的一项明确决定。
+只有共同决定同一选择的条件、例外或纠正才合并；同一来源、客户或业务链路中的独立决定不要拼成一题。
+workflow 只作业务背景；不从来源元数据推断邻近的接口行为或其他需求。
 客户对具体订单、作业或班次的实际选择和状态不是样例，即使写成参数或代码也不能降为示例或改问通用 API 契约。
 保留已记录的条件和局部例外，不把旧执行结果扩成未来固定要求；实际答案和后续纠正在 QA 阶段依据原文核实。
-focus 说明需要找回的已确认历史，不给出答案，不另选开发目标，不收集无关内容。
-这是历史检索任务，不是向用户再次取得确认或询问未记录的新状态。假设样例的计算和总计数不作为额外问题；真实对象的已选决定和逐条状态仍是事实目标。
+focus 说明要找回的决定及范围，不给出答案、罗列材料内容或另选开发目标。
+这是历史检索任务，不是向用户再次取得确认或询问未记录的新状态。假设样例的计算和总计数不作为额外问题；真实对象的已选决定和状态仍可作为候选。
 严格输出两行：
-FOCUS: 围绕该业务链路需要找回的已确认外部事实、决定或状态
+FOCUS: 客户、对象和适用范围内需要找回的一项已确认决定或状态
 SOURCES: 资料1,资料2
-没有足够公开依据只输出 NO_QA。
+候选中没有符合固定任务、会影响后续具体行为的已确认决定，只输出 NO_QA。
 """
 
 MEMORY_QA_PROMPT = """根据输入生成一道中文问答。固定任务：TARGET_DEFINITION。
-workflow 是后续业务场景，focus 是追问方向，facts 固定本题要找回的已确认外部事实、实际已选决定或状态；materials 原文才是答案依据。
-问题必须考查 facts 的选定内容；只有原文记载的实际纠正才能改变答案。不能改问相邻的接口行为、其他需求或实现细节。
+workflow 只作业务背景，focus 从 facts 中选择并固定本题的一个追问对象和决定。facts 是允许选择的外部事实、实际已选决定或状态集合，不是必答清单；materials 原文才是答案依据。
+只回答 focus 选中的决定及其必要条件和例外，未选中的 facts 不追加为答案；只有原文记载的实际纠正才能改变答案。
+focus 只有在 facts 所述外部候选范围内才有效，不能授权改问相邻的接口行为、其他需求或编造决定。
 客户对具体订单、作业或班次的实际选择和状态即使写成参数或代码，也不是样例；不能换成带客户名的通用 API 契约。
 题干只需点明客户、场景和要找回的历史内容，不复述 workflow 的目标及每个步骤，不写成开发需求。
-共同决定其行为的几条历史信息放在同一道题的答案中，不追加样例输出或计数计算题。
+共同决定同一选择的几条历史信息放在同一道题的答案中，不追加样例输出或计数计算题。
 不要拆成多道语法、参数或数值小题。题干不透露历史答案。
 每行 ANSWER_POINT 写一条有来源的有效事实、决定或状态，保留条件与例外；不重复同义内容。
 一条规则或一项决定的完整允许集合或完整映射保留在同一个答案点中，不按元素拆开。
-两个独立要求分两行；规则与文件交付要求分行，每个独立计数字段也分行。
+与所选决定无关的独立要求、文件交付要求或计数不要加入答案。
 只使用实际公开的内容，区分用户约定、建议和实测；后续纠正仅替代其适用范围。
 只输出一个 QA 块，不输出类型、难度、解释、JSON或Markdown：
 QA q1
@@ -1294,7 +1296,7 @@ QUESTION: 自然问题
 ANSWER_POINT: 一条历史事实、决定或状态及其适用条件 || SOURCES: 资料1,资料2
 END_QA
 按需要增加 ANSWER_POINT 行；资料编号只放在 SOURCES 后。
-无法从材料回答时只输出 NO_QA。
+没有有用的已确认候选，或无法从材料回答时，只输出 NO_QA。
 """ + SIMPLE_TEMPORAL_WORDING_RULE + MEMORY_QA_RULES
 
 SIMPLE_GENERAL_FOCUS_RULES = """
@@ -2257,16 +2259,18 @@ def _target_review_request(scope, sources, facts, candidate, qa_mode):
         prompt = prompt.replace(
             "If supplied, the focus fixes the concrete object and decision. Choose aligned only\n"
             "when the question asks to recover the required historical decision for that object.",
-            "The selected external facts, actual choices, and states in facts fix the target.\n"
-            "Focus and workflow are proposals and context, not target authorities.\n"
-            "Choose aligned only when the question recovers those facts or their recorded\n"
-            "scoped corrections for the same object and scope in one future business workflow.")
+            "Facts are the allowed external candidate set, not a checklist to cover.\n"
+            "If supplied, focus fixes the selected object, scope, and one decision within facts.\n"
+            "Choose aligned only when the question recovers that decision or its recorded\n"
+            "scoped corrections. Other facts may remain unused; the future business workflow "
+            "is context only.")
         prompt += (
             "\nChoose drifted for a surrounding API contract or unrelated rule, even if "
             "it names the same customer, belongs to workflow, or appears in focus. "
             "Actual customer, order, or job choices and recorded states remain historical "
-            "targets even when written as parameters or code, not hypothetical samples. Several related facts "
-            "for the same decision are aligned, not mixed. An isolated file "
+            "targets even when written as parameters or code, not hypothetical samples. Several facts "
+            "jointly needed for the same decision are aligned. Choose mixed for independently "
+            "answerable decisions even when they share a source, customer, or workflow. An isolated file "
             "inventory, byte total from one run, or test count is not a decision; "
             "a recorded external size limit can be useful for future output. "
             "Example calculations are not additional historical targets.")
@@ -2500,10 +2504,11 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
             payload["review_issue"] = _simple_repair_issue(failure)
             if qa_mode == "memory" and failure.get("reason") == "answer_target_mismatch":
                 payload["review_issue"] = (
-                    "Keep the question about the selected external facts, actual decisions, or states "
-                    "in facts and their recorded scoped corrections. Focus is a proposal, not target "
-                    "authority. Remove surrounding API contracts or unrelated rules from the question "
-                    "and answer, even if focus included them. Keep workflow as context only.")
+                    "Restore the one decision selected by focus from the external candidates in facts, "
+                    "with its recorded scope and corrections. Leave unselected facts unused. Remove "
+                    "surrounding API contracts or unrelated rules, even if focus included them. "
+                    "If focus contains no useful confirmed external decision, return NO_QA. "
+                    "Keep workflow as context only.")
             repair_prompt = prompt + "\n\n" + SIMPLE_REPAIR_PROMPT
             _check_simple_request_budget(repair_prompt, payload, budget)
             save("repair-input.json", {"system_prompt": SYSTEM, "prompt": repair_prompt, "payload": payload,
