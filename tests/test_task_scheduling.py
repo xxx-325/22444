@@ -28,6 +28,25 @@ class TaskSchedulingTests(unittest.TestCase):
             self.assertTrue(manifest["evaluator_version"]["package_sha256"])
             self.assertEqual(manifest["execution"]["agent_requests"], 80)
             self.assertEqual(manifest["execution"]["agent_seconds"], 1200)
+            self.assertEqual(manifest["config"]["model_request_chars"], 60000)
+
+    def test_configured_request_limit_reaches_construction_and_saved_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "source/workspace/candidate"
+            baseline.mkdir(parents=True)
+            (baseline / "a.py").write_text("value = 1\n")
+            with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=[
+                    {"qa": {"type": "constraint_followthrough", "id": "q1"}}]), \
+                 patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \
+                 patch("dialogue_benchmark.task_eval.run.construct", return_value=None) as construct:
+                main(["--simulator-path", str(root), "--source-run", str(root / "source"),
+                      "--qa-run", str(root), "--env-file", str(root / ".env"),
+                      "--output", str(root / "output"), "--count", "1",
+                      "--model-request-chars", "96000"])
+            config = construct.call_args.args[3]
+            self.assertEqual(config["model_request_chars"], 96000)
+            self.assertEqual(read(root / "output/manifest.json")["config"], config)
 
     def test_failed_requirement_does_not_consume_completed_target(self):
         with tempfile.TemporaryDirectory() as directory:

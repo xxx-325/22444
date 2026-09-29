@@ -736,9 +736,12 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--agent-requests", type=int, default=80)
     parser.add_argument("--agent-tokens", type=int, default=1500000)
+    parser.add_argument("--model-request-chars", type=int, default=60000,
+                        help="Maximum serialized task-construction request size, including evidence and prompt")
     args = parser.parse_args(argv)
     task_budget = args.task_budget if args.task_budget is not None else args.count * 2
-    if min(args.count, args.workers, args.agent_requests, args.agent_tokens) < 1 or args.revisions < 0:
+    if min(args.count, args.workers, args.agent_requests, args.agent_tokens,
+           args.model_request_chars) < 1 or args.revisions < 0:
         parser.error("Counts and budgets must be positive; revisions must be nonnegative")
     if task_budget < 1:
         parser.error("Task budget must be positive")
@@ -758,6 +761,7 @@ def main(argv=None):
             parser.error("Reusing preparation requires its exact QA and --count 1")
     config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file,
                        **({"control_config": args.control_config} if args.control_config else {}))
+    config["model_request_chars"] = args.model_request_chars
     baseline = args.baseline.resolve() if args.baseline else output / "baseline"
     if args.baseline:
         version = baseline_version(baseline)

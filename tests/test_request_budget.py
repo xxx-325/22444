@@ -2,10 +2,15 @@
 
 import io
 import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from dialogue_benchmark import llm
+from dialogue_benchmark.task_eval.artifacts import read
+from dialogue_benchmark.task_eval.runtime import ask_model, write_tests
 
 
 class RequestBudgetTests(unittest.TestCase):
@@ -66,6 +71,71 @@ class RequestBudgetTests(unittest.TestCase):
         self.assertGreater(caught.exception.details["request_chars"], 96000)
         self.opener.open.assert_called_once()
         self.assertEqual(len(self.client.usage), 1)
+
+    def test_task_host_calls_use_the_same_serialized_request_limit(self):
+        config = {"judge": {"base_url": "https://example.invalid", "model": "test",
+                            "key_env": "BENCHMARK_API_KEY"}}
+        size = llm.request_size("test", self.payload)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for limit in (None, size - 1):
+                settings = dict(config, **({"model_request_chars": limit} if limit else {}))
+                with self.subTest(limit=limit), self.assertRaises(llm.ModelStageError) as caught:
+                    ask_model("test", self.payload, settings, root / str(limit))
+                self.assertEqual(caught.exception.details,
+                                 {"request_chars": size, "limit_chars": limit or 60000})
+            self.opener.open.assert_not_called()
+            self.responses("NO_QA")
+            self.assertEqual(ask_model("test", self.payload, dict(config, model_request_chars=size),
+                                       root / "allowed"), {"questions": []})
+            self.assertEqual(read(root / "allowed/usage.json")[0]["request_chars"], size)
+            self.assertEqual(read(root / "allowed/input.json")["payload"], self.payload)
+        self.assert_private_budget()
+        sent = json.loads(self.opener.open.call_args.args[0].data)
+        self.assertNotIn("max_tokens", sent)
+        self.assertNotIn("max_output_tokens", sent)
+
+    def test_task_writer_keeps_full_60584_byte_snapshot_under_configured_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline, spec = root / "baseline", root / "spec"
+            (baseline / "tests").mkdir(parents=True)
+            spec.mkdir()
+            source = "VALUE = 1\n"
+            regression = "def test_existing(): assert True\n"
+            regression += "#" + "x" * (60584 - len(source) - len(regression) - 2) + "\n"
+            (baseline / "entry.py").write_text(source)
+            (baseline / "tests/test_existing.py").write_text(regression)
+            (spec / "task.md").write_text("Add the requested feature")
+            (spec / "acceptance.md").write_text("Preserve existing behavior")
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test",
+                                "key_env": "BENCHMARK_API_KEY"}}
+            budget = SimpleNamespace(call=ask_model)
+            self.assertEqual(sum(path.stat().st_size for path in baseline.rglob("*.py")), 60584)
+            self.assertIsNone(write_tests(spec, baseline, config, root / "default", budget))
+            self.opener.open.assert_not_called()
+
+            config["model_request_chars"] = 96000
+            self.responses("FILE test_acceptance.py\ndef test_feature(): assert True\nEND_FILE\n"
+                           "FILE acceptance.md\nExecutable checks\nEND_FILE")
+            result = write_tests(spec, baseline, config, root / "author", budget)
+            self.assertEqual(result["status"], "finished")
+            self.opener.open.assert_called_once()
+            payload = read(root / "author/input.json")["payload"]
+            self.assertEqual(payload["repository"],
+                             {"entry.py": source, "tests/test_existing.py": regression})
+            size = read(root / "author/usage.json")[0]["request_chars"]
+            self.assertGreater(size, 60000)
+            self.assertLess(size, 96000)
+            self.assertEqual((spec / "regression/tests/test_existing.py").read_text(), regression)
+            self.assertEqual((baseline / "tests/test_existing.py").read_text(), regression)
+            self.assertIn("/workspace/candidate/tests", (spec / "commands/existing_suite.sh").read_text())
+
+            # The snapshot fits, but requirements and prompt still count toward the limit.
+            (spec / "task.md").write_text("Additional requirements " + "x" * 36000)
+            self.assertIsNone(write_tests(spec, baseline, config, root / "oversized", budget))
+            self.opener.open.assert_called_once()
+        self.assert_private_budget()
 
     def test_unconfigured_workflow_still_fails_before_transport(self):
         scope = {key: value for key, value in self.scope.items()

@@ -96,7 +96,7 @@ class EpisodeRunnerTests(unittest.TestCase):
                 return 0
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=generated) as qa, \
-                 patch("run_episode.run_tasks", return_value=0), \
+                 patch("run_episode.run_tasks", return_value=0) as tasks, \
                  patch("run_episode.render"), patch("run_episode.compact_run"):
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                                        "--env-file", str(root / ".env"), "--output", str(root / "run"),
@@ -106,6 +106,9 @@ class EpisodeRunnerTests(unittest.TestCase):
             self.assertEqual(args[args.index("--qa-source") + 1], "external")
             self.assertEqual(args[args.index("--qa-count") + 1], "40")
             self.assertEqual(args[args.index("--model-request-chars") + 1], "96000")
+            task_args = tasks.call_args.args[0]
+            self.assertEqual(task_args[task_args.index("--model-request-chars") + 1], "96000")
+            self.assertEqual(read(root / "run/pipeline.json")["parameters"]["model_request_chars"], 96000)
             self.assertEqual(args[args.index("--request-timeout") + 1], "1800")
             self.assertNotIn("--qa-mode", args)
             self.assertNotIn("--general-count", args)

@@ -40,7 +40,7 @@ def main(argv=None):
     parser.add_argument("--task-budget", type=int, default=24)
     parser.add_argument("--parallel-workers", type=int, default=10)
     parser.add_argument("--model-request-chars", type=int, default=32000,
-                        help="Maximum serialized QA request size, including evidence and prompt")
+                        help="Maximum serialized QA and task-construction request size, including evidence and prompt")
     parser.add_argument("--task-workers", type=int, default=3)
     parser.add_argument("--revisions", type=int, default=5)
     parser.add_argument("--reuse-facts", type=Path)
@@ -170,6 +170,7 @@ def main(argv=None):
             "--output", str(root / "tasks"), "--baseline", str(root / "baseline"),
             "--count", str(args.task_count), "--task-budget", str(args.task_budget),
             "--workers", str(args.task_workers), "--revisions", str(args.revisions),
+            "--model-request-chars", str(args.model_request_chars),
         ]
         if package:
             task_args += ["--control-config", str(package["control_config"])]

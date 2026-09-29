@@ -501,7 +501,7 @@ task-stage host model calls inherit `judge.request_timeout` from the episode's
 control configuration or simulator checkpoint. Standalone QA accepts
 `--request-timeout SECONDS` (default: 90); timeouts must be positive finite numbers.
 An omitted host-call timeout retains the 90-second default.
-`--model-request-chars` sets the serialized QA input limit (default: 32,000
+`--model-request-chars` sets the serialized QA and task-construction input limit (default: 32,000
 characters). Increase it when a complete external event bundle needs more room
 within the model's context window. Failed QA stages retain their evidence and
 stop the episode as `qa_generation_failed`, separately from a completed run

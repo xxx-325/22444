@@ -221,7 +221,7 @@ python -m dialogue_benchmark.task_eval.repeat \
 Episode 的事实抽取、QA 生成／审核／去重、仓库探针及任务阶段宿主模型调用，继承控制配置或模拟器 checkpoint 中的 `judge.request_timeout`。
 独立 QA CLI 使用 `--request-timeout 秒数`，默认 90 秒；超时值须为正且有限，未配置的宿主调用仍保留 90 秒默认值。
 
-`--model-request-chars` 设置 QA 请求的输入长度上限，默认 32,000 字符。完整外部事件组较长时，可在模型上下文容量内提高。QA 阶段失败会保留证据并以 `qa_generation_failed` 停止，与正常完成但没有合格题目的情况分别记录。
+`--model-request-chars` 设置 QA 与需求构造请求的输入长度上限，默认 32,000 字符。完整外部事件组或测试生成材料较长时，可在模型上下文容量内提高。QA 阶段失败会保留证据并以 `qa_generation_failed` 停止，与正常完成但没有合格题目的情况分别记录。
 合集运行默认使用 96,000 字符，可通过 `evaluation.model_request_chars` 设置。
 
 大输入的初始关系候选通过共享对象定位，并按时间线限制候选数量。只有事实进入选中的证据组，才计算其扩展选项；底层版本和代码关系继续保留。`--reuse-facts /path/to/previous-qa-run` 可复用之前的 facts，不重新调用模型抽取；要求规范化记录和分块布局完全一致，同时保留原抽取失败。复用结果的旧调用不会重复计入本次 token 消耗。
