@@ -145,6 +145,61 @@ class TaskPreflightTests(unittest.TestCase):
                 evaluate(self.item, self.root, self.baseline, receipt, {}, {}, 0)
         agent.assert_not_called()
 
+    def test_external_admission_replays_mutation_instead_of_trusting_validator_label(self):
+        self.item["qa_source"] = "external"
+        self.item["qa"]["answer_points"] = ["Preserve other null values."]
+        config = {"execution_image": "image"}
+
+        def draft(selection, config, output, spec, budget, feedback=""):
+            spec.mkdir(parents=True)
+            (spec / "task.md").write_text("Add a batch exporter under the agreed rules.")
+            (spec / "memory-use.md").write_text("Keep other null values.")
+            save(spec / "oracle-answer.json", {"answer": "- Preserve other null values."})
+            (spec / "acceptance.md").write_text(
+                "| a1 | Export records | task | test: test_export::test_feature |\n"
+                "| a2 | Keep other nulls | answer | test: test_export::test_null |\n")
+
+        def checks(candidate, *args, **kwargs):
+            source = (candidate / "a.py").read_text()
+            cases = [{"id": "test_export::test_" + name,
+                      "status": "passed" if marker in source else "failed"}
+                     for name, marker in (("feature", "feature = True"), ("null", "keep_nulls = True"))]
+            return {"status": "passed" if all(c["status"] == "passed" for c in cases) else "failed",
+                    "cases": cases, "skipped": 0}
+
+        def agent(root, config, role, message, **options):
+            if root.name == "author":
+                (root / "workspace/checks/test_acceptance.py").write_text("# Fixed tests\n")
+            elif root.name == "reference-solver":
+                self.assertIn("Preserve other null values.", message)
+                (root / "workspace/candidate/a.py").write_text("feature = True\nkeep_nulls = True\n")
+            elif root.name == "validator":
+                folder = root / "workspace/checks"
+                folder.mkdir()
+                (folder / "coverage.md").write_text("Both requirements have tests.")
+                (folder / "validation.txt").write_text(
+                    "BASELINE: unmet\nREFERENCE: pass\nTESTS: executable\n"
+                    "MUTATIONS: caught\nCOVERAGE: complete\nVERDICT: accept\n")
+                if saved_patch:
+                    (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
+                    (folder / "m1.patch").write_text(
+                        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+                        "@@ -1,2 +1,2 @@\n feature = True\n-keep_nulls = True\n+keep_nulls = False\n")
+            return {"status": "finished", "metrics": {}}
+
+        for saved_patch in (False, True):
+            root = self.base / ("external-" + str(saved_patch))
+            with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
+                 patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+                 patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+                 patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+                 patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
+                receipt = construct(self.item, root, self.baseline, config, 0, {})
+            self.assertEqual(receipt is not None, saved_patch)
+            record = read(root / "construction.json")[0]
+            self.assertEqual(record["history_mutations"]["status"], "caught" if saved_patch else "unverified")
+            self.assertEqual(record["validation_accepted"], saved_patch)
+
     def test_failed_exploration_retains_attempted_usage(self):
         self.item["qa"]["question"] = "Which historical report rule applies?"
         for metrics, requests, complete in (
@@ -792,7 +847,7 @@ class TaskPreflightTests(unittest.TestCase):
 
     def test_report_mutation_replays_patch_and_fails_only_historical_requirement(self):
         report = "one: FAILED\ntwo: DELIVERED\n"
-        for index, name in enumerate(("docs/report.md", "report.txt", "report.rst")):
+        for index, name in enumerate(("docs/report.md", "report.txt", "report.rst", "external-report.txt")):
             with self.subTest(report=name):
                 root = self.base / ("report-mutation-%d" % index)
                 spec, candidate = root / "spec", root / "candidate"
@@ -801,13 +856,18 @@ class TaskPreflightTests(unittest.TestCase):
                 (candidate / name).parent.mkdir(parents=True, exist_ok=True)
                 (candidate / name).write_text(report)
                 (spec / "task.md").write_text("Deliver Maple's order status report at " + name)
-                (spec / "history-contract.txt").write_text("Maple: one failed; two delivered.")
                 (spec / "memory-use.md").write_text("Private historical agreement")
-                history = {"contracts": [{"id": "h1", "active": True, "repository": "external"}]}
-                save(spec / "history.json", history)
+                if name == "external-report.txt":
+                    basis, history = "answer", None
+                    save(spec / "oracle-answer.json", {"answer": "Maple: one failed; two delivered."})
+                else:
+                    basis = "h1"
+                    history = {"contracts": [{"id": "h1", "active": True, "repository": "external"}]}
+                    save(spec / "history.json", history)
+                    (spec / "history-contract.txt").write_text("Maple: one failed; two delivered.")
                 (spec / "acceptance.md").write_text(
                     "| a1 | Report all orders in order | task | command: records |\n"
-                    "| a2 | Apply Maple's confirmed statuses | h1 | command: statuses |\n")
+                    "| a2 | Apply Maple's confirmed statuses | " + basis + " | command: statuses |\n")
                 conditions = {"records": "[row[0] for row in rows] == ['one', 'two']",
                               "statuses": "[row[1] for row in rows] == ['FAILED', 'DELIVERED']"}
                 for check_name, condition in conditions.items():

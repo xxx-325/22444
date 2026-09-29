@@ -8,7 +8,7 @@ import subprocess
 import uuid
 import xml.etree.ElementTree as ET
 
-from .artifacts import copy_tree, save, install_candidate_fixture
+from .artifacts import copy_tree, read, save, install_candidate_fixture
 from .runtime import release_completed_execution
 
 
@@ -77,6 +77,12 @@ def acceptance_items(spec, history=None):
     """Read the frozen human-readable table, using exact test names for linkage."""
     rows = []
     contracts = {c["id"] for c in (history or {}).get("contracts", []) if c.get("active", True)}
+    answer_path = Path(spec) / "oracle-answer.json"
+    if answer_path.is_file():
+        answer = read(answer_path).get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("Missing private historical answer")
+        contracts.add("answer")
     for line in (Path(spec) / "acceptance.md").read_text().splitlines():
         cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
         # Models occasionally capitalize the otherwise stable a1/a2 labels.
@@ -88,6 +94,7 @@ def acceptance_items(spec, history=None):
         identity = identity.lower()
         sources = [s.strip() for s in basis.split(",")]
         if (not requirement or not check or any(s != "task" and s not in contracts for s in sources)
+                or ("answer" in sources and sources != ["answer"])
                 or any(row["id"] == identity for row in rows)):
             raise ValueError("Invalid acceptance item: " + identity)
         tests = []
@@ -328,8 +335,11 @@ def check_history_mutations(candidate, spec, validator_checks, output, image, *,
                   "detail": "Unknown acceptance IDs: " + ", ".join(repr(identity) for identity in sorted(unknown))}
         save(output / "result.json", result)
         return result
-    history = read(Path(spec) / "history.json")
+    history_path = Path(spec) / "history.json"
+    history = read(history_path) if history_path.is_file() else {"contracts": []}
     external = {c["id"] for c in history["contracts"] if c["active"] and c["repository"] == "external"}
+    if (Path(spec) / "oracle-answer.json").is_file():
+        external.add("answer")
     results = []
     for row in rows:
         name = row.get("id", "")

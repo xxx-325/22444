@@ -144,6 +144,42 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("duplicate", result["reason"])
         self.assertEqual(result["query_count"], 1)
 
+    def test_external_draft_separates_public_goal_from_answer_based_acceptance(self):
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        answer = "Maple confirmed that only a null note is omitted."
+        selection = dict(qa_source="external", historical_answer=answer,
+                         public={"public_goal": "Deliver Maple's new export", "agreement_scope": answer})
+        table = ("| a1 | Export every order | task | inspect: Run the export and count orders |\n"
+                 "| a2 | Omit only a null note | answer | inspect: Compare null note and null name |\n")
+        responses = [{"files": [{"name": "task.md", "content": "Deliver Maple's export."}]},
+                     {"files": [{"name": "memory-use.md", "content": answer},
+                                {"name": "acceptance.md", "content": table}]}]
+        budget = SelectionBudget(self.root, {})
+        spec = self.root / "external-spec"
+        with patch.object(budget, "call", side_effect=responses) as call:
+            write_draft(selection, {}, self.root / "external-draft", spec, budget)
+        self.assertEqual(call.call_count, 2)
+        public, private = [c.args[1] for c in call.call_args_list]
+        self.assertNotIn(answer, str(public))
+        self.assertEqual(private["historical_answer"], answer)
+        self.assertEqual(private["public_task"], (spec / "task.md").read_text())
+        self.assertEqual(read(spec / "oracle-answer.json"), {"answer": answer})
+        self.assertEqual([r["basis"] for r in acceptance_items(spec)], [["task"], ["answer"]])
+        (spec / "acceptance.md").write_text(table.splitlines()[0])
+        with self.assertRaisesRegex(ValueError, "every active historical rule"):
+            acceptance_items(spec)
+
+    def test_external_private_author_can_decline_without_changing_public_task(self):
+        selection = dict(qa_source="external", historical_answer="Historical answer", public={})
+        budget = SelectionBudget(self.root, {})
+        responses = [{"files": [{"name": "task.md", "content": "Fixed public task"}]},
+                     {"files": [{"name": "NO_TASK.md", "content": "The answer is out of scope."}]}]
+        spec = self.root / "declined-spec"
+        with patch.object(budget, "call", side_effect=responses):
+            write_draft(selection, {}, self.root / "declined-draft", spec, budget)
+        self.assertEqual((spec / "task.md").read_text(), "Fixed public task")
+        self.assertTrue((spec / "NO_TASK.md").is_file())
+
     def test_pages_are_distinct_and_empty_lookup_is_not_a_verdict(self):
         result, _ = self.run_selection([
             self.query(op="lookup", target="repo", path=".", text="absent"),

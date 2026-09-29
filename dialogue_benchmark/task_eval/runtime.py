@@ -111,7 +111,8 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
 
     spec, candidate, output = Path(spec), Path(candidate), Path(output)
     try:
-        protected = {path.name for path in spec.iterdir() if path.is_file()} | {"qa-input.json"}
+        protected = {path.name for path in spec.iterdir() if path.is_file()} | {
+            "qa-input.json", "qa.json", "oracle-answer.json", "history.json", "history-contract.txt"}
         sources = {name: (candidate / name).read_text() for name in changed_files
                    if (candidate / name).is_file() and Path(name).name not in protected
                    and not any(part in {"tests", "test"} or part.startswith("test_")
@@ -120,7 +121,9 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
             raise ValueError("No changed code or business output available for historical mutation")
         response = budget.call(MUTATION_FILES, {
             "task": (spec / "task.md").read_text(),
-            "contract": (spec / "history-contract.txt").read_text(),
+            "contract": ((spec / "history-contract.txt").read_text()
+                         if (spec / "history-contract.txt").is_file() else
+                         read(spec / "oracle-answer.json")["answer"]),
             "memory_use": (spec / "memory-use.md").read_text(),
             "acceptance": read(spec / "acceptance.json"), "reference_sources": sources}, config, output)
         names = {"mutations.txt", "before.txt", "after.txt"}

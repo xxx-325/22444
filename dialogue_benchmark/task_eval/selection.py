@@ -572,7 +572,7 @@ def write_draft(selection, config, output, spec, budget, feedback=""):
         write_public_task(selection, config, Path(output) / "public", spec, budget, feedback)
         return write_private_draft(selection, config, Path(output) / "private", spec, budget, feedback)
     if selection.get("qa_source") == "external":
-        from .prompts import TASK_ONLY_DRAFT
+        from .prompts import EXTERNAL_ACCEPTANCE, TASK_ONLY_DRAFT
         # Do not pass the selector's agreement object/scope to the public
         # task writer.  For external-only QA those fields may contain the
         # observed URL, error, or log result; the public writer should see the
@@ -584,12 +584,25 @@ def write_draft(selection, config, output, spec, budget, feedback=""):
                    "repository_exploration": selection.get("repository_exploration", ""),
                    "evidence": selection.get("public_repository_evidence", []),
                    "feedback": feedback}
-        response = budget.call(TASK_ONLY_DRAFT, payload, config, output)
-        files = _parse_files(response, {"task.md", "memory-use.md", "acceptance.md"},
-                              {"task.md", "memory-use.md", "acceptance.md"})
+        response = budget.call(TASK_ONLY_DRAFT, payload, config, Path(output) / "public")
+        files = _parse_files(response, {"task.md"}, {"task.md"})
         Path(spec).mkdir(parents=True, exist_ok=True)
         for name, content in files.items():
             (Path(spec) / name).write_text(content, encoding="utf-8")
+        answer = selection["historical_answer"]
+        if not answer.strip():
+            raise ValueError("External task requires the exact injected answer")
+        response = budget.call(EXTERNAL_ACCEPTANCE, dict(
+            public_task=files["task.md"], historical_answer=answer,
+            repository_overview=payload["repository_overview"],
+            repository_evidence=payload["evidence"]), config, Path(output) / "private")
+        required = ({"NO_TASK.md"} if any(row.get("name") == "NO_TASK.md" for row in
+                    response.get("files", [])) else {"memory-use.md", "acceptance.md"})
+        private = _parse_files(response, required, required)
+        for name, content in private.items():
+            (Path(spec) / name).write_text(content, encoding="utf-8")
+        save(Path(spec) / "oracle-answer.json", {"answer": answer})
+        files.update(private)
         return files
     from .prompts import DRAFT_TASK, HISTORY_CONTRACT
     response = budget.call(DRAFT_TASK + HISTORY_CONTRACT, dict(selection=selection.get("public", {}),

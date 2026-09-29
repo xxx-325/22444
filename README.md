@@ -341,6 +341,12 @@ A candidate first freezes the historical targets from the original dialogue.
 Then one tool-free call writes only the public task, and a second tool-free call
 writes private history use and acceptance material. The existing qualification
 review runs only after the public task is fixed; only then are tests constructed.
+External-only tasks use the same two-call separation: the public writer sees the
+business goal and repository evidence, while private acceptance receives the exact
+QA answer. Its acceptance table separates public functionality (`task`) from
+answer-dependent behavior (`answer`). The host replays a saved wrong implementation
+and requires public functionality to pass while an answer-dependent check fails.
+The private answer stays in the frozen evaluation material, outside solver workspaces.
 Selection, drafting, review, and test authoring share cumulative request and token
 budgets, without a per-response output cap. Each agent has its own execution
 timeout; waiting for reference solving and test execution does not consume the

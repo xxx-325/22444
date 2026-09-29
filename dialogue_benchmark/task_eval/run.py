@@ -209,6 +209,8 @@ def load_preparation(attempt, item, baseline, public_history):
             or read(task.parent / "manifest.json")["baseline_sha256"] != fingerprint(baseline)):
         raise ValueError("Prepared task does not match completed author, QA, evidence or baseline")
     protected = ["task.md", "memory-use.md"]
+    if item.get("qa_source") == "external":
+        protected.append("oracle-answer.json")
     history = read(spec / "history.json") if (spec / "history.json").exists() else None
     if public_history:
         if not history or any(history[key] != public_history[key] for key in ("events", "cutoff_event_id")):
@@ -310,6 +312,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         gate_state = {}
         draft_selection = dict(selection)
         draft_selection["historical_question"] = item["qa"].get("question", "")
+        if item.get("qa_source") == "external":
+            draft_selection["historical_answer"] = answer_text(item["qa"])
         if public_history:
             draft_selection.update(public_history=public_history,
                                    historical_answer=answer_text(item["qa"]),
@@ -326,8 +330,12 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                                  require_external=False, targets=frozen_targets)
                                  if public_history else None)
                 draft_items = acceptance_items(spec, draft_history)
+                if item.get("qa_source") == "external":
+                    if read(spec / "oracle-answer.json") != {"answer": answer_text(item["qa"])}:
+                        raise ValueError("Private acceptance answer differs from the injected QA answer")
                 protected = {name: (spec / name).read_text() for name in
-                             ("task.md", "memory-use.md") + (("history-contract.txt",) if public_history else ())}
+                             ("task.md", "memory-use.md") + (("history-contract.txt",) if public_history else ())
+                             + (("oracle-answer.json",) if item.get("qa_source") == "external" else ())}
                 reviewed_task, reviewed_answer = protected["task.md"], answer_text(item["qa"])
                 if fixed_qualification is not None:
                     requirements = [{k: r[k] for k in ("id", "requirement", "basis")} for r in draft_items]
@@ -628,7 +636,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         else:
             record["reason"] = "missing_coverage_checks"
 
-        if history and final_spec is not None and oracle_complete:
+        memory_check = bool(history) or item.get("qa_source") == "external"
+        if memory_check and final_spec is not None and oracle_complete:
             def inspect_mutant(mutant, criteria, checks, output):
                 _, review_path, roots = inspect_acceptance(
                     mutant, criteria, items, checks, output, config, agent_options, budget=preflight_budget)
@@ -651,7 +660,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             if final_spec else {"status": "uncertain"})
         record["reference_acceptance"] = reference_acceptance
         baseline_acceptance = None
-        if history and final_spec is not None:
+        if memory_check and final_spec is not None:
             baseline_acceptance = assess_acceptance(items, baseline_checks)
             if (any(not item["tests"] for item in items)
                     and baseline_acceptance["status"] != "failed"
@@ -679,12 +688,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record["reason"] = "validator_incomplete"
         elif final_spec is None:
             record["reason"] = "missing_coverage_checks"
-        elif history and record.get("history_mutations", {}).get("status") != "caught":
+        elif memory_check and record.get("history_mutations", {}).get("status") != "caught":
             record["reason"] = "historical_mutation_not_verified"
         record["validation_accepted"] = (agent_finished(solved) and agent_finished(validated)
                                          and final_spec is not None
                                          and reference_acceptance["status"] == "passed"
                                          and oracle_complete
+                                         and (not memory_check or record["history_mutations"]["status"] == "caught")
                                          and (not history or (
                                              record["validation"].get("HISTORY") == "supported"
                                              and record["history_mutations"]["status"] == "caught"))

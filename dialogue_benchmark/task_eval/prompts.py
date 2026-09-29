@@ -205,7 +205,7 @@ memory-use.md 的仓库结论必须引用实际 query 及其文件行号；未�
 TASK_ONLY_DRAFT = """根据已选候选、只读仓库探索和已提供仓库证据，组织一项自然的新开发需求。
 本轮是 external-only QA：没有把原始对话作为任务输入，也没有可引用的历史契约。
 不要臆造历史来源、历史条款或内部答案；不要把 QA 的答案内容写进公开 task.md。
-输出三个文件块，名称为 task.md、memory-use.md、acceptance.md；格式为
+只输出 task.md 一个文件块；格式为
 FILE name，然后正文，最后单独一行 END_FILE。不要 JSON、代码围栏或其他文字。
 task.md 只写完整的新功能、输入输出、普通兼容边界和可验证行为，不写答案、来源编号或“为了测试记忆”。
 公开 task 不要写 QA 中的具体 URL、错误文本、退出码因果、具体页面名或观测结论；
@@ -218,12 +218,21 @@ task.md 只写完整的新功能、输入输出、普通兼容边界和可验证
 历史约定由开发者应用，不要求调用者另传包含答案的协议文件、映射表或规则参数。
 需求必须让 QA 答案中的至少一个具体外部结果成为可观察输出或回归条件；
 不要把一次故障直接扩大成答案没有要求的修复策略、离线开关、缓存或默认行为。
-memory-use.md 说明 QA 答案中的外部事实会改变哪项实现选择，但不要重述具体答案，
-并说明当前仓库核查到的文件和仍需开发者确认的行为。
-acceptance.md 用 Markdown 四列表：ID、Requirement、Basis、Check；所有 Basis 必须是 task，
-每行一个可观察要求，至少包含一行新功能基本行为。Check 写具体输入、动作和预期输出，
-Check 只用 inspect: 或精确的 test: classname::name；不要把完整 shell 命令写在 command: 后，
-也不要新增 task.md 没有提出的要求。
+本次只写公开需求，不写私有历史用途或验收表。
+"""
+
+EXTERNAL_ACCEPTANCE = """为固定的新需求整理私有验收，不改需求。
+输入是公开需求、实际注入的历史答案和仓库资料。
+只输出两个文件块：FILE memory-use.md、FILE acceptance.md，每个正文后独占一行 END_FILE。
+memory-use.md 说明答案中哪条有效约定影响本次什么行为；引用答案原句并保留适用范围与例外。
+acceptance.md 用四列 Markdown 表：ID、Requirement、Basis、Check。ID 从 a1 开始。
+公开功能行的 Basis 写 task；只有历史答案才能确定的行为行写 answer。不要混写两种依据。
+至少一行检查新功能基本可用，至少一行检查历史约定确实被应用；每行只有一个要求。
+历史行必须来自已提供答案，不能扩大范围、添加新事实或要求模型表现出记忆。
+Check 用 inspect: 具体输入、动作、预期结果；测试作者随后将它替换为可执行检查。
+输入格式和调用入口沿用公开需求或现有仓库，不私下新增格式。
+若答案不适用于本需求，只输出 FILE NO_TASK.md、具体原因、END_FILE。
+不要 JSON、代码围栏或其他文字。
 """
 
 TEST_EXECUTION = """
@@ -242,7 +251,7 @@ TEST_EXECUTION = """
 
 AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你负责读材料、写测试文件，程序随后执行。
 不要运行测试、收集测试或探测环境；测试目录当前为空是正常的，先完成文件。
-1. 读 /workspace/checks/task.md、acceptance.md，以及同目录已有的 history-contract.txt。
+1. 读 /workspace/checks/task.md、acceptance.md，以及同目录已有的 history-contract.txt 或 oracle-answer.json。
    它们定义本次工作和历史规则。/workspace/candidate 是只读基线，按需读相关源码和测试。
    交付结果和所需接口由 task.md 定义，不需要在历史对话中出现；历史只确定客户的规则。
    历史资格已另行审核，本轮依据固定条款写测试，不重新调查整份对话。
@@ -289,7 +298,7 @@ private_memory_answer 是仅供测试作者使用的答案材料；它不能写�
 基线尚未完成交付时应是用例失败而非收集失败，不因使用已有接口而新增接口要求。
 测试只检查需求约定的可观察行为，不要求某种实现路线。
 旧接口的约束只测旧接口；新接口未约定的异常类型、输入不变性和编码布局不加入要求。
-从调用前独立副本计算输出预期。task 行测试公开功能，历史状态码和阈值只在对应 h 行测试。
+从调用前独立副本计算输出预期。task 行测试公开功能，历史状态码和阈值只在对应 h 或 answer 行测试。
 顺序断言读取实际返回顺序；分类规则换一种输入排列、加入重复取值再验证，确保按位置分组不能蒙混通过。
 candidate_root 是只读基线，只能读取其中的源码、文档和固定测试数据。所有临时输入、输出和 CLI 产物必须写入 pytest 的 tmp_path/tmpdir 或 /tmp，
 不能写入 candidate_root、/workspace/candidate 或其子目录。
@@ -349,7 +358,7 @@ HISTORY_QUESTION: 具体想确认的历史问题
 系统会回答后继续同一会话。正常完成报告不要使用这个标记。两组都可追问。\n"""
 
 VALIDATOR = """审核候选需求、测试和参考实现，完成后保存审核文件并结束。
-输入：/reference/spec 是固定题面、验收表和测试；/reference/implementation 是参考实现；
+输入：/reference/spec 是固定题面、验收表和测试；如有 oracle-answer.json，它是本次唯一的私有历史答案；/reference/implementation 是参考实现；
 /workspace/candidate 是基线。/reference/checks.json 已保存宿主执行的基线与参考测试结果，可直接采用。
 输出都放 /workspace/checks。实验修改只放 /workspace/experiments 的副本。
 
@@ -360,10 +369,10 @@ VALIDATOR = """审核候选需求、测试和参考实现，完成后保存审�
 2. 在 coverage.md 对应验收项说明覆盖和具体缺口。缺组合用例时写自包含的
    test_interactions.py 并实际运行；用例与数据一并保存。已有测试覆盖充分则直接说明。
    测试自身错误与实现错误分开记录。有具体错误时保存 revise 报告并结束。
-3. 有 external 历史规则时，制作一个“基本功能仍能用、但违反该历史规则”的实现副本。
+3. 有 external 历史规则或 Basis=answer 的验收行时，制作一个“基本功能仍能用、但违反该历史规则”的实现副本。
    实际验证后，保存相对参考实现的 Git 补丁 m1.patch，路径为 a/项目相对路径、b/项目相对路径。
    mutations.txt 写三行：REVIEW m1、acceptance: 实际违反的验收项 ID（如 a6，不是 Markdown 行号）、END_REVIEW。
-   程序还会应用补丁重跑，要求 task 行通过、指定历史行失败。
+   程序还会应用补丁重跑，要求 task 行通过、指定历史行（h 编号或 answer）失败。
 4. 仅对验收表中的 inspect 项按既定步骤检查参考实现，写 acceptance-review.txt：
    REVIEW a1
    status: passed 或 failed 或 uncertain
