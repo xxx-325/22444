@@ -20,7 +20,7 @@ from viewer.build_data import build
 
 
 class ExternalClient(Client):
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         super().__init__()
 
     def ask(self, prompt, payload):

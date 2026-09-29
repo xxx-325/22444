@@ -351,6 +351,11 @@ Selection, drafting, review, and test authoring share cumulative request and tok
 budgets, without a per-response output cap. Each agent has its own execution
 timeout; waiting for reference solving and test execution does not consume the
 next author's execution time.
+Set `judge.reasoning_effort` to `max` to increase reasoning for QA, task authors,
+test authors and validators. `code.reasoning_effort` separately controls the
+reference and both paired solvers. Standalone QA accepts `--reasoning-effort`.
+Values are `low`, `high`, or `max`; omission leaves the provider default.
+The setting is recorded with requests and does not impose an output token cap.
 The test author cannot change qualified requirements or historical rules.
 Test repairs reuse the qualified draft. Failed reference checks return their test results and implementation
 patch to the repair stage before another reference run. Full validation and

@@ -141,6 +141,8 @@ def _build_parser():
                         help="Consent to transmit selected private evidence")
     parser.add_argument("--endpoint", help="Full HTTPS chat/completions endpoint")
     parser.add_argument("--model")
+    parser.add_argument("--reasoning-effort", choices=("low", "high", "max"),
+                        help="Provider reasoning effort; omission uses the provider default")
     parser.add_argument("--key-env", default="BENCHMARK_API_KEY")
     parser.add_argument("--request-timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT,
                         help="Model request timeout in seconds (default: 90)")
@@ -278,7 +280,8 @@ def _checkpoint(checkpoint_dir, track, phase, index):
 
 
 def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
-                    reuse_dir=None, external_only=False, request_timeout=DEFAULT_REQUEST_TIMEOUT):
+                    reuse_dir=None, external_only=False, request_timeout=DEFAULT_REQUEST_TIMEOUT,
+                    reasoning_effort=None):
     """Extract every chunk's facts through one bounded shared executor."""
     if not tasks:
         return {"facts": [], "questions": [], "rejected": [], "usage": [],
@@ -306,7 +309,7 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
             elif reuse_dir:
                 raise ValueError("Missing saved fact-stage result")
             else:
-                client = ChatClient(endpoint, model, key_env, request_timeout)
+                client = ChatClient(endpoint, model, key_env, request_timeout, reasoning_effort=reasoning_effort)
                 kwargs = {
                     "qa_mode": track,
                     "checkpoint": _checkpoint(checkpoint_dir, track, "chunk", index),
@@ -592,7 +595,8 @@ def generate_simple_target(group, evidence_index, target_type, client,
 
 def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                   deduplicate_results=True, review_mode="single",
-                  evidence_indexes=None, expansion_budget=3, request_timeout=DEFAULT_REQUEST_TIMEOUT):
+                  evidence_indexes=None, expansion_budget=3, request_timeout=DEFAULT_REQUEST_TIMEOUT,
+                  reasoning_effort=None):
     """Generate bounded candidates per group, reviewing each independently."""
     if not tasks:
         return {"questions": [], "rejected": [], "usage": [],
@@ -603,7 +607,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
         index, track, group = item
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env, request_timeout)
+            client = ChatClient(endpoint, model, key_env, request_timeout, reasoning_effort=reasoning_effort)
             if review_mode == "simple":
                 evidence_index = (evidence_indexes or {}).get(track)
                 if evidence_index is None:
@@ -1553,7 +1557,8 @@ def main(argv=None):
                 facts_result = _run_fact_tasks(
                     fact_tasks, args.endpoint, args.model, args.key_env,
                     args.parallel_workers, checkpoint_dir,
-                    external_only=external_mode, request_timeout=args.request_timeout, **fact_options)
+                    external_only=external_mode, request_timeout=args.request_timeout,
+                    reasoning_effort=args.reasoning_effort, **fact_options)
                 save(args.output, "fact-extraction.json", {
                     "reused_from": str(args.reuse_facts) if args.reuse_facts else None,
                     "usage": facts_result["usage"], "stage_errors": facts_result["stage_errors"],
@@ -1708,7 +1713,7 @@ def main(argv=None):
                         probe = probe_candidate(
                             question, args.repository, args.endpoint, args.model,
                             args.key_env, args.output / "recoverability" / safe_id,
-                            request_timeout=args.request_timeout)
+                            request_timeout=args.request_timeout, reasoning_effort=args.reasoning_effort)
                     except Exception as error:
                         probe = {"status": "uncertain",
                                  "reason": "probe_error:%s" % type(error).__name__}
@@ -1725,7 +1730,8 @@ def main(argv=None):
                     if len(candidates) < 2:
                         return {}
                     try:
-                        client = ChatClient(args.endpoint, args.model, args.key_env, args.request_timeout)
+                        client = ChatClient(args.endpoint, args.model, args.key_env, args.request_timeout,
+                                            reasoning_effort=args.reasoning_effort)
                         reviewed = review_duplicate_clusters(
                             candidates, client, duplicate_state["reviewed_pairs"])
                     except Exception as error:
@@ -1762,7 +1768,8 @@ def main(argv=None):
                                                review_mode=args.review_mode,
                                                evidence_indexes=evidence_indexes,
                                                expansion_budget=args.expansion_budget,
-                                               request_timeout=args.request_timeout),
+                                               request_timeout=args.request_timeout,
+                                               reasoning_effort=args.reasoning_effort),
                     lambda questions, caps: _publication_view(
                         questions, caps, workspaces, duplicate_state["decisions"],
                         recoverability_check=check_repository_recoverability,
@@ -2027,6 +2034,7 @@ def main(argv=None):
             "expansion_budget": args.expansion_budget,
             "configured_limits": {track: options[track + "_count"] for track in tracks},
             "model": args.model, "request_timeout": args.request_timeout,
+            "reasoning_effort": args.reasoning_effort,
             "usage": result.get("usage", []),
             "source_kinds": {
                 "records": {kind: sum(1 for record in records

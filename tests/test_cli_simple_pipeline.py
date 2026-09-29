@@ -36,7 +36,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
         calls = []
 
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def generate(scope, facts, client, max_questions, target_type,
@@ -107,7 +107,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
         calls = []
 
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def generate(scope, facts, client, max_questions, target_type, **kwargs):
@@ -144,7 +144,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
 
     def test_explicit_empty_eligible_types_does_not_fall_back(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         group = {"id": "g1", "scope": {}, "facts": [],
@@ -178,7 +178,7 @@ class SimpleCliPipelineTests(unittest.TestCase):
         timeouts = {}
 
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
                 self.timeout = unused[3]
 

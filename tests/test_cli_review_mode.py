@@ -20,7 +20,7 @@ class ReviewModeCliTests(unittest.TestCase):
 
     def test_mode_reaches_review_and_raw_candidates_keep_group(self):
         class FakeClient:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 self.usage = []
 
         generated = {

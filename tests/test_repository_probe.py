@@ -498,7 +498,7 @@ class RepositoryProbeTests(unittest.TestCase):
             output = Path(directory) / "run"
 
             class FakeClient:
-                def __init__(self, *unused):
+                def __init__(self, *unused, **kwargs):
                     self.usage = []
 
             def extract(scope, client, qa_mode, checkpoint=None):

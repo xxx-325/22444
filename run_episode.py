@@ -120,6 +120,8 @@ def main(argv=None):
         ]
         if args.reuse_facts:
             qa_args += ["--reuse-facts", str(args.reuse_facts)]
+        if model.get("reasoning_effort"):
+            qa_args += ["--reasoning-effort", model["reasoning_effort"]]
         if args.qa_source == "external":
             qa_args += ["--qa-source", "external", "--external-events", str(args.external_events),
                         "--qa-count", str(args.qa_count or 40),

@@ -464,7 +464,7 @@ END_QA"""])
                     "fact_ids": ["f1"], "source_ids": ["m1"]}
 
         class FakeChatClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         with patch.object(cli, "ChatClient", FakeChatClient), \

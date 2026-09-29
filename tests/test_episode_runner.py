@@ -89,7 +89,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             events = source / "external-events.json"
             save(events, {"version": 1, "events": []})
             config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY",
-                                "request_timeout": 1800}}
+                                "request_timeout": 1800, "reasoning_effort": "max"}}
             def generated(args):
                 output = Path(args[args.index("--output") + 1])
                 save(output / "qa-public.json", {"questions": [{"id": "q1"}]})
@@ -110,6 +110,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             self.assertEqual(task_args[task_args.index("--model-request-chars") + 1], "96000")
             self.assertEqual(read(root / "run/pipeline.json")["parameters"]["model_request_chars"], 96000)
             self.assertEqual(args[args.index("--request-timeout") + 1], "1800")
+            self.assertEqual(args[args.index("--reasoning-effort") + 1], "max")
             self.assertNotIn("--qa-mode", args)
             self.assertNotIn("--general-count", args)
             self.assertNotIn("--code-count", args)

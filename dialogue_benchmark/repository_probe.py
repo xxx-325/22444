@@ -100,7 +100,7 @@ def _write_json(path, value):
 
 def probe_candidate(question, repository, endpoint, model, key_env, output,
                     *, max_steps=6, model_request_chars=60000,
-                    request_timeout=DEFAULT_REQUEST_TIMEOUT):
+                    request_timeout=DEFAULT_REQUEST_TIMEOUT, reasoning_effort=None):
     """Run the probe and return a private, auditable recoverability result."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,8 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
              "observations": []}
     seen = set()
     steps = []
-    client = ChatClient(endpoint, model, key_env, request_timeout, system=PROBE_SYSTEM)
+    client = ChatClient(endpoint, model, key_env, request_timeout, system=PROBE_SYSTEM,
+                        reasoning_effort=reasoning_effort)
     final = None
     # A query consumes a read slot. Its result still needs a model decision,
     # including when it was the last permitted query.

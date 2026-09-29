@@ -17,7 +17,7 @@ class DualModeCliTests(unittest.TestCase):
     def test_global_auth_blocker_stops_subsequent_fact_batches(self):
         calls = []
         class FakeClient:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 self.usage = []
         def extract(scope, client, **kwargs):
             calls.append(scope["name"])
@@ -34,7 +34,7 @@ class DualModeCliTests(unittest.TestCase):
     def test_single_worker_keeps_different_questions_with_the_same_answer(self):
         calls = []
         class FakeClient:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 self.usage = []
         def generate(scope, facts, client, max_questions, **kwargs):
             calls.append(scope["name"])
@@ -58,7 +58,7 @@ class DualModeCliTests(unittest.TestCase):
         gate = threading.Barrier(2)
         calls = []
         class FakeClient:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 self.usage = []
         def generate(scope, facts, client, max_questions, **kwargs):
             calls.append((scope["name"], max_questions))
@@ -281,7 +281,7 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_qa_stats_separate_raw_and_deduplicated_candidates(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def fake_generate(scope, facts, client, max_questions, qa_mode,
@@ -322,7 +322,7 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_same_fact_in_different_tracks_keeps_track_local_ids(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def fake_extract(scope, client, qa_mode, checkpoint=None):
@@ -352,7 +352,7 @@ class DualModeCliTests(unittest.TestCase):
         completed = []
 
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def fake_extract(scope, client, qa_mode, checkpoint=None):
@@ -380,7 +380,7 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_one_fact_chunk_failure_does_not_discard_other_chunks(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def fake_extract(scope, client, qa_mode, checkpoint=None):
@@ -403,7 +403,7 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_network_both_mode_writes_separate_and_combined_outputs(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = [{"total_tokens": 1}]
 
         def fake_extract(scope, client, qa_mode, checkpoint=None):
@@ -479,7 +479,7 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_unexpected_review_failure_keeps_generated_question(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def fake_generate(scope, facts, client, max_questions, qa_mode,
@@ -510,7 +510,7 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_end_to_end_private_path_is_audit_only(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def fake_extract(scope, client, qa_mode, checkpoint=None):
@@ -573,7 +573,7 @@ class DualModeCliTests(unittest.TestCase):
 
     def test_no_evidence_error_is_assigned_to_empty_track(self):
         class FakeClient:
-            def __init__(self, *unused):
+            def __init__(self, *unused, **kwargs):
                 self.usage = []
 
         def fake_extract(scope, client, qa_mode, checkpoint=None):

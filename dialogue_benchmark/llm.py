@@ -1809,14 +1809,22 @@ def _fit_projection(prompt, scope, sources, extra, budget, full_range=False,
     raise ModelStageError("request_budget", request_chars=size, limit_chars=budget)
 
 
+def validate_reasoning_effort(value):
+    if value not in (None, "low", "high", "max"):
+        raise ValueError("reasoning_effort must be low, high, max or null")
+    return value
+
+
 class ChatClient:
-    def __init__(self, endpoint, model, key_env="BENCHMARK_API_KEY", timeout=DEFAULT_REQUEST_TIMEOUT, *, system=SYSTEM):
+    def __init__(self, endpoint, model, key_env="BENCHMARK_API_KEY", timeout=DEFAULT_REQUEST_TIMEOUT, *, system=SYSTEM,
+                 reasoning_effort=None):
         parsed = urllib.parse.urlparse(endpoint)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("LLM endpoint must be HTTPS without embedded credentials")
         if parsed.query or parsed.fragment:
             raise ValueError("LLM endpoint cannot contain query or fragment")
         self.timeout = validate_request_timeout(timeout)
+        self.reasoning_effort = validate_reasoning_effort(reasoning_effort)
         self.endpoint, self.model = endpoint, model
         self.key = os.environ.get(key_env)
         if not self.key:
@@ -1837,10 +1845,14 @@ class ChatClient:
         payload = {"model": self.model, "temperature": 0,
                    "messages": [{"role": "system", "content": self.system},
                                 {"role": "user", "content": prompt + "\nDATA:\n" + content}]}
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
         request = urllib.request.Request(self.endpoint, json.dumps(payload).encode(),
                                          {"Content-Type": "application/json",
                                           "Authorization": "Bearer " + self.key})
         receipt = {"request_count": 1, "request_chars": estimated, "status": "started"}
+        if self.reasoning_effort is not None:
+            receipt["reasoning_effort"] = self.reasoning_effort
         self.usage.append(receipt)
         started = time.monotonic()
         try:
@@ -3312,7 +3324,7 @@ def _merge_results(results, quotas=None):
 def generate_parallel(chunks, endpoint, model, key_env="BENCHMARK_API_KEY",
                       max_questions=4, workers=4, qa_mode="code",
                       allowed_types=None, per_chunk_questions=None,
-                      request_timeout=DEFAULT_REQUEST_TIMEOUT):
+                      request_timeout=DEFAULT_REQUEST_TIMEOUT, reasoning_effort=None):
     """Run every chunk through one shared scheduling path, even with one worker."""
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -3322,7 +3334,7 @@ def generate_parallel(chunks, endpoint, model, key_env="BENCHMARK_API_KEY",
         index, scope = item
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env, request_timeout)
+            client = ChatClient(endpoint, model, key_env, request_timeout, reasoning_effort=reasoning_effort)
             result = generate(scope, client, each, qa_mode=qa_mode,
                               allowed_types=allowed_types)
             return index, _prefix_result(result, index, qa_mode), client.usage, qa_mode
@@ -3340,7 +3352,7 @@ def generate_parallel(chunks, endpoint, model, key_env="BENCHMARK_API_KEY",
 
 
 def generate_tasks(tasks, endpoint, model, key_env="BENCHMARK_API_KEY", workers=6,
-                   quotas=None, request_timeout=DEFAULT_REQUEST_TIMEOUT):
+                   quotas=None, request_timeout=DEFAULT_REQUEST_TIMEOUT, reasoning_effort=None):
     """Run general and code tasks in one bounded pool and merge by stable order.
 
     Each task is a mapping with ``scope``, ``qa_mode``, ``allowed_types`` and an
@@ -3355,7 +3367,7 @@ def generate_tasks(tasks, endpoint, model, key_env="BENCHMARK_API_KEY", workers=
         mode = task.get("qa_mode", "code")
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env, request_timeout)
+            client = ChatClient(endpoint, model, key_env, request_timeout, reasoning_effort=reasoning_effort)
             result = generate(task["scope"], client, task.get("max_questions", 1),
                               qa_mode=mode, allowed_types=task.get("allowed_types"))
             return index, _prefix_result(result, index, mode), client.usage, mode

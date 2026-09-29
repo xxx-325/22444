@@ -35,6 +35,45 @@ class RequestTimeoutTests(unittest.TestCase):
                     llm.ChatClient("https://example.invalid", "test", timeout=value)
                 opener.assert_not_called()
 
+    def test_reasoning_effort_reaches_provider_without_an_output_cap(self):
+        for effort in (None, "low", "high", "max"):
+            with self.subTest(effort=effort), \
+                    patch.dict("os.environ", {"BENCHMARK_API_KEY": "test-only"}), \
+                    patch("dialogue_benchmark.llm.urllib.request.build_opener") as opener:
+                opener.return_value.open.return_value = io.BytesIO(json.dumps({
+                    "choices": [{"finish_reason": "stop", "message": {"content": "NO_QA"}}]
+                }).encode())
+                client = llm.ChatClient("https://example.invalid", "test", reasoning_effort=effort)
+                client.ask("test", {})
+                sent = json.loads(opener.return_value.open.call_args.args[0].data)
+                self.assertEqual(sent.get("reasoning_effort"), effort)
+                self.assertEqual(client.usage[0].get("reasoning_effort"), effort)
+                self.assertNotIn("max_tokens", sent)
+                self.assertNotIn("max_completion_tokens", sent)
+                if effort is None:
+                    self.assertNotIn("reasoning_effort", sent)
+
+    def test_host_author_and_agent_config_preserve_separate_efforts(self):
+        original = {"image": "sdk", "execution_image": "executor", "execution_backend": "ssh_sandbox",
+                    "code": dict(model="solver", key_env="TEST_KEY", reasoning_effort="high"),
+                    "judge": dict(model="judge", key_env="TEST_KEY", reasoning_effort="max",
+                                  base_url="https://example.invalid")}
+        config = self.configured(original, control=True)
+        self.assertEqual(config["code"]["reasoning_effort"], "high")
+        self.assertEqual(config["judge"]["reasoning_effort"], "max")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict("os.environ", {"TEST_KEY": "test-only"}), \
+                patch("dialogue_benchmark.llm.urllib.request.build_opener") as opener:
+            opener.return_value.open.return_value = io.BytesIO(json.dumps({
+                "choices": [{"finish_reason": "stop", "message": {"content": "NO_QA"}}]
+            }).encode())
+            ask_model("test", {}, config, directory)
+            sent = json.loads(opener.return_value.open.call_args.args[0].data)
+            self.assertEqual(sent["reasoning_effort"], "max")
+        original["judge"]["reasoning_effort"] = "invalid"
+        with self.assertRaisesRegex(ValueError, "reasoning_effort"):
+            self.configured(original, control=True)
+
     def test_cli_timeout_default_override_and_invalid_values(self):
         parser = cli._build_parser()
         for flags, expected in (([], 90), (["--request-timeout", "1800"], 1800)):
