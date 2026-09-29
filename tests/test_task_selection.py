@@ -74,6 +74,10 @@ class SelectionTests(unittest.TestCase):
         direction = "增加批量交付恢复：确认状态 → 恢复交付 → 汇总结果"
         payloads = []
         def ask(prompt, payload, config, output):
+            self.assertIn("后续工作须保持 QA 已确认的对象、日期或周期和条件", prompt)
+            self.assertIn("仓库边界问题只有影响这一范围内的交付时才可作为需求", prompt)
+            self.assertIn("未确认的缺记录等边界不能当成已批准历史", prompt)
+            self.assertIn("不能将内部实现方式当成历史约定", prompt)
             payloads.append(payload.copy())
             save(output / "usage.json", [{"prompt_tokens": 10, "completion_tokens": 2}])
             return {"reviews": [dict(decision="pending", reason="Need repository evidence",
@@ -408,24 +412,47 @@ class SelectionTests(unittest.TestCase):
     def test_history_targets_keep_applicable_cycle_limited_authorization(self):
         statement = ("Maple approved only P1 orders for the May delivery cycle; "
                      "P2 stays excluded until onboarding is signed.")
-        self.history["initial_events"][0]["text"] = statement
-        self.history["events"][0]["text"] = statement
+        next_statement = ("For June handover, carry May's unfinished orders forward after removing "
+                          "a new completion list supplied by Maple.")
+        history_text = statement + " " + next_statement
+        self.history["initial_events"][0]["text"] = history_text
+        self.history["events"][0]["text"] = history_text
         row = {"id": "h1", "statement": statement, "scope": "Maple May delivery cycle",
                "behavior": "Select P1 orders", "sources": "source1", "supersedes": "none"}
+        next_row = {"id": "h2", "statement": next_statement, "scope": "Maple June handover",
+                    "behavior": "Carry May's unfinished orders minus June's new completion list",
+                    "sources": "source1", "supersedes": "none"}
+        question = {"question": "Which May orders and June handover rule did Maple confirm?", "type": "M6"}
         budget = SelectionBudget(self.root, {})
-        with patch.object(budget, "call", return_value={"reviews": [row]}) as call:
+        with patch.object(budget, "call", return_value={"reviews": [row, next_row]}) as call:
             result = extract_history_targets(
-                {"question": "Which orders are approved for Maple's May delivery cycle?", "type": "M6"},
-                self.history, {"public_goal": "Add delivery reconciliation"},
+                question, self.history, {"public_goal": "Complete Maple's June handover"},
                 {}, self.root / "cycle-targets", budget)
         prompt = call.call_args.args[0]
         self.assertIn("普通的一次执行命令不要作为约定", prompt)
+        self.assertIn("未确认的计划、猜测、缺记录等边界", prompt)
         self.assertIn("仍适用于本任务的、已确认的周期限定授权或状态必须保留", prompt)
         self.assertIn("不得扩展其周期或范围", prompt)
         self.assertIn("保留当前问题所需规则的真实适用条件、例外和已确认的局部修正", prompt)
+        self.assertIn("仅当后续公开消息明确修订同一对象的重叠适用范围时", prompt)
+        self.assertIn("同一消息可并列不同周期的有效规则", prompt)
+        self.assertIn("各周期分别适用而非替代时，supersedes 写 none", prompt)
+        self.assertEqual(call.call_args.args[1]["history"][0]["text"], history_text)
+        self.assertEqual(call.call_count, 1)
         self.assertEqual(result["status"], "candidate")
-        self.assertEqual(result["targets"][0]["statement"], statement)
-        self.assertEqual(result["targets"][0]["scope"], row["scope"])
+        self.assertEqual([target["statement"] for target in result["targets"]], [statement, next_statement])
+        self.assertEqual([target["scope"] for target in result["targets"]], [row["scope"], next_row["scope"]])
+        self.assertEqual([target["sources"] for target in result["targets"]], [["event1"], ["event1"]])
+        self.assertEqual([target["supersedes"] for target in result["targets"]], [[], []])
+
+        with patch.object(budget, "call", return_value={"reviews": [row, dict(next_row, supersedes="h1")]}) as call:
+            rejected = extract_history_targets(
+                question, self.history, {"public_goal": "Complete Maple's June handover"},
+                {}, self.root / "false-replacement", budget)
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(rejected["status"], "pending")
+        self.assertEqual(rejected["reason"], "Historical replacement must cite a later public event")
+        self.assertEqual(rejected["targets"], [])
 
     def test_history_target_extraction_preserves_saved_public_corrections(self):
         from dialogue_benchmark.task_eval.history import prepare_history
