@@ -79,11 +79,12 @@ def measure(events, provider_path):
 
 
 def compare_trials(comparison):
-    """Compare costs only for two successfully completed implementations."""
+    """Compare completed outcomes; compare costs only when both pass."""
     left, right = (comparison.get(k, {}) for k in ("without_memory", "with_memory"))
+    complete = all(trial.get("result") in {"passed", "failed", "uncertain"} for trial in (left, right))
     both = left.get("result") == right.get("result") == "passed"
     result = {"both_passed": both, "completion_difference":
-              int(right.get("result") == "passed") - int(left.get("result") == "passed"),
+              int(right.get("result") == "passed") - int(left.get("result") == "passed") if complete else None,
               "cost_differences": {}}
     for key in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"):
         a, b = left.get("metrics", {}).get(key), right.get("metrics", {}).get(key)

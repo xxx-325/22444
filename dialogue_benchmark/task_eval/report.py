@@ -64,7 +64,9 @@ def write_report(output, manifest):
             total("tool_calls"), total("file_view_calls"), total("shell_read_or_search_calls"),
             str(total("total_tokens")) + ("" if all(t.get("metrics", {}).get("usage_complete") for t in trials) else " (incomplete)"),
             sum(r["tokens"] for r in responder) if trials and all(r and r.get("usage_complete") for r in responder) else "not saved"))
-    if all(v is not None for v in rates.values()):
+    if all(v is not None for v in rates.values()) and all(
+            compare_trials(task["comparison"])["completion_difference"] is not None
+            for task in tasks if task.get("comparison")):
         lines += ["", "Pass-rate difference (with − without): %.1f percentage points." %
                   (100 * (rates["with_memory"] - rates["without_memory"]))]
     lines += ["", "## Paired differences", "",

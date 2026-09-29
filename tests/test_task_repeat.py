@@ -117,6 +117,8 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.assertEqual(read(self.output / "pair-02/manifest.json"), manifest)
         self.assertEqual(read(self.output / "source.json")["frozen"], self.receipt)
         self.assertTrue((self.output / "report.html").exists())
+        self.assertIn("Pass-rate difference (with − without): 0.0 percentage points.",
+                      (self.output / "report.md").read_text())
 
     def test_failed_trials_are_not_filtered_or_replaced(self):
         with patch("dialogue_benchmark.task_eval.run.run_checks", return_value=self.checks("failed")):
@@ -127,6 +129,16 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.assertEqual([trial["result"] for row in manifest["tasks"]
                           for trial in row["comparison"].values()], ["failed"] * 4)
         self.assertIn("0/2/0", (self.output / "report.md").read_text())
+
+    def test_completed_uncertain_trials_are_reported_separately_from_failures(self):
+        with patch("dialogue_benchmark.task_eval.run.run_checks", return_value=self.checks("uncertain")):
+            self.assertEqual(main(self.args()), 0)
+        manifest = read(self.output / "manifest.json")
+        self.assertEqual(manifest["completed"], 2)
+        self.assertEqual([trial["result"] for row in manifest["tasks"]
+                          for trial in row["comparison"].values()], ["uncertain"] * 4)
+        self.assertEqual([row["paired_differences"]["completion_difference"] for row in manifest["tasks"]], [0, 0])
+        self.assertIn("0/0/2", (self.output / "report.md").read_text())
 
     def test_execution_error_keeps_partial_pair_and_attempts_second_pair(self):
         with patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=[
@@ -141,6 +153,12 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.assertEqual(list(second["comparison"]), ["with_memory", "without_memory"])
         self.assertTrue((self.output / "pair-01/failure.json").exists())
         self.assertTrue((self.output / "pair-01/trial-2/result.json").exists())
+        self.assertIsNone(first["paired_differences"]["completion_difference"])
+        self.assertEqual(second["paired_differences"]["completion_difference"], -1)
+        report = (self.output / "report.md").read_text()
+        self.assertIn("| without_memory | 2 | 2/0/0 | 100.0% |", report)
+        self.assertIn("| with_memory | 1 | 0/1/0 | 0.0% |", report)
+        self.assertNotIn("Pass-rate difference", report)
 
     def test_interruption_retains_completed_condition_and_pending_pair(self):
         with patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=[self.checks(), KeyboardInterrupt()]):
@@ -152,6 +170,9 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.assertEqual(list(manifest["tasks"][0]["comparison"]), ["without_memory"])
         self.assertEqual(read(self.output / "pair-01/manifest.json"), manifest)
         self.assertEqual(len(self.calls), 2)
+        self.assertIsNone(read(self.output / "pair-01/paired-differences.json")["completion_difference"])
+        self.assertIsNone(manifest["tasks"][0]["paired_differences"]["completion_difference"])
+        self.assertNotIn("Pass-rate difference", (self.output / "report.md").read_text())
 
     def test_changed_source_hash_is_rejected_before_any_solver(self):
         for path in (self.spec / "task.md", self.baseline / "feature.py"):

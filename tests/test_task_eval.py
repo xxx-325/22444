@@ -218,6 +218,25 @@ class TaskEvaluationTests(unittest.TestCase):
         pair["with_memory"]["result"] = "passed"
         self.assertEqual(compare_trials(pair)["cost_differences"]["tool_calls"], -9)
 
+    def test_completion_difference_waits_for_both_outcomes(self):
+        self.assertIsNone(compare_trials({})["completion_difference"])
+        for condition, other in (("without_memory", "with_memory"), ("with_memory", "without_memory")):
+            for outcome in ("passed", "failed", "uncertain"):
+                with self.subTest(condition=condition, outcome=outcome):
+                    pair = {condition: {"result": outcome}}
+                    self.assertIsNone(compare_trials(pair)["completion_difference"])
+                    pair[other] = {"result": "pending"}
+                    self.assertIsNone(compare_trials(pair)["completion_difference"])
+
+    def test_completed_outcomes_keep_their_existing_completion_difference(self):
+        for left, right, expected in (
+            ("passed", "passed", 0), ("passed", "failed", -1), ("passed", "uncertain", -1),
+            ("failed", "passed", 1), ("failed", "failed", 0), ("failed", "uncertain", 0),
+            ("uncertain", "passed", 1), ("uncertain", "failed", 0), ("uncertain", "uncertain", 0)):
+            with self.subTest(left=left, right=right):
+                pair = {"without_memory": {"result": left}, "with_memory": {"result": right}}
+                self.assertEqual(compare_trials(pair)["completion_difference"], expected)
+
     def test_actions_and_usage_are_not_double_counted(self):
         events = [{"kind": "ActionEvent", "tool_call_id": "c", "tool_name": "file_editor",
                    "action": {"command": "view"}},
