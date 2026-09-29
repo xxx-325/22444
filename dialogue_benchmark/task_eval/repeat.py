@@ -41,6 +41,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("source-task", "simulator-path", "env-file", "output"):
         parser.add_argument("--" + option, type=Path, required=True)
+    parser.add_argument(
+        "--control-config",
+        type=Path,
+        help="Optional model/runtime configuration override for the repeated trials.",
+    )
     args = parser.parse_args(argv)
     task, output = args.source_task.resolve(), args.output.resolve()
     source = source_inputs(task)
@@ -76,7 +81,12 @@ def main(argv=None):
     root = None
     persist()
     try:
-        config = configure(args.simulator_path, output / "source.json", args.env_file)
+        config = configure(
+            args.simulator_path,
+            output / "source.json",
+            args.env_file,
+            control_config=args.control_config,
+        )
         baseline = output / "baseline"
         copy_tree(baseline_source, baseline, include_caches=True)
         version = pin_baseline(baseline)
@@ -86,6 +96,7 @@ def main(argv=None):
         manifest.update(config=config, baseline=str(baseline), baseline_version=version,
                         evaluator_version=source_version(Path(__file__).resolve().parents[2], "dialogue_benchmark"),
                         simulator_version=source_version(args.simulator_path, "simulator"))
+        save(output / "effective-config.json", config)
         options = dict(max_requests=source["execution"]["agent_requests"],
                        max_tokens=source["execution"]["agent_tokens"],
                        max_seconds=source["execution"]["agent_seconds"])

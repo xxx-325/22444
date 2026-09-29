@@ -45,6 +45,7 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.config = {"image": "sdk", "execution_image": "executor", "execution_backend": "ssh_sandbox",
                        "code": {"model": "original-solver", "key_env": "REPEAT_TEST_KEY", "max_output_tokens": 99},
                        "judge": {"model": "original-judge", "key_env": "REPEAT_TEST_KEY"}}
+        self.expected_effort = None
         self.manifest = {"baseline": str(self.baseline), "baseline_sha256": fingerprint(self.baseline),
                          "config": self.config, "execution": {"agent_requests": 7, "agent_tokens": 12345,
                                                               "agent_seconds": 42},
@@ -78,6 +79,8 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.assertEqual(options["max_tokens"], 12345)
         self.assertEqual(options["max_seconds"], 42)
         self.assertEqual(config["code"]["model"], "original-solver")
+        self.assertEqual(config["code"].get("reasoning_effort"), self.expected_effort)
+        self.assertEqual(config["judge"].get("reasoning_effort"), self.expected_effort)
         self.assertIsNone(config["code"]["max_output_tokens"])
         self.assertIsNone(config["judge"]["max_output_tokens"])
         candidate = root / "workspace/candidate"
@@ -119,6 +122,27 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.assertIn("Pass-rate difference (with − without): 0.0 percentage points.",
                       (self.output / "report.md").read_text())
 
+    def test_model_override_preserves_source_and_frozen_inputs(self):
+        original = fingerprint(self.task.parent.parent)
+        control_config = self.root / "max-config.json"
+        save(control_config, {
+            **self.config,
+            "code": {**self.config["code"], "reasoning_effort": "max"},
+            "judge": {**self.config["judge"], "reasoning_effort": "max"},
+        })
+        self.expected_effort = "max"
+        self.assertEqual(main(self.args() + ["--control-config", str(control_config)]), 0)
+        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(fingerprint(self.task.parent.parent), original)
+        self.assertEqual(read(self.output / "source.json")["config"], self.config)
+        manifest = read(self.output / "manifest.json")
+        self.assertEqual(read(self.output / "effective-config.json"), manifest["config"])
+        for role in ("code", "judge"):
+            self.assertEqual(manifest["config"][role]["reasoning_effort"], "max")
+            self.assertIsNone(manifest["config"][role]["max_output_tokens"])
+        for pair in ("pair-01", "pair-02"):
+            self.assertEqual(fingerprint(self.output / pair / "frozen"), self.receipt["spec_sha256"])
+
     def test_failed_trials_are_not_filtered_or_replaced(self):
         with patch("dialogue_benchmark.task_eval.run.run_checks", return_value=self.checks("failed")):
             self.assertEqual(main(self.args()), 0)
@@ -128,6 +152,26 @@ class FrozenTaskRepeatTests(unittest.TestCase):
         self.assertEqual([trial["result"] for row in manifest["tasks"]
                           for trial in row["comparison"].values()], ["failed"] * 4)
         self.assertIn("0/2/0", (self.output / "report.md").read_text())
+
+    def test_solver_interruption_is_visible_alongside_code_acceptance(self):
+        def interrupted_agent(*args, **kwargs):
+            outcome = self.agent(*args, **kwargs)
+            if len(self.calls) == 1:
+                outcome.update(status="error", detail="Provider returned an empty response")
+                save(args[0] / "result.json", outcome)
+            return outcome
+
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=interrupted_agent), patch(
+                "dialogue_benchmark.task_eval.run.run_checks", return_value=self.checks("failed")):
+            self.assertEqual(main(self.args()), 0)
+        manifest = read(self.output / "manifest.json")
+        trial = manifest["tasks"][0]["comparison"]["without_memory"]
+        self.assertEqual(trial["result"], "failed")
+        self.assertEqual(trial["solver_status"], "error")
+        report = (self.output / "report.md").read_text()
+        self.assertIn("| pair-01 | without_memory | error |", report)
+        self.assertIn("pair-01/trial-1/result.json", report)
+        self.assertIn("&quot;solver_status&quot;: &quot;error&quot;", (self.output / "report.html").read_text())
 
     def test_completed_uncertain_trials_are_reported_separately_from_failures(self):
         with patch("dialogue_benchmark.task_eval.run.run_checks", return_value=self.checks("uncertain")):

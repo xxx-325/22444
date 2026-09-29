@@ -44,6 +44,18 @@ def write_report(output, manifest):
                  trial.get("history_question_count", "not saved")), m.get("tool_calls", "not saved"),
                 m.get("file_view_calls", "not saved"), m.get("shell_read_or_search_calls", "not saved"),
                 m.get("total_tokens", "not saved")))
+    lines += ["", "## Agent execution", "",
+              "Results above describe acceptance of the saved code. An interrupted agent may still leave "
+              "code that can be checked; its execution status is recorded separately.", "",
+              "| Task | Condition | Solver status | Judge status | Solver receipt |",
+              "|---|---|---|---|---|"]
+    for task in tasks:
+        for condition, trial in task.get("comparison", {}).items():
+            receipt = output / task["task"] / trial.get("trial", "") / "result.json"
+            lines.append("| %s | %s | %s | %s | %s |" % (
+                _cell(task["task"]), _cell(condition), _cell(trial.get("solver_status", "not saved")),
+                _cell(trial.get("judge_status", "not saved")),
+                "[Execution result](%s)" % receipt.relative_to(output) if receipt.is_file() else "not saved"))
     lines += ["", "## Aggregate execution costs", "",
               "| Condition | Trials | Passed / failed / uncertain | Pass rate | History questions | Development tools | File views | Reads/searches | Solver tokens | Responder tokens |",
               "|---|---|---|---|---|---|---|---|---|---|"]
@@ -170,7 +182,9 @@ def write_html(output, manifest):
                     link(trial_root / "version.json", "Replay verification"),
                     link(trial_root / "trajectory.json", "Tool trajectory"),
                     link(trial_root / "checks/result.json", "Tests")])),
-                safe(json.dumps({"metrics": metrics, "acceptance": trial.get("acceptance"),
+                safe(json.dumps({"solver_status": trial.get("solver_status"),
+                                 "judge_status": trial.get("judge_status"),
+                                 "metrics": metrics, "acceptance": trial.get("acceptance"),
                                  "history_application": trial.get("history_application"),
                                  "interactions": trial.get("interaction_counts"),
                                  "clarifications": trial.get("clarifications"),

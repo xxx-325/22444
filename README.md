@@ -319,6 +319,10 @@ python -m dialogue_benchmark.task_eval.repeat \
 This runs exactly two fresh pairs: without memory then with memory, followed by
 with memory then without memory. The source manifest supplies the model configuration
 and total request, token and time budgets; no per-response output cap is added.
+Pass `--control-config /path/to/control-config.json` to override the Code and
+Judge model settings for this repetition (for example, to set both
+`reasoning_effort` values to `max`); the effective, credential-free configuration
+is saved with the run.
 The runner verifies the original baseline and frozen specification hashes, copies
 them into a new output, and retains the original task and oracle answer. New frozen
 receipts also bind the QA content; changing an answer requires a new task freeze. Solvers
@@ -326,6 +330,8 @@ receive independent baseline copies; author and reference implementations are no
 copied into their workspaces. Repetitions preserve the source task's history-channel
 availability. `source.json` records provenance, each `pair-NN/manifest.json` saves the
 cumulative results, and the usual reports include failures and partial pairs.
+Reports list agent execution status separately from acceptance of the saved code,
+so provider interruptions remain visible even when that code can be evaluated.
 Neither prior results nor successful repetitions select which pairs are retained.
 Interrupted runs keep completed results and mark the remaining pair pending; use a
 new output directory for another run. Invoke this command for each admitted task.
