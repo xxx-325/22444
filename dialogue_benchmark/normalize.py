@@ -98,8 +98,23 @@ def load_dialogue(path):
     for index, item in enumerate(records, 1):
         if not isinstance(item, dict) or item.get("kind") not in allowed:
             raise ValueError("Invalid record at position %d" % index)
+        # Preserve the producer's public identity as an alias while assigning
+        # one stable internal ID for chunking and provenance. External sidecars
+        # may refer to the original IDs (for example ``u2``), while evidence
+        # records use the normalized ``e3`` identity.
+        public_id = item.get("id")
+        original_id = item.get("original_id")
         record = dict(item, id="e%d" % index, order=index,
                       source_line=item.get("source_line", index))
+        # A normalized dialogue is a valid input to the converter again.  Do
+        # not turn its already-stable ``eN`` id into a new alias on every
+        # pass; preserve an explicitly supplied producer id when there is
+        # one, and otherwise add an alias only for a different public id.
+        if not (isinstance(original_id, str) and original_id):
+            original_id = public_id
+        if (isinstance(original_id, str) and original_id
+                and original_id != record["id"]):
+            record["original_id"] = original_id
         record["source_kind"] = source_kind_for(record)
         record["workspace"] = item.get("workspace", document.get("workspace"))
         result.append(record)

@@ -8,6 +8,7 @@ from dialogue_benchmark import cli
 from dialogue_benchmark.external import (external_review_projection, filter_external_facts,
                                          load_external_scopes, external_usage_review)
 from dialogue_benchmark.fact_index import build_evidence_index, static_evidence_check
+from dialogue_benchmark.normalize import load_dialogue
 
 
 class ExternalSourceTests(unittest.TestCase):
@@ -20,6 +21,26 @@ class ExternalSourceTests(unittest.TestCase):
             {"id": "e3", "order": 3, "kind": "result", "text": "下游测试发现其他空字段不能删除",
              "source_kind": "test"},
         ]
+
+    def test_unified_dialogue_preserves_sidecar_identity_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dialogue.json"
+            path.write_text(json.dumps({"version": 1, "records": [
+                {"id": "u2", "kind": "message", "role": "user", "text": "external rule"},
+                {"id": "a2", "kind": "message", "role": "assistant", "text": "ack"},
+            ]}), encoding="utf-8")
+            records = load_dialogue(path)
+            events = Path(directory) / "external-events.json"
+            events.write_text(json.dumps({"version": 1, "events": [{
+                "id": "x1", "kind": "compatibility_contract", "memory_kind": "M1",
+                "source_ids": ["u2"], "used_by": ["a2"],
+            }]}), encoding="utf-8")
+            loaded = load_external_scopes(events, records, 2, 32000)
+
+        self.assertEqual([row["id"] for row in records], ["e1", "e2"])
+        self.assertEqual([row["original_id"] for row in records], ["u2", "a2"])
+        self.assertEqual(loaded["rejected"], [])
+        self.assertEqual(loaded["scopes"][0]["external_source_ids"], ["e1"])
 
     def test_external_event_builds_scope_without_graph(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -102,7 +102,8 @@ def unchanged(receipt, spec, baseline):
             and receipt["spec_sha256"] == fingerprint(spec))
 
 
-def admission(validation, baseline_checks, reference_checks):
+def admission(validation, baseline_checks, reference_checks, baseline_acceptance=None,
+              reference_acceptance=None):
     """Tests cannot be overridden by a model's PASS; absent tests use explicit review."""
     if not (validation.get("BASELINE") == "unmet" and validation.get("REFERENCE") == "pass"
             and validation.get("VERDICT") == "accept"
@@ -112,6 +113,12 @@ def admission(validation, baseline_checks, reference_checks):
         return False
     if reference_checks["status"] in {"failed", "error"}:
         return False
+    if baseline_acceptance is not None and reference_acceptance is not None:
+        return (validation.get("TESTS") in {"executable", "partial", "unavailable"}
+                and baseline_acceptance["status"] == "failed"
+                and reference_acceptance["status"] == "passed"
+                and not reference_checks.get("skipped", 0)
+                and validation.get("MUTATIONS") == "caught")
     if validation.get("TESTS") == "executable":
         return (baseline_checks["status"] == "failed"
                 and reference_checks["status"] == "passed"
@@ -214,21 +221,26 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     save(reference / "qa.json", item["qa"])
     shutil.copy2(item["generation_input"], reference / "qa-input.json")
     save(reference / "provenance.json", {k: v for k, v in item.items() if k not in {"qa", "public_records"}})
-    # Use the exact source closure saved with the QA request for every source.
-    # External-only still avoids the full session: prepare_history keeps only
-    # the cited event and its bounded visible context.  Keeping this closure
-    # lets task construction freeze a private external rule instead of copying
-    # the answer into the public task.
+    # Use the exact source closure saved with the QA request for graph-mode
+    # tasks.  External-only tasks keep the dialogue only as QA provenance: the
+    # saved answer is the sole private information supplied to the memory arm.
     qa_source_ids = set()
     candidate = item.get("reviewed_candidate", item.get("original_candidate", {}))
     for point in candidate.get("answer_points", []) + candidate.get("forbidden_points", []):
         if isinstance(point, dict):
             qa_source_ids.update(source for source in point.get("sources", [])
                                  if isinstance(source, str) and source)
+    # External-only QA intentionally keeps its source dialogue as provenance,
+    # but does not turn that dialogue into a task-time history contract.  The
+    # task experiment compares the saved external answer with no answer; if we
+    # materialize a public history here, the construction path can leak the
+    # same rule into task authoring and both solver arms receive a different
+    # contract than the one being tested.
     public_history = (prepare_history(
         item["public_records"], item["generation_input"],
         qa_source_ids=qa_source_ids or None)
-                      if item.get("public_records") else None)
+                      if item.get("public_records")
+                      and item.get("qa_source", "graph") != "external" else None)
     if public_history:
         save(reference / "history.json", public_history)
         save(reference / "history-focus.json", public_history["initial_events"])
@@ -549,8 +561,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         record["validation"] = labels(feedback)
         if source_review:
             record["validation"] = {
-                "BASELINE": "unmet" if baseline_checks["status"] == "failed" else "uncertain",
-                "REFERENCE": "pass" if reference_checks["status"] == "passed" else "fail",
+                "BASELINE": "uncertain", "REFERENCE": "uncertain",
                 "TESTS": "executable" if reference_checks.get("cases") else "unavailable",
                 "MUTATIONS": "unavailable", "COVERAGE": coverage_review["status"],
                 "VERDICT": "accept" if coverage_review["status"] == "complete" else "revise",
@@ -588,6 +599,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record.update(final_baseline_checks=baseline_checks, final_reference_checks=reference_checks)
         else:
             record["reason"] = "missing_coverage_checks"
+
         if history and final_spec is not None and oracle_complete:
             def inspect_mutant(mutant, criteria, checks, output):
                 _, review_path, roots = inspect_acceptance(
@@ -610,6 +622,31 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
              "/workspace/experiments": validator / "workspace/experiments"})
             if final_spec else {"status": "uncertain"})
         record["reference_acceptance"] = reference_acceptance
+        baseline_acceptance = None
+        if history and final_spec is not None:
+            baseline_acceptance = assess_acceptance(items, baseline_checks)
+            if (any(not item["tests"] for item in items)
+                    and baseline_acceptance["status"] != "failed"
+                    and baseline_checks["status"] in {"passed", "unavailable"}
+                    and reference_acceptance["status"] == "passed"
+                    and record["history_mutations"]["status"] == "caught"):
+                try:
+                    judged, review_path, roots = inspect_acceptance(
+                        baseline, final_spec, items, baseline_checks, run / "baseline-inspection",
+                        config, agent_options, budget=preflight_budget)
+                    record["baseline_inspection"] = {
+                        key: judged[key] for key in ("status", "error_type", "detail", "metrics")
+                        if key in judged}
+                except Exception as error:
+                    review_path, roots = None, None
+                    record["baseline_inspection"] = {
+                        "status": "error", "error_type": type(error).__name__, "detail": str(error)}
+                baseline_acceptance = assess_acceptance(items, baseline_checks, review_path, roots)
+                record["preflight_budget"] = read(run / "preflight/selection-budget.json")
+            record["baseline_acceptance"] = baseline_acceptance
+            record["validation"].update(
+                BASELINE={"failed": "unmet", "passed": "met"}.get(baseline_acceptance["status"], "uncertain"),
+                REFERENCE={"passed": "pass", "failed": "fail"}.get(reference_acceptance["status"], "uncertain"))
         if not agent_finished(validated):
             record["reason"] = "validator_incomplete"
         elif final_spec is None:
@@ -623,7 +660,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                          and (not history or (
                                              record["validation"].get("HISTORY") == "supported"
                                              and record["history_mutations"]["status"] == "caught"))
-                                         and admission(record["validation"], baseline_checks, reference_checks))
+                                         and admission(record["validation"], baseline_checks, reference_checks,
+                                                       baseline_acceptance, reference_acceptance))
         record["accepted"] = False
         save(root / "construction.json", attempts)
         if record["validation_accepted"]:
