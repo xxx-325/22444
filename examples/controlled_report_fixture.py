@@ -109,6 +109,7 @@ def write_events(output: Path) -> None:
         "events": [{
             "id": "controlled-maple-contract",
             "kind": "compatibility_contract",
+            "memory_kind": "M1",
             "source_ids": ["e3"],
             "used_by": ["e5"],
             "context_ids": ["e4", "e6"],

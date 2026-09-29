@@ -11,6 +11,17 @@ from .metrics import measure, text_content
 from ..llm import DEFAULT_REQUEST_TIMEOUT, validate_request_timeout
 
 
+BUSINESS_DATA_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl"}
+
+
+def _repository_files(root, suffixes):
+    root = Path(root)
+    return [path for path in sorted(root.rglob("*"))
+            if path.is_file() and path.suffix in suffixes
+            and not any(part.startswith(".") or part == "__pycache__"
+                        for part in path.relative_to(root).parts)]
+
+
 def ask_model(prompt, payload, config, output):
     """Reuse the text protocol and retain each small model request and its usage."""
     from ..llm import ChatClient
@@ -63,6 +74,8 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
                                     for case in result.get("cases", [])]}
                     for role, result in checks.items()}
         payload = {"criteria_and_tests": files, "changed_sources": sources, "executed_checks": outcomes}
+        payload["business_inputs"] = {path.relative_to(baseline).as_posix(): path.read_text()
+                                      for path in _repository_files(baseline, BUSINESS_DATA_SUFFIXES)}
         if frozen_regression:
             payload["execution_context"] = (
                 "Before check execution, the host replaces /workspace/candidate/tests in a disposable "
@@ -108,6 +121,7 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
         response = budget.call(MUTATION_FILES, {
             "task": (spec / "task.md").read_text(),
             "contract": (spec / "history-contract.txt").read_text(),
+            "memory_use": (spec / "memory-use.md").read_text(),
             "acceptance": read(spec / "acceptance.json"), "reference_sources": sources}, config, output)
         names = {"mutations.txt", "before.txt", "after.txt"}
         files = _parse_files(response, names, names)
@@ -149,7 +163,7 @@ def _write_test_files(spec, files):
         (Path(spec) / name).write_text(content, encoding="utf-8")
 
 
-def write_tests(spec, baseline, config, output, budget, feedback=""):
+def write_tests(spec, baseline, config, output, budget, feedback="", private_memory_answer=""):
     """Write tests in one request when the complete Python snapshot fits."""
     from ..llm import request_size
     from .prompts import TEST_FILES
@@ -158,15 +172,14 @@ def write_tests(spec, baseline, config, output, budget, feedback=""):
     spec, baseline, output = Path(spec), Path(baseline), Path(output)
     if not (baseline / "tests").is_dir():
         return None
-    paths = [path for path in sorted(baseline.rglob("*"))
-             if path.is_file() and path.suffix in {".py", ".md", ".rst", ".txt", ".toml", ".ini", ".cfg"}
-             and not any(part.startswith(".") or part == "__pycache__"
-                         for part in path.relative_to(baseline).parts)]
+    paths = _repository_files(baseline, BUSINESS_DATA_SUFFIXES |
+                              {".py", ".md", ".rst", ".txt", ".toml", ".ini", ".cfg"})
     if not any(path.suffix == ".py" for path in paths):
         return None
     payload = {"requirements": {name: (spec / name).read_text() for name in
                ("task.md", "acceptance.md", "history-contract.txt") if (spec / name).is_file()},
                "repository": {path.relative_to(baseline).as_posix(): path.read_text() for path in paths},
+               "private_memory_answer": private_memory_answer,
                "feedback": feedback}
     if request_size(TEST_FILES, payload) > config.get("model_request_chars", 60000):
         return None
@@ -192,7 +205,7 @@ def write_tests(spec, baseline, config, output, budget, feedback=""):
     return file_generation_result(output, result)
 
 
-def repair_tests(spec, config, output, budget, feedback):
+def repair_tests(spec, config, output, budget, feedback, private_memory_answer=""):
     """Repair known test defects from complete saved files in one model request."""
     from .selection import _parse_files
     from .prompts import TEST_REPAIR
@@ -201,6 +214,12 @@ def repair_tests(spec, config, output, budget, feedback):
     tests = list(spec.glob("test_*.py"))
     if not tests or any(path.name != "existing_suite.sh" for path in (spec / "commands").glob("*.sh")):
         return None
+    # Validator output can contain full pytest traces and duplicated evidence.
+    # Keep the repair request small enough for the configured text protocol;
+    # the saved files remain available to the author for full context.
+    feedback = str(feedback or "")
+    if len(feedback) > 18000:
+        feedback = feedback[:12000] + "\n...[feedback shortened]...\n" + feedback[-6000:]
     try:
         names = {"acceptance.md", *(path.name for path in tests)}
         fixed = {name: (spec / name).read_text() for name in
@@ -208,6 +227,7 @@ def repair_tests(spec, config, output, budget, feedback):
         existing = {name: (spec / name).read_text() for name in names}
         install_candidate_fixture(spec)
         response = budget.call(TEST_REPAIR, {"requirements": fixed, "files": existing,
+                              "private_memory_answer": private_memory_answer,
                               "feedback": feedback}, config, output)
         files = _parse_files(response, names, names)
         _write_test_files(spec, files)
@@ -359,6 +379,11 @@ def review_task(task, answer, config, output, *, evidence=None, budget=None):
         decision = reviews[0] if len(reviews) == 1 else {}
         result = {"status": decision.get("leakage"), "issue": decision.get("issue")}
         result.update(memory_gap=decision.get("memory_gap"), answer_quote=decision.get("answer_quote"))
+        # Some providers omit the optional ``issue`` line for a clean review.
+        # The decision is still unambiguous from leakage=clean; normalize it
+        # to the canonical no-issue value instead of discarding a valid task.
+        if result["status"] == "clean" and not isinstance(result["issue"], str):
+            result["issue"] = "none"
         if (result["status"] not in {"clean", "leaked", "ineligible", "uncertain"}
                 or not isinstance(result["issue"], str) or not result["issue"].strip()
                 or (result["status"] == "clean") != (result["issue"] == "none")):

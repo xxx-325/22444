@@ -3,7 +3,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from dialogue_benchmark.llm import parse_text_response
 from dialogue_benchmark.task_eval.artifacts import read, save
@@ -712,6 +712,11 @@ class CheckReviewTests(unittest.TestCase):
             (baseline / "entry.py").write_text("VALUE = 1\n")
             original = "def test_existing(): assert True\n"
             (baseline / "tests/test_existing.py").write_text(original)
+            business_inputs = {"orders.json": '[{"id": "one"}]\n',
+                               "replies.csv": 'id,status\none,Delivered, signed\n'}
+            for name, content in business_inputs.items():
+                (baseline / name).write_text(content)
+            (baseline / ".private.json").write_text("Not part of the snapshot input")
             (spec / "task.md").write_text("Add the new entry")
             (spec / "acceptance.md").write_text("Initial checks")
             calls = []
@@ -724,6 +729,9 @@ class CheckReviewTests(unittest.TestCase):
             self.assertEqual(result["status"], "finished")
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0]["repository"]["entry.py"], "VALUE = 1\n")
+            for name, content in business_inputs.items():
+                self.assertEqual(calls[0]["repository"][name], content)
+            self.assertNotIn(".private.json", calls[0]["repository"])
             self.assertEqual((spec / "regression/tests/test_existing.py").read_text(), original)
             self.assertEqual((baseline / "tests/test_existing.py").read_text(), original)
             self.assertIn("/workspace/candidate/tests", (spec / "commands/existing_suite.sh").read_text())
@@ -773,14 +781,16 @@ class CheckReviewTests(unittest.TestCase):
             spec.mkdir()
             candidate.mkdir()
             (candidate / "entry.py").write_text("limit = 384\n")
-            for name in ("task.md", "history-contract.txt"):
+            for name in ("task.md", "history-contract.txt", "memory-use.md"):
                 (spec / name).write_text("Apply the known receiver limit")
             save(spec / "acceptance.json", [{"id": "a2", "basis": ["h1"]}])
             files = [{"name": "mutations.txt", "content": "REVIEW m1\nacceptance: a2\nfile: entry.py\nEND_REVIEW"},
                      {"name": "before.txt", "content": "limit = 384"},
                      {"name": "after.txt", "content": "limit = 500"}]
+            call = Mock(return_value={"files": files})
             result = write_history_mutation(spec, candidate, ["entry.py"], {}, root / "review",
-                SimpleNamespace(call=lambda *args: {"files": files}))
+                SimpleNamespace(call=call))
+            self.assertEqual(call.call_args.args[1]["memory_use"], "Apply the known receiver limit")
             self.assertEqual(result["status"], "finished")
             self.assertEqual(result["method"], "model_file_generation")
             self.assertEqual((candidate / "entry.py").read_text(), "limit = 384\n")
@@ -809,7 +819,7 @@ class CheckReviewTests(unittest.TestCase):
             spec, candidate = root / "spec", root / "candidate"
             spec.mkdir()
             candidate.mkdir()
-            for name in ("task.md", "history-contract.txt"):
+            for name in ("task.md", "history-contract.txt", "memory-use.md"):
                 (spec / name).write_text("Apply the customer status mapping")
             save(spec / "acceptance.json", [{"id": "a2", "basis": ["h1"]}])
             path = candidate / "rules.json"
@@ -840,6 +850,8 @@ class CheckReviewTests(unittest.TestCase):
             (spec / "task.md").write_text("Export selected records")
             (spec / "test_acceptance.py").write_text("Tests")
             (baseline / "entry.py").write_text("Old implementation")
+            (baseline / "replies.csv").write_text("id,status\none,Delivered, signed\n")
+            (baseline / ".private.json").write_text("Excluded")
             (candidate / "entry.py").write_text("New implementation")
             (candidate / "unrelated.py").write_text("Unrelated")
             for decision, expected in (("complete", "complete"), ("unsupported", "revise")):
@@ -854,6 +866,7 @@ class CheckReviewTests(unittest.TestCase):
                 self.assertNotIn("history.json", payload["criteria_and_tests"])
                 self.assertNotIn("history-review.md", payload["criteria_and_tests"])
                 self.assertEqual(set(payload["changed_sources"]), {"entry.py"})
+                self.assertEqual(payload["business_inputs"], {"replies.csv": "id,status\none,Delivered, signed\n"})
                 self.assertIn("-Old implementation\n", payload["changed_sources"]["entry.py"])
                 self.assertIn("+New implementation\n", payload["changed_sources"]["entry.py"])
                 self.assertEqual(payload["executed_checks"], {"reference": {"status": "passed",

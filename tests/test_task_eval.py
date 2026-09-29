@@ -8,14 +8,50 @@ from unittest.mock import patch
 
 from dialogue_benchmark.llm import _ask_stage
 from dialogue_benchmark.task_eval.artifacts import qa_inputs
-from dialogue_benchmark.task_eval.checks import pytest_result
+from dialogue_benchmark.task_eval.checks import pytest_result, _test_write_violations
 from dialogue_benchmark.task_eval.metrics import compare_trials, measure
 from dialogue_benchmark.task_eval.runtime import configure, readable_reference, release_completed_execution, run_agent
-from dialogue_benchmark.task_eval.run import (admission, freeze, solver_input,
-                                              unchanged, validated_spec)
+from dialogue_benchmark.task_eval.run import (admission, freeze, reference_solver_answer,
+                                              solver_input, unchanged, validated_spec)
 
 
 class TaskEvaluationTests(unittest.TestCase):
+    def test_generated_acceptance_tests_keep_candidate_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "test_acceptance.py").write_text(
+                "def test_bad(candidate_root):\n"
+                "    (candidate_root / 'input.json').write_text('{}')\n",
+                encoding="utf-8")
+            self.assertEqual(len(_test_write_violations(root)), 1)
+
+    def test_generated_acceptance_tests_use_tmp_path_for_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "test_acceptance.py").write_text(
+                "def test_ok(candidate_root, tmp_path):\n"
+                "    (tmp_path / 'input.json').write_text('{}')\n",
+                encoding="utf-8")
+            self.assertEqual(_test_write_violations(root), [])
+
+    def test_read_only_precheck_respects_open_mode_and_function_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "test_acceptance.py").write_text(
+                "def test_read(candidate_root):\n"
+                "    path = candidate_root / 'data.json'\n"
+                "    with path.open() as stream: stream.read()\n"
+                "    with path.open(mode='rb') as stream: stream.read()\n"
+                "def test_output(tmp_path):\n"
+                "    path = tmp_path / 'output.json'\n"
+                "    path.write_text('{}')\n"
+                "def test_write(candidate_root):\n"
+                "    path = candidate_root / 'data.json'\n"
+                "    path.open(mode='a')\n")
+            violations = _test_write_violations(root)
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn(":10:", violations[0])
+
     def test_author_uses_remaining_runtime_budget(self):
         for limit, turns in ((100, 1), (12, 1)):
             with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
@@ -141,6 +177,21 @@ class TaskEvaluationTests(unittest.TestCase):
         self.assertNotIn("acceptance.md", memory)
         self.assertIn("Old behavior", memory[len(normal):])
 
+    def test_external_reference_solver_receives_qa_answer_without_history_contract(self):
+        item = {"qa_source": "external", "qa": {
+            "answer_points": [{"text": "Maple keeps explicit null values except note."}]}}
+        self.assertEqual(reference_solver_answer(item),
+                         "- Maple keeps explicit null values except note.")
+
+    def test_graph_reference_solver_keeps_contract_context(self):
+        item = {"qa_source": "graph", "qa": {
+            "answer_points": [{"text": "Historical rule."}]}}
+        history = {"contracts": [], "oracle_answer": "Contract context."}
+        with patch("dialogue_benchmark.task_eval.run.historical_context",
+                   return_value="Contract context."):
+            self.assertEqual(reference_solver_answer(item, history),
+                             "- Historical rule.\nContract context.")
+
     def test_frozen_content_change_is_detected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -176,6 +227,32 @@ class TaskEvaluationTests(unittest.TestCase):
         self.assertTrue(admission(decision, {"status": "failed"}, {"status": "passed"}))
         decision["TESTS"] = "unavailable"
         self.assertTrue(admission(decision, {"status": "unavailable"}, {"status": "unavailable"}))
+
+    def test_inspection_acceptance_controls_history_admission(self):
+        decision = {"BASELINE": "unmet", "REFERENCE": "pass", "VERDICT": "accept",
+                    "TESTS": "executable", "MUTATIONS": "caught", "COVERAGE": "complete"}
+        passed = {"status": "passed", "rows": []}
+        failed = {"status": "failed", "rows": []}
+        uncertain = {"status": "uncertain", "rows": []}
+        # A public inspection can expose a missing baseline artifact even when
+        # every automatic regression passes.
+        self.assertTrue(admission(decision, {"status": "passed"}, {"status": "passed"},
+                                  failed, passed))
+        # A baseline that already satisfies the inspection is not an unmet task.
+        self.assertFalse(admission(decision, {"status": "passed"}, {"status": "passed"},
+                                   passed, passed))
+        # Missing inspection evidence and inspector/runtime errors stay closed.
+        self.assertFalse(admission(decision, {"status": "unavailable"}, {"status": "passed"},
+                                   uncertain, passed))
+        self.assertFalse(admission(decision, {"status": "passed"}, {"status": "error"},
+                                   failed, uncertain))
+        # Pure inspection tasks use the same rule when no pytest cases exist.
+        self.assertTrue(admission(dict(decision, TESTS="unavailable"),
+                                  {"status": "unavailable"}, {"status": "unavailable"},
+                                  failed, passed))
+        self.assertFalse(admission(dict(decision, TESTS="unavailable", MUTATIONS="unverified"),
+                                   {"status": "unavailable"}, {"status": "unavailable"},
+                                   failed, passed))
 
     def test_unresolved_coverage_and_skipped_tests_prevent_admission(self):
         decision = {"BASELINE": "unmet", "REFERENCE": "pass", "VERDICT": "accept",

@@ -30,6 +30,20 @@ def answer_text(question):
                      for p in points)
 
 
+def reference_solver_answer(item, history=None):
+    """Return the private information available to the reference solver.
+
+    External-only QA has no public history contract, but its approved answer
+    is still the fact that makes the task constructible.  Graph tasks keep the
+    historical contract context used by the existing construction flow.
+    """
+    if item.get("qa_source") == "external":
+        return answer_text(item["qa"])
+    if history:
+        return answer_text(item["qa"]) + "\n" + historical_context(history)
+    return None
+
+
 def prepare(root, baseline):
     copy_tree(baseline, Path(root) / "workspace/candidate")
 
@@ -264,11 +278,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             exploration_text, exploration = explore_repository(
                 root, baseline, item, config, budget.remaining(), public_history)
             metrics = exploration.get("metrics", {})
-            budget.record([dict(
-                request_count=metrics.get("attempted_requests", 0),
-                **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens")
-                    if k in metrics} if metrics.get("usage_complete") else {}),
-            )])
+            # Charge attempted calls even if exploration failed. A zero-call
+            # startup failure consumes nothing; missing provider usage stays unknown.
+            usage = {"request_count": metrics.get("attempted_requests", 0)}
+            if metrics.get("usage_complete"):
+                usage.update({k: metrics[k] for k in ("prompt_tokens", "completion_tokens")
+                              if k in metrics})
+            budget.record([usage])
         except Exception as error:
             save(root / "repository-exploration.json", {
                 "status": "error", "error_type": type(error).__name__,
@@ -401,12 +417,24 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 # that produced the latest feedback, including validator checks.
                 shutil.copytree(previous_tests, spec, dirs_exist_ok=True)
             remaining = budget.remaining()
+            private_memory_answer = (answer_text(item["qa"])
+                                     if item.get("qa_source") == "external" else "")
             if reused and attempt == 0 and not preparation_feedback:
                 authored = reused[1]
             else:
-                authored = (repair_tests(spec, config, author, budget, feedback)
-                            if preparation_feedback or previous_tests else
-                            write_tests(spec, baseline, config, author, budget, feedback))
+                if preparation_feedback or previous_tests:
+                    if private_memory_answer:
+                        authored = repair_tests(
+                            spec, config, author, budget, feedback,
+                            private_memory_answer=private_memory_answer)
+                    else:
+                        authored = repair_tests(spec, config, author, budget, feedback)
+                elif private_memory_answer:
+                    authored = write_tests(
+                        spec, baseline, config, author, budget, feedback,
+                        private_memory_answer=private_memory_answer)
+                else:
+                    authored = write_tests(spec, baseline, config, author, budget, feedback)
                 if authored is None:
                     prepare(author, baseline)
                     test_reference = prepare_test_reference(spec, reference, run / "test-reference")
@@ -508,7 +536,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         implementation = run / "reference-solver"
         prepare(implementation, baseline)
         print(root.name, "reference implementation", attempt, flush=True)
-        reference_answer = (answer_text(item["qa"]) + "\n" + historical_context(history)) if history else None
+        reference_answer = reference_solver_answer(item, history)
         solved = run_agent(implementation, config, "code",
                            solver_input((spec / "task.md").read_text(), reference_answer), **agent_options)
         candidate = implementation / "workspace/candidate"

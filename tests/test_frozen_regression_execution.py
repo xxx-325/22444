@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -68,7 +69,8 @@ class FrozenRegressionExecutionTests(unittest.TestCase):
                     command[0] = sys.executable
                 elif command[0] == "bash":
                     command = ["bash", "-c", Path(command[1]).read_text().replace(
-                        "/workspace", str(workspace))]
+                        "/workspace", str(workspace)).replace(
+                        "python -m pytest", shlex.quote(sys.executable) + " -m pytest")]
                 return real_run(command, cwd=workspace / "candidate", env=env, **kwargs)
 
             for name, implementation, expected in (

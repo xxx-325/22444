@@ -9,6 +9,9 @@ description = "Build evidence-grounded QA from dialogue and code history"
 requires-python = ">=3.9"
 dependencies = ["python-dotenv>=1.0,<2"]
 
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
 [project.scripts]
 dialogue-benchmark = "dialogue_benchmark.cli:main"
 dialogue-qa = "dialogue_benchmark.cli:main"

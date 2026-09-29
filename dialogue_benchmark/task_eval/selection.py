@@ -96,6 +96,11 @@ def _query_from_text(value):
         path = None
     if text == "-":
         text = None
+    # The text protocol uses ``-`` for an omitted path/text field.  Models
+    # occasionally use the same marker for the first page; treat that as the
+    # documented zero offset instead of rejecting an otherwise safe query.
+    if offset == "-":
+        offset = 0
     try:
         offset = int(offset)
     except (TypeError, ValueError):
@@ -160,6 +165,15 @@ def query_evidence(query, baseline, history):
         path = _path(root, query.get("path"))
         if op == "read":
             if not path.is_file() or path.stat().st_size > 2000000:
+                # A directory read is a compact, deterministic file index.
+                # It lets selection discover the relevant entry point without
+                # forcing the model to guess a filename; file contents still
+                # require an explicit subsequent read.
+                if path.is_dir():
+                    names = sorted(str(item.relative_to(root)) for item in path.rglob("*")
+                                   if item.is_file() and not any(part.startswith(".") for part in item.parts))
+                    return {"path": str(path.relative_to(root)) or ".", "files": names[offset:offset + 80],
+                            "offset": offset, "next_offset": offset + 80 if len(names) > offset + 80 else None}
                 raise ValueError("Read requires a text file smaller than 2 MB")
             lines = path.read_text(encoding="utf-8").splitlines()
             if offset > len(lines):
@@ -301,7 +315,9 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
         while True:
             step = output / ("step-%03d" % len(state["queries"]))
             allowed = "need_evidence, stop, pending" if not state["queries"] else "need_evidence, candidate, stop, pending"
-            response = budget.call(SELECT_TASK + "\n本轮可选 decision 只有：" + allowed +
+            duplicate_note = ("\n上一轮查询已经执行并保存在 queries 中；不要重复相同的查询，"
+                              "零匹配也不要重复原文字查找。\n" if state["queries"] else "")
+            response = budget.call(SELECT_TASK + duplicate_note + "\n本轮可选 decision 只有：" + allowed +
                                    "。若仓库还没读过，请先查入口或说明文档。\n"
                                    "已提供内容、可支持最终结论的 SOURCES：" + ",".join(sorted(known)) +
                                    "。索引中其余来源只可请求读取，不能引用其内容。", state, config, step)
@@ -386,8 +402,28 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
         answer_fragments = [point.get("text", point.get("claim", ""))
                             for point in qa.get("answer_points", [])
                             if isinstance(point, dict)]
-        if any(fragment and len(fragment) >= 24
-               and any(fragment in public.get(key, "") for key in public) for fragment in answer_fragments):
+        answer_fragments.extend(point for point in qa.get("answer_points", [])
+                                if isinstance(point, str))
+        # The selector is shown the answer to decide whether a task is worth
+        # constructing, but its public goal must remain a natural business
+        # request.  Reject both verbatim answer points and distinctive
+        # clauses, since a leaked direction lets the no-memory arm solve the
+        # task without recovering the historical fact.
+        leaked = []
+        for fragment in answer_fragments:
+            words = re.findall(r"[\w\u4e00-\u9fff]+", fragment)
+            if not fragment or len(fragment) < 8:
+                continue
+            for key, value in public.items():
+                if fragment in value:
+                    leaked.append((key, fragment))
+                    continue
+                significant = [word for word in words if len(word) > 1]
+                if len(significant) >= 3:
+                    hits = sum(word in value for word in significant)
+                    if hits >= max(2, len(significant) - 2):
+                        leaked.append((key, fragment))
+        if leaked:
             result["status"] = "pending"
             result["reason"] = "public_goal_contains_answer"
         else:

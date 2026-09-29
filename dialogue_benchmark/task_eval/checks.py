@@ -1,5 +1,6 @@
 """Resolve frozen acceptance items and execute checks in the existing sandbox."""
 
+import ast
 from pathlib import Path
 import re
 import shutil
@@ -9,6 +10,59 @@ import xml.etree.ElementTree as ET
 
 from .artifacts import copy_tree, save, install_candidate_fixture
 from .runtime import release_completed_execution
+
+
+def _test_write_violations(spec):
+    """Find generated tests that write through the read-only candidate fixture.
+
+    The candidate snapshot is intentionally mounted read-only during checks.
+    Catch the common alias form before starting a sandbox so the author can
+    repair the test with ``tmp_path`` instead of receiving one opaque
+    filesystem error per test.
+    """
+    violations = []
+    write_methods = {"write_text", "write_bytes", "mkdir", "touch", "unlink",
+                     "rename", "replace", "rmdir"}
+    for path in sorted(Path(spec).rglob("test_*.py")) + sorted(Path(spec).rglob("*_test.py")):
+        if not path.is_file():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            nodes = list(ast.walk(function))
+            aliases = {"candidate_root"}
+            assignments = {}
+            for node in nodes:
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            assignments.setdefault(target.id, []).append(node.value)
+
+            def candidate_path(node):
+                if isinstance(node, ast.Name):
+                    return node.id in aliases
+                return (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)
+                        and candidate_path(node.left))
+
+            # Reassigned aliases are ambiguous; the real sandbox still enforces read-only mounts.
+            aliases.update(name for name, values in assignments.items()
+                           if len(values) == 1 and candidate_path(values[0]))
+            for node in nodes:
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and candidate_path(node.func.value)):
+                    continue
+                writes = node.func.attr in write_methods
+                if node.func.attr == "open":
+                    mode = next((arg.value for arg in node.keywords if arg.arg == "mode"),
+                                node.args[0] if node.args else ast.Constant("r"))
+                    writes = (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                              and any(flag in mode.value for flag in "wax+"))
+                if writes:
+                    violations.append(f"{path.name}:{node.lineno}: candidate_root is read-only; "
+                                      f"move temporary output to tmp_path ({node.func.attr})")
+    return sorted(set(violations))
 
 def _test_identity(value):
     """Match a pytest file node ID to its JUnit module ID without fuzzy aliases."""
@@ -166,6 +220,14 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
                     for pattern in ("test_*.py", "*_test.py")
                     for path in spec.rglob(pattern) if path.is_file()})
     scripts = sorted((spec / "commands").glob("*.sh"))
+    write_violations = _test_write_violations(spec)
+    if write_violations:
+        result = {"status": "error", "reason": "generated_test_writes_read_only_candidate",
+                  "detail": "\n".join(write_violations), "exit_code": 2,
+                  "tests": len(tests), "passed": 0, "failed": 0, "errors": len(tests),
+                  "skipped": 0, "cases": [], "test_files": tests}
+        save(output / "result.json", result)
+        return result
     if not tests and not scripts:
         result = {"status": "unavailable", "reason": "No generated test; use frozen judge criteria"}
     else:
@@ -250,6 +312,9 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
 def check_history_mutations(candidate, spec, validator_checks, output, image, *, candidate_pythonpath=None,
                             inspector=None):
     """Replay saved wrong implementations; functioning task rows must still pass."""
+    # Keep this helper usable by offline/unit callers that do not install the
+    # simulator package.  The normal CLI supplies the sandbox dependency;
+    # without it there is no executable mutation evidence to claim.
     from ..llm import parse_text_response
     from .artifacts import read
     from .versions import pin_baseline

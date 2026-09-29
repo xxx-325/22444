@@ -15,7 +15,7 @@ def write_report(output, manifest):
     output = Path(output)
     tasks = manifest.get("tasks", [])
     lines = ["# Repository task comparison", "",
-             "QA answers supply historical information. Both groups may ask for frozen history.",
+             "The memory condition receives the saved QA answer as historical information.",
              "", "| Task | Condition | Result | History questions | Development tools | File views | Reads/searches | Solver tokens |",
              "|---|---|---|---|---|---|---|---|"]
     if manifest.get("selection_only"):

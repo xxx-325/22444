@@ -136,6 +136,25 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(result["without_memory"]["result"], "failed")
         self.assertEqual(result["with_memory"]["result"], "passed")
 
+    def test_failed_exploration_retains_attempted_usage(self):
+        self.item["qa"]["question"] = "Which historical report rule applies?"
+        for metrics, requests, complete in (
+                ({"attempted_requests": 0, "usage_complete": False}, 0, True),
+                ({"attempted_requests": 2, "prompt_tokens": 30,
+                  "completion_tokens": 5, "usage_complete": True}, 2, True),
+                ({"attempted_requests": 1, "usage_complete": False}, 1, False)):
+            with self.subTest(metrics=metrics):
+                root = self.base / ("exploration-%d" % requests)
+                with patch("dialogue_benchmark.task_eval.run.explore_repository",
+                           return_value=("", {"status": "error", "metrics": metrics})), \
+                     patch("dialogue_benchmark.task_eval.run.select_task",
+                           return_value={"status": "pending", "reason": "No candidate"}):
+                    construct(self.item, root, self.baseline, {}, 0, {})
+                budget = read(root / "selection-budget.json")
+                self.assertEqual(budget["requests"], requests)
+                self.assertEqual(budget["usage_complete"], complete)
+                self.assertEqual(budget["total_tokens"], 35 if requests == 2 else 0)
+
     def test_construction_inspects_mutant_and_charges_the_same_preflight_budget(self):
         rule = "Keep other null values."
         self.item["qa"]["answer_points"] = [{"text": rule}]
@@ -244,6 +263,91 @@ class TaskPreflightTests(unittest.TestCase):
                 self.assertEqual(record["preflight_budget"]["requests"], 3 if known_acceptance else 1)
                 self.assertEqual(record["preflight_budget"]["total_tokens"], 65 if known_acceptance else 15)
                 self.assertEqual(record["preflight_budget"], read(root / "construction-00/preflight/selection-budget.json"))
+
+    def test_history_admission_checks_missing_baseline_inspection_after_mutant(self):
+        rule = "The approved report status is DELIVERED."
+        self.item["qa"]["answer_points"] = [{"text": rule}]
+        self.item["public_records"] = [dict(id="e1", original_id="choice", order=1,
+                                             kind="message", text=rule)]
+        save(Path(self.item["generation_input"]), {"ref_to_source": {"资料1": "e1"}})
+        inspect_calls = []
+
+        def draft(selection, config, output, spec, budget, feedback=""):
+            self.fake_draft(selection, config, output, spec, budget, feedback)
+            (spec / "history-contract.txt").write_text(
+                "REVIEW h1\nstatement: " + rule + "\nscope: All reports\nsources: choice\n"
+                "supersedes: none\nbehavior: Report the approved status\nactive: yes\n"
+                "repository: external\nEND_REVIEW")
+            (spec / "acceptance.md").write_text(
+                "| a1 | Deliver the report | task | inspect: Read report.txt; it must be ready |\n"
+                "| a2 | Apply the approved status | h1 | test: test_acceptance::test_status |\n")
+
+        def review(task, answer, config, output, *, evidence, budget):
+            return {"status": "clean", "task_review": {"leakage": "clean"}, "history_rows": [
+                dict(id=row["id"], applicable="yes", public="none", answer="sufficient",
+                     historical_sources=row["sources"], answer_quote=rule)
+                for row in evidence["contracts"]]}
+
+        def coverage(spec, baseline, candidate, changed, results, config, output, budget):
+            output.mkdir(parents=True)
+            (output / "coverage.md").write_text("The test and inspect checks cover the two acceptance rows.")
+            return {"status": "complete"}
+
+        def checks(candidate, *args, **kwargs):
+            mutant = "history-mutations" in str(candidate)
+            return {"status": "failed" if mutant else "passed",
+                    "cases": [{"id": "test_acceptance::test_status",
+                               "status": "failed" if mutant else "passed"}]}
+
+        def agent(root, config, role, message, **options):
+            if root.name == "reference-solver":
+                (root / "workspace/candidate/report.txt").write_text("READY\nDELIVERED\n")
+            elif root.name == "validator":
+                folder = root / "workspace/checks"
+                folder.mkdir()
+                (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
+                (folder / "m1.patch").write_text(
+                    "--- a/report.txt\n+++ b/report.txt\n@@ -1,2 +1,2 @@\n"
+                    " READY\n-DELIVERED\n+UNKNOWN\n")
+                (folder / "acceptance-review.txt").write_text(
+                    "REVIEW a1\nstatus: passed\n"
+                    "evidence: /reference/implementation/report.txt:1\nEND_REVIEW")
+            return {"status": "finished", "metrics": {
+                "attempted_requests": 1, "prompt_tokens": 10,
+                "completion_tokens": 5, "usage_complete": True}}
+
+        def inspect(candidate, spec, items, checks_result, output, config, agent_options, *, budget=None):
+            inspect_calls.append(output.name)
+            review_path = output / "workspace/checks/acceptance-review.txt"
+            review_path.parent.mkdir(parents=True, exist_ok=True)
+            status = "failed" if candidate == self.baseline else "passed"
+            evidence_path = output / "workspace/checks/inspection.txt"
+            evidence_path.write_text("INSPECTED\n")
+            review_path.write_text(
+                "REVIEW a1\nstatus: %s\nevidence: /workspace/checks/inspection.txt:1\nEND_REVIEW" % status)
+            return {"status": "finished", "metrics": {}}, review_path, {
+                "/workspace/candidate": candidate,
+                "/workspace/checks": output / "workspace/checks"}
+
+        with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
+             patch("dialogue_benchmark.task_eval.run.review_task", side_effect=review), \
+             patch("dialogue_benchmark.task_eval.run.review_sources", return_value={"support": "supported"}), \
+             patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
+             patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+             patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks), \
+             patch("dialogue_benchmark.task_eval.run.inspect_acceptance", side_effect=inspect):
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0,
+                                {"max_requests": 8, "max_tokens": 200})
+
+        self.assertIsNotNone(receipt)
+        self.assertEqual(inspect_calls, ["m1", "baseline-inspection"])
+        record = read(self.root / "construction.json")[0]
+        self.assertEqual(record["baseline_acceptance"]["status"], "failed")
+        self.assertEqual(record["reference_acceptance"]["status"], "passed")
+        self.assertEqual(record["validation"]["BASELINE"], "unmet")
+        self.assertEqual(record["validation"]["REFERENCE"], "pass")
+        self.assertEqual(record["history_mutations"]["status"], "caught")
 
     def test_reuse_preparation_revalidates_without_regenerating_tests(self):
         self.validator_status = "ConversationExecutionStatus.STUCK"

@@ -41,9 +41,9 @@ REASON: 待核查事实怎样影响资格；candidate 则说明新用途、历�
 SOURCES: qa、已读取的 source、query 编号或 repository_exploration，逗号分隔；无引用写 none
 QUERY: op|target|path|text|offset；不适用的 path 或 text 写 -；无需查询写 none
 candidate 还必须给出三行：
-PUBLIC_GOAL: 指明客户或系统、业务输入、处理和完整交付目标，不包含具体历史取值
-AGREEMENT_OBJECT: 历史约定涉及的对象
-AGREEMENT_SCOPE: 本次工作中沿用该对象的范围
+PUBLIC_GOAL: 指明客户或系统、业务输入、处理和完整交付目标，只写“沿用已确认协议”及其业务范围；不得写历史答案中的字段名、取值、例外、保留/省略方向或具体兼容结果
+AGREEMENT_OBJECT: 历史约定涉及的业务对象，不复述规则内容
+AGREEMENT_SCOPE: 本次工作中沿用该对象的业务范围，不复述规则内容
 END
 candidate 需要实际仓库查询证据；stop 需要不合格证据；还无法判断用 pending。
 查询只有 lookup/read，不执行命令。QUERY 的五段依次是操作、目标、路径、文字、偏移量。例：
@@ -53,6 +53,7 @@ QUERY: lookup|history|-|Maple|0
 QUERY: read|history|-|source1|0
 lookup 每页20项；仓库 read 的 offset 是从0开始的行号，历史 read 是字符位置。
 续页使用结果的 next_offset。不得请求整份历史或重复已有完整原文。
+已执行过的同一查询不要再次请求；零匹配只说明本次文字查找没有命中，随后应读取相关入口或文件，或者基于已有证据作出决定。
 queries 为空时不能选 candidate。需要查询只能选 need_evidence，不能同时选 candidate。
 candidate/stop/pending 的 QUERY 必须为 none。
 """
@@ -213,6 +214,8 @@ task.md 只写完整的新功能、输入输出、普通兼容边界和可验证
 不要把 QA 答案中的字段、数值、例外、处理方向或历史观测改写成 task 要求；这些内容只能作为有记忆条件的依据。
 需求必须给出一个可执行的入口（优先使用仓库已有命令；没有时明确一个简单的脚本路径、参数和输出位置），
 并写清输出中至少有哪些公开分类和成功/失败语义。不要留下“由开发者决定接口”或无法调用的抽象能力。
+普通业务输入的字段、数据类型和文件格式须在题面说明或引用已有文件；验收不能另选未公开的格式。
+历史约定由开发者应用，不要求调用者另传包含答案的协议文件、映射表或规则参数。
 需求必须让 QA 答案中的至少一个具体外部结果成为可观察输出或回归条件；
 不要把一次故障直接扩大成答案没有要求的修复策略、离线开关、缓存或默认行为。
 memory-use.md 说明 QA 答案中的外部事实会改变哪项实现选择，但不要重述具体答案，
@@ -252,6 +255,9 @@ AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你�
    未约定的编码布局、装批策略、异常类型、空输入形式和输入可变性，不添加为必过断言。
    比较输出与输入内容时，在调用前深拷贝期望值；调用后不再从输入列表或其中的对象计算期望。
    边界测试需计算输入实际位于阈值哪侧；不能仅靠注释声称跨界，或依赖未约定的编码布局。
+   candidate_root 只读，只能用来读取代码、固定测试数据和已有产物；绝对不要在 candidate_root 下创建、修改或删除文件。
+   测试需要临时输入、输出或 CLI 文件时，使用 pytest 提供的 tmp_path/tmpdir fixture（或 /tmp 下的临时目录），
+   并把路径显式传给被测入口；不要把临时文件写到 candidate_root、/workspace/candidate 或其子目录。
 3. 将 acceptance.md 的 Check 列替换成对应测试位置，ID、Requirement、Basis 保持原样。
    例如 test: test_acceptance::test_feature；多个测试用逗号分隔。
    非 pytest 检查可用 command: check_name，保存 commands/check_name.sh，
@@ -264,7 +270,8 @@ AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你�
 完成后列出写入的文件并结束；实际结果由后续执行产生。""" + TEST_EXECUTION
 
 TEST_REPAIR = """按反馈修正已有测试。本轮只写文件，不执行命令。
-requirements 是不能修改的题面和历史规则；files 是待修的测试与验收表。
+requirements 是不能修改的题面和历史规则；private_memory_answer 是仅供测试作者使用的答案材料；files 是待修的测试与验收表。
+如果答案材料包含题面没有重述的外部规则，测试必须覆盖其可观察后果，但不要把答案写入 task.md 或公开需求。
 修正反馈指出的测试缺陷。保留有依据的检查，不把测试偏好的编码、异常类或空输入形式添加为要求。
 检查完整文件中的同类问题。输出的预期值在调用前独立保存；输入包含嵌套对象时深拷贝，不能共享别名。
 acceptance.md 只改 Check 列内容，可用 test: 或 inspect:，其他列原样保留。现有冻结回归文件和命令不变。
@@ -274,6 +281,9 @@ acceptance.md 只改 Check 列内容，可用 test: 或 inspect:，其他列原�
 
 TEST_FILES = """根据固定需求和完整的小型 Python 仓库写验收测试，没有工具调用。
 requirements 定义本次交付及适用历史，repository 是当前代码、测试和文档。
+private_memory_answer 是仅供测试作者使用的答案材料；它不能写入 task.md，也不能改变公开需求。
+如果其中包含尚未写入题面的外部规则或观测，必须把对应的可观察行为加入验收测试，
+使错误地忽略该规则的实现会失败；不要把答案原文或内部来源编号写入公开文件。
 输出 FILE test_acceptance.py 和 FILE acceptance.md 两个完整文件，每个以 END_FILE 结束。
 用顶层 def test_* 函数检查交付。
 基线尚未完成交付时应是用例失败而非收集失败，不因使用已有接口而新增接口要求。
@@ -281,6 +291,8 @@ requirements 定义本次交付及适用历史，repository 是当前代码、�
 旧接口的约束只测旧接口；新接口未约定的异常类型、输入不变性和编码布局不加入要求。
 从调用前独立副本计算输出预期。task 行测试公开功能，历史状态码和阈值只在对应 h 行测试。
 顺序断言读取实际返回顺序；分类规则换一种输入排列、加入重复取值再验证，确保按位置分组不能蒙混通过。
+candidate_root 是只读基线，只能读取其中的源码、文档和固定测试数据。所有临时输入、输出和 CLI 产物必须写入 pytest 的 tmp_path/tmpdir 或 /tmp，
+不能写入 candidate_root、/workspace/candidate 或其子目录。
 acceptance.md 只替换 Check 列，其他列原样保留。自动测试用 test: test_acceptance::函数名，含义检查用 inspect: 具体检查动作和预期含义；
 原仓库 tests 已由程序冻结，旧接口回归可引用 command: existing_suite。
 程序会实际运行全部用例，再检查参考实现与错用历史的变体；不要编写或声称执行结果。

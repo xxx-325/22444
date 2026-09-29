@@ -9,11 +9,17 @@ from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval.selection import (SelectionBudget, extract_history_targets,
                                                      query_evidence, repository_overview,
                                                      select_task, write_draft, write_private_draft,
+                                                     _query_from_text,
                                                      write_public_task)
 from dialogue_benchmark.task_eval.run import construct
 
 
 class SelectionTests(unittest.TestCase):
+    def test_omitted_first_page_offset_is_zero(self):
+        self.assertEqual(_query_from_text("lookup|repo|.|Maple update|-") ,
+                         {"op": "lookup", "target": "repo", "path": ".",
+                          "text": "Maple update", "offset": 0})
+
     def test_repository_overview_is_static_and_compact(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -104,8 +110,8 @@ class SelectionTests(unittest.TestCase):
             {"reviews": [{"decision": "candidate", "reason": "The customer report is not delivered",
                           "sources": "qa,query1", "request": "none",
                           "public_goal": "Prepare the Maple export",
-                          "agreement_object": "omit null note",
-                          "agreement_scope": "Maple exports: omit null note"}]},
+                          "agreement_object": "Maple export",
+                          "agreement_scope": "future Maple exports"}]},
             {"reviews": [{"id": "h1", "statement": answer, "scope": "Maple exports",
                           "behavior": "Omit null note from exported records",
                           "sources": "source1", "supersedes": "none"}]},
@@ -302,6 +308,20 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["status"], "candidate")
         self.assertEqual(result["query_count"], 1)
         self.assertEqual(budget.requests, 2)
+
+    def test_public_goal_rejects_answer_direction_even_when_not_verbatim(self):
+        answer = "note 为 null 时省略，其他字段保留"
+        budget = SelectionBudget(self.root, {})
+        with patch.object(budget, "call", side_effect=[
+                {"reviews": [self.query(op="read", target="repo", path="api.py")]},
+                {"reviews": [{"decision": "candidate", "reason": "A future export needs the rule",
+                               "sources": "qa,query1", "request": "none",
+                               "public_goal": "Add an export that omits null notes and preserves other fields"}]},
+        ]):
+            checked = select_task({"answer_points": [{"text": answer}]}, self.history,
+                                  self.repo, {}, self.root / "leakage", budget)
+        self.assertEqual(checked["status"], "pending")
+        self.assertEqual(checked["reason"], "public_goal_contains_answer")
 
     def test_private_acceptance_uses_reviewed_applicability_and_retains_history(self):
         from dialogue_benchmark.llm import parse_text_response
