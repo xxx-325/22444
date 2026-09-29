@@ -190,13 +190,14 @@ class TaskPreflightTests(unittest.TestCase):
                 stages.append("validator")
                 folder = root / "workspace/checks"
                 folder.mkdir()
-                (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
+                self.assertIn("验收项 ID（如 a6，不是 Markdown 行号）", message)
+                (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: %s\nEND_REVIEW" % acceptance_id)
                 (folder / "m1.patch").write_text(
                     "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
                     "@@ -1,2 +1,2 @@\n feature = True\n-keep_other_nulls = True\n+keep_other_nulls = False\n")
                 if with_reference_inspection:
                     (folder / "acceptance-review.txt").write_text(
-                        "REVIEW a1\nstatus: passed\nevidence: /reference/implementation/a.py:1\nEND_REVIEW")
+                        "REVIEW a1\nstatus: passed\nevidence: /reference/implementation/a.py:1,2\nEND_REVIEW")
                 return {"status": "finished", "metrics": {
                     "attempted_requests": 1, "prompt_tokens": 10, "completion_tokens": 5, "usage_complete": True}}
             elif root.name == "judge":
@@ -208,14 +209,16 @@ class TaskPreflightTests(unittest.TestCase):
                 folder = root / "workspace/checks"
                 folder.mkdir()
                 (folder / "acceptance-review.txt").write_text(
-                    "REVIEW a1\nstatus: passed\nevidence: /workspace/candidate/a.py:1\nEND_REVIEW")
+                    "REVIEW a1\nstatus: passed\nevidence: /workspace/candidate/a.py:1,2\nEND_REVIEW")
                 return {"status": "finished", "metrics": {
                     "attempted_requests": 2, "prompt_tokens": 40, "completion_tokens": 10, "usage_complete": True}}
             return {"status": "finished"}
 
-        for with_reference_inspection in (True, False):
-            with self.subTest(with_reference_inspection=with_reference_inspection):
-                root = self.root / ("inspected" if with_reference_inspection else "missing-inspection")
+        for name, with_reference_inspection, acceptance_id in (
+                ("inspected", True, "a2"), ("missing-inspection", False, "a2"), ("unknown-acceptance", True, "8")):
+            with self.subTest(mode=name):
+                root = self.root / name
+                known_acceptance = acceptance_id == "a2"
                 stages = []
                 with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
                      patch("dialogue_benchmark.task_eval.run.review_task", side_effect=review), \
@@ -226,17 +229,20 @@ class TaskPreflightTests(unittest.TestCase):
                      patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
                     receipt = construct(self.item, root, self.baseline, {"execution_image": "image"}, 0,
                                         {"max_requests": 8, "max_tokens": 200})
-                self.assertEqual(stages, ["coverage", "validator", "mutant_inspection"])
-                self.assertEqual(receipt is not None, with_reference_inspection)
-                self.assertEqual((root / "frozen.json").exists(), with_reference_inspection)
+                self.assertEqual(stages, ["coverage", "validator"] + (["mutant_inspection"] if known_acceptance else []))
+                self.assertEqual(receipt is not None, with_reference_inspection and known_acceptance)
+                self.assertEqual((root / "frozen.json").exists(), with_reference_inspection and known_acceptance)
                 record = read(root / "construction.json")[0]
                 self.assertEqual(record["checks_review"]["status"], "complete")
-                self.assertEqual(record["history_mutations"]["status"], "caught")
+                self.assertEqual(record["history_mutations"]["status"], "caught" if known_acceptance else "unverified")
+                if not known_acceptance:
+                    self.assertEqual(record["reason"], "historical_mutation_not_verified")
+                    self.assertIn("Unknown acceptance IDs: '8'", record["validation_evidence"])
                 self.assertEqual(record["reference_acceptance"]["status"],
                                  "passed" if with_reference_inspection else "uncertain")
-                self.assertEqual(record["validation_accepted"], with_reference_inspection)
-                self.assertEqual(record["preflight_budget"]["requests"], 3)
-                self.assertEqual(record["preflight_budget"]["total_tokens"], 65)
+                self.assertEqual(record["validation_accepted"], with_reference_inspection and known_acceptance)
+                self.assertEqual(record["preflight_budget"]["requests"], 3 if known_acceptance else 1)
+                self.assertEqual(record["preflight_budget"]["total_tokens"], 65 if known_acceptance else 15)
                 self.assertEqual(record["preflight_budget"], read(root / "construction-00/preflight/selection-budget.json"))
 
     def test_reuse_preparation_revalidates_without_regenerating_tests(self):

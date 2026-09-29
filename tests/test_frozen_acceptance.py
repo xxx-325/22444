@@ -79,6 +79,27 @@ class FrozenAcceptanceTests(unittest.TestCase):
                                        {"/workspace/checks": self.root})
             self.assertEqual(result["status"], expected)
 
+    def test_manual_evidence_checks_every_selected_line_in_one_known_file(self):
+        items = [dict(self.items[0], tests=[])]
+        (self.root / "output.txt").write_text("real output\n" * 16)
+        review = self.root / "review.txt"
+        for location, expected in (
+            ("/reference/implementation/output.txt:2,3,15,16", "passed"),
+            ("/reference/implementation/output.txt:2-16", "passed"),
+            ("/reference/implementation/output.txt:16", "passed"),
+            ("/reference/implementation/output.txt:2,0,16", "uncertain"),
+            ("/reference/implementation/output.txt:2,17,16", "uncertain"),
+            ("/reference/implementation/output.txt:2,,16", "uncertain"),
+            ("/reference/implementation/output.txt:2-17", "uncertain"),
+            ("/reference/implementation/output.txt:16-2", "uncertain"),
+            ("/reference/implementation/missing.txt:2,3", "uncertain"),
+            ("/unknown/output.txt:2,3", "uncertain")):
+            with self.subTest(location=location):
+                review.write_text(f"REVIEW a1\nstatus: passed\nevidence: {location}\nEND_REVIEW")
+                result = assess_acceptance(items, {"status": "unavailable"}, review,
+                                           {"/reference/implementation": self.root})
+                self.assertEqual(result["status"], expected)
+
     def test_pytest_class_nodes_match_only_the_same_junit_class(self):
         table = self.root / "acceptance.md"
         table.write_text("| a1 | Export | task | test: tests/test_export.py::TestExport::test_batch |\n")
@@ -193,6 +214,21 @@ class FrozenAcceptanceTests(unittest.TestCase):
         inspector.assert_not_called()
         self.assertIn("keep_other_nulls = True", (candidate / "export.py").read_text())
         self.assertTrue((self.root / "mutations/m1/result.json").exists())
+        (validator / "mutations.txt").write_text(
+            "REVIEW m1\nacceptance: 8\nEND_REVIEW\nREVIEW m2\nacceptance: a99\nEND_REVIEW")
+        with patch("dialogue_benchmark.task_eval.checks.run_checks") as runner, \
+             patch("dialogue_benchmark.task_eval.checks.subprocess.run") as replay:
+            result = check_history_mutations(candidate, spec, validator, self.root / "unknown", "image",
+                                             inspector=inspector)
+        self.assertEqual(result["status"], "unverified")
+        self.assertEqual(result["variants"], [])
+        self.assertEqual(result["error_type"], "ValueError")
+        self.assertEqual(result["detail"], "Unknown acceptance IDs: '8', 'a99'")
+        self.assertEqual(read(self.root / "unknown/result.json"), result)
+        runner.assert_not_called()
+        replay.assert_not_called()
+        inspector.assert_not_called()
+        (validator / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
         # A mixed public/history row cannot establish a specifically historical failure.
         mixed = [dict(row) for row in self.items]
         mixed[1]["basis"] = ["task", "h1"]

@@ -343,7 +343,7 @@ VALIDATOR = """审核候选需求、测试和参考实现，完成后保存审�
    测试自身错误与实现错误分开记录。有具体错误时保存 revise 报告并结束。
 3. 有 external 历史规则时，制作一个“基本功能仍能用、但违反该历史规则”的实现副本。
    实际验证后，保存相对参考实现的 Git 补丁 m1.patch，路径为 a/项目相对路径、b/项目相对路径。
-   mutations.txt 写三行：REVIEW m1、acceptance: 实际违反的 a 编号、END_REVIEW。
+   mutations.txt 写三行：REVIEW m1、acceptance: 实际违反的验收项 ID（如 a6，不是 Markdown 行号）、END_REVIEW。
    程序还会应用补丁重跑，要求 task 行通过、指定历史行失败。
 4. 仅对验收表中的 inspect 项按既定步骤检查参考实现，写 acceptance-review.txt：
    REVIEW a1
@@ -391,7 +391,7 @@ HISTORY_MUTATION = """制作一个历史规则错误补丁并保存，然后结�
 公开交付要求仍满足，不改 QA、历史来源、私有验收材料或测试。保存相对参考实现的 /workspace/checks/m1.patch，使用 a/相对路径、b/相对路径。
 再保存 /workspace/checks/mutations.txt：
 REVIEW m1
-acceptance: 该补丁违反的历史验收行编号
+acceptance: 该补丁违反的历史验收项 ID（如 a6，不是 Markdown 行号）
 END_REVIEW
 宿主会应用补丁并执行全部固定检查：公开功能行必须通过，指定历史行必须失败。
 你的交付是上述两个文件；测试覆盖和历史来源已单独审核，无需再次逐例调查。
@@ -410,7 +410,7 @@ before.txt 原样摘取只出现一次的文本；after.txt 写不同的错误�
 程序会精确替换、生成补丁，并验证公开功能行通过而指定历史行失败。只输出这三个文件：
 FILE mutations.txt
 REVIEW m1
-acceptance: 被违反的历史验收行编号
+acceptance: 被违反的历史验收项 ID（如 a6，不是 Markdown 行号）
 file: reference_sources 中的实际路径
 END_REVIEW
 END_FILE

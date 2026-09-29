@@ -63,11 +63,11 @@ def acceptance_items(spec, history=None):
 
 
 def _artifact_evidence(value, roots):
-    """Resolve a file and actual line range; semantic sufficiency remains reviewable."""
-    match = re.fullmatch(r"(/[^\s:]+):(\d+)(?:-(\d+))?", value.strip())
+    """Resolve a file and actual lines; semantic sufficiency remains reviewable."""
+    match = re.fullmatch(r"(/[^\s:]+):(\d+(?:-\d+|(?:,\d+)+)?)", value.strip())
     if not match:
         return False
-    name, start, end = match.groups()
+    name, lines = match.groups()
     for prefix, root in roots.items():
         if name.startswith(prefix + "/"):
             root = Path(root).resolve()
@@ -78,6 +78,9 @@ def _artifact_evidence(value, roots):
                 count = len(path.read_text().splitlines())
             except (UnicodeError, OSError):
                 return False
+            if "," in lines:
+                return all(1 <= int(line) <= count for line in lines.split(","))
+            start, _, end = lines.partition("-")
             return 1 <= int(start) <= int(end or start) <= count
     return False
 
@@ -254,6 +257,12 @@ def check_history_mutations(candidate, spec, validator_checks, output, image, *,
     path = validator_checks / "mutations.txt"
     rows = parse_text_response(path.read_text()).get("reviews", []) if path.is_file() else []
     items = read(Path(spec) / "acceptance.json")
+    unknown = {row.get("acceptance", "") for row in rows} - {item["id"] for item in items}
+    if unknown:
+        result = {"status": "unverified", "variants": [], "error_type": "ValueError",
+                  "detail": "Unknown acceptance IDs: " + ", ".join(repr(identity) for identity in sorted(unknown))}
+        save(output / "result.json", result)
+        return result
     history = read(Path(spec) / "history.json")
     external = {c["id"] for c in history["contracts"] if c["active"] and c["repository"] == "external"}
     results = []

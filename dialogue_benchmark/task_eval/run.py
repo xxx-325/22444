@@ -600,6 +600,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"), inspector=inspect_mutant)
             record["validation"]["MUTATIONS"] = record["history_mutations"]["status"]
             record["preflight_budget"] = read(run / "preflight/selection-budget.json")
+            if record["history_mutations"].get("detail"):
+                feedback += "\n历史变体验证错误：" + record["history_mutations"]["detail"]
+                record["validation_evidence"] = feedback
         reference_acceptance = (assess_acceptance(items, reference_checks,
             validator / "workspace/checks/acceptance-review.txt",
             {"/reference/implementation": candidate,
