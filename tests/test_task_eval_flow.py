@@ -15,7 +15,7 @@ from dialogue_benchmark.llm import parse_text_response
 from dialogue_benchmark.task_eval.artifacts import copy_tree, read, save, fingerprint
 from dialogue_benchmark.task_eval.checks import acceptance_items, assess_acceptance, check_history_mutations, run_checks
 from dialogue_benchmark.task_eval.run import construct, evaluate, freeze, inspect_acceptance, prepare_test_reference
-from dialogue_benchmark.task_eval.runtime import review_task, write_history_mutation
+from dialogue_benchmark.task_eval.runtime import review_checks, review_task, write_history_mutation
 from dialogue_benchmark.task_eval.versions import export_change, pin_baseline
 
 
@@ -157,9 +157,23 @@ class TaskPreflightTests(unittest.TestCase):
                      historical_sources=row["sources"], answer_quote=rule) for row in evidence["contracts"]]}
 
         def coverage(spec, baseline, candidate, changed, results, config, output, budget):
-            output.mkdir(parents=True)
-            (output / "coverage.md").write_text("Fixed feature inspection and exact historical test.")
-            return {"status": "complete", "rows": []}
+            stages.append("coverage")
+            self.assertFalse((output.parent / "validator").exists())
+            rows = [dict(id=identity, coverage="complete", evidence=evidence) for identity, evidence in (
+                ("a1", "acceptance.md specifies reading a.py and requiring feature=True."),
+                ("a2", "test_export::test_null checks the historical rule."),
+                ("tests", "The historical test adds no extra requirement."))]
+            with patch.object(budget, "call", return_value={"reviews": rows}) as call:
+                result = review_checks(spec, baseline, candidate, changed, results, config, output, budget)
+            prompt, payload = call.call_args.args[:2]
+            self.assertIn("实际检查及证据将在下一阶段完成", prompt)
+            self.assertIn("不能仅因没有同名测试或 pytest 结果就判 gaps", prompt)
+            self.assertIn("缺少具体检查动作或预期含义，仍判 gaps", prompt)
+            self.assertIn("inspect: Read a.py; feature must be True", payload["criteria_and_tests"]["acceptance.md"])
+            self.assertNotIn("acceptance-review.txt", payload["criteria_and_tests"])
+            self.assertEqual(payload["executed_checks"]["reference"]["cases"],
+                             [{"id": "test_export::test_null", "status": "passed"}])
+            return result
 
         def checks(candidate, *args, **kwargs):
             namespace = {}
@@ -173,17 +187,20 @@ class TaskPreflightTests(unittest.TestCase):
             elif root.name == "reference-solver":
                 (root / "workspace/candidate/a.py").write_text("feature = True\nkeep_other_nulls = True\n")
             elif root.name == "validator":
+                stages.append("validator")
                 folder = root / "workspace/checks"
                 folder.mkdir()
                 (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
                 (folder / "m1.patch").write_text(
                     "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
                     "@@ -1,2 +1,2 @@\n feature = True\n-keep_other_nulls = True\n+keep_other_nulls = False\n")
-                (folder / "acceptance-review.txt").write_text(
-                    "REVIEW a1\nstatus: passed\nevidence: /reference/implementation/a.py:1\nEND_REVIEW")
+                if with_reference_inspection:
+                    (folder / "acceptance-review.txt").write_text(
+                        "REVIEW a1\nstatus: passed\nevidence: /reference/implementation/a.py:1\nEND_REVIEW")
                 return {"status": "finished", "metrics": {
                     "attempted_requests": 1, "prompt_tokens": 10, "completion_tokens": 5, "usage_complete": True}}
             elif root.name == "judge":
+                stages.append("mutant_inspection")
                 self.assertEqual(options["max_requests"], 7)
                 self.assertEqual(options["max_tokens"], 185)
                 self.assertEqual((root / "workspace/candidate/a.py").read_text(),
@@ -196,22 +213,31 @@ class TaskPreflightTests(unittest.TestCase):
                     "attempted_requests": 2, "prompt_tokens": 40, "completion_tokens": 10, "usage_complete": True}}
             return {"status": "finished"}
 
-        with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
-             patch("dialogue_benchmark.task_eval.run.review_task", side_effect=review), \
-             patch("dialogue_benchmark.task_eval.run.review_sources", return_value={"support": "supported"}), \
-             patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
-             patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
-             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
-             patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
-            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0,
-                                {"max_requests": 8, "max_tokens": 200})
-        self.assertIsNotNone(receipt)
-        record = read(self.root / "construction.json")[0]
-        self.assertEqual(record["history_mutations"]["status"], "caught")
-        self.assertEqual(record["reference_acceptance"]["status"], "passed")
-        self.assertEqual(record["preflight_budget"]["requests"], 3)
-        self.assertEqual(record["preflight_budget"]["total_tokens"], 65)
-        self.assertEqual(record["preflight_budget"], read(self.root / "construction-00/preflight/selection-budget.json"))
+        for with_reference_inspection in (True, False):
+            with self.subTest(with_reference_inspection=with_reference_inspection):
+                root = self.root / ("inspected" if with_reference_inspection else "missing-inspection")
+                stages = []
+                with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
+                     patch("dialogue_benchmark.task_eval.run.review_task", side_effect=review), \
+                     patch("dialogue_benchmark.task_eval.run.review_sources", return_value={"support": "supported"}), \
+                     patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
+                     patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+                     patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+                     patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
+                    receipt = construct(self.item, root, self.baseline, {"execution_image": "image"}, 0,
+                                        {"max_requests": 8, "max_tokens": 200})
+                self.assertEqual(stages, ["coverage", "validator", "mutant_inspection"])
+                self.assertEqual(receipt is not None, with_reference_inspection)
+                self.assertEqual((root / "frozen.json").exists(), with_reference_inspection)
+                record = read(root / "construction.json")[0]
+                self.assertEqual(record["checks_review"]["status"], "complete")
+                self.assertEqual(record["history_mutations"]["status"], "caught")
+                self.assertEqual(record["reference_acceptance"]["status"],
+                                 "passed" if with_reference_inspection else "uncertain")
+                self.assertEqual(record["validation_accepted"], with_reference_inspection)
+                self.assertEqual(record["preflight_budget"]["requests"], 3)
+                self.assertEqual(record["preflight_budget"]["total_tokens"], 65)
+                self.assertEqual(record["preflight_budget"], read(root / "construction-00/preflight/selection-budget.json"))
 
     def test_reuse_preparation_revalidates_without_regenerating_tests(self):
         self.validator_status = "ConversationExecutionStatus.STUCK"
