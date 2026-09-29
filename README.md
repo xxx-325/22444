@@ -352,7 +352,10 @@ budgets, without a per-response output cap. Each agent has its own execution
 timeout; waiting for reference solving and test execution does not consume the
 next author's execution time.
 The test author cannot change qualified requirements or historical rules.
-Test repairs reuse the qualified draft. Compatibility tests apply to the named
+Test repairs reuse the qualified draft. Failed reference checks return their test results and implementation
+patch to the repair stage before another reference run. Full validation and
+historical mutations start only after these checks pass; requirements stay fixed.
+Compatibility tests apply to the named
 old APIs; new APIs are checked by their stated behavior. Regression commands use
 baseline tests copied into the frozen specification, so solver-authored tests do
 not change the scored regression set. During checks, these tests run at their

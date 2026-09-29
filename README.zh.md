@@ -201,6 +201,7 @@ python -m dialogue_benchmark.task_eval.repeat \
 
 如需按已保存的审阅意见修正测试，可同时传入 `--preparation-feedback /path/to/test-review.md`，一次模型请求接收完整原文件并返回修正后的测试，保持已审核需求不变。宿主重新执行测试与预检后才能冻结。反馈只描述测试缺陷，不包含两组作答的比较结果。
 测试收集或执行错误先交回测试作者修正，再启动参考实现。公开功能与历史规则分开测试；兼容检查只比较需求明确要求保持的行为。
+参考实现的实际测试失败时，先将逐项结果和实现补丁返回修正阶段，再重新实现和运行；通过后才启动完整预检和历史错误变体验证。题面与历史要求保持冻结。
 
 `examples/batchsync_seed.py --repository runs/suite/seed --receipt runs/suite/seed.json` 创建只依赖标准库的小项目，包含字段投影、按字节分批和回执分类的三个连续参考提交。每个版本先运行离线测试再提交，可交给 dialogue 模拟器生成真实交互；脚本本身不生成消息或客户约定。完整流程入口 `run_episode.py` 可使用 `--qa-source external --external-events /path/to/external-events.json`，并自动对固定的最终仓库执行答案可恢复性检查后再派生需求。
 如果没有符合条件的 QA，流程保存空任务报告，记录 `no_eligible_qa`，直接结束，不启动开发 Agent。

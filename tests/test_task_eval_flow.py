@@ -529,6 +529,40 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(records[0]["reason"], "baseline_check_error")
         self.assertTrue(records[1]["accepted"])
 
+    def test_failed_reference_returns_to_repair_before_validation(self):
+        results = [dict(status=status, cases=[dict(id="test_acceptance::test_feature",
+                    status=status, detail="unrecognized arguments: -q" if index == 1 else "")])
+                   for index, status in enumerate(("failed", "failed", "failed", "passed",
+                                                   "failed", "passed"))]
+        def agent(root, *args, **kwargs):
+            if root.name == "reference-solver":
+                (root / "workspace/candidate/a.py").write_text("value = 2\n")
+            return self.fake_agent(root, *args, **kwargs)
+        def repair(spec, config, output, budget, feedback):
+            self.assertIn("unrecognized arguments: -q", feedback)
+            self.assertIn("+value = 2", feedback)
+            self.assertEqual((spec / "test_acceptance.py").read_text(), "Original test")
+            return agent(output, config, "judge", feedback)
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent) as worker, \
+             patch("dialogue_benchmark.task_eval.run.repair_tests", side_effect=repair), \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=results):
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 1, {})
+        self.assertIsNotNone(receipt)
+        self.assertEqual([call.args[0].parent.name for call in worker.call_args_list
+                          if call.args[0].name == "validator"], ["construction-01"])
+        records = read(self.root / "construction.json")
+        self.assertEqual(records[0]["reason"], "reference_check_failed")
+        self.assertFalse(records[0]["accepted"])
+        self.assertTrue(records[1]["accepted"])
+
+    def test_failed_reference_at_revision_limit_never_runs_validator(self):
+        receipt, checks = self.execute([{"status": "failed"}, {"status": "error"}])
+        self.assertIsNone(receipt)
+        self.assertEqual(checks.call_count, 2)
+        self.assertFalse((self.root / "construction-00/validator").exists())
+        self.assertEqual(read(self.root / "construction.json")[0]["reason"], "reference_check_error")
+
     def check_cumulative_test_repairs(self, mode):
         from dialogue_benchmark.task_eval import prompts
 

@@ -553,6 +553,17 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         record.update(baseline_checks=baseline_checks, reference_checks=reference_checks,
                       reference_status=solved["status"])
+        if reference_checks["status"] in {"failed", "error"}:
+            record.update(accepted=False, reason="reference_check_" + reference_checks["status"])
+            previous_tests = reference / ("previous-%02d" % attempt)
+            copy_tree(spec, previous_tests)
+            feedback = ("\n参考实现未通过实际检查。先核查测试调用与题面是否一致；"
+                        "测试有错则修正，实现有错则保留能发现问题的测试。"
+                        "不要降低已冻结的要求。下一轮会重新生成参考实现。\n"
+                        "执行结果：%s\n本次参考实现改动（用于定位，不是正确性标准）：\n%s" % (
+                            reference_checks, (implementation / "changes.patch").read_text()))
+            save(root / "construction.json", attempts)
+            continue
         preflight_budget = SelectionBudget(run / "preflight", agent_options)
         source_review = None
         if history:
