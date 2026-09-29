@@ -183,7 +183,7 @@ def assess_acceptance(items, checks, review_path=None, roots=None):
     return {"status": status, "rows": rows}
 
 
-def pytest_result(exit_code, xml_path):
+def pytest_result(exit_code, xml_path, *, required_modules=()):
     result = {"exit_code": exit_code, "status": "unavailable", "tests": 0,
               "passed": 0, "failed": 0, "errors": 0, "skipped": 0, "cases": []}
     if not Path(xml_path).exists():
@@ -217,6 +217,15 @@ def pytest_result(exit_code, xml_path):
         result["status"] = "error"
     elif exit_code == 0 and result["passed"]:
         result["status"] = "passed"
+    if result["status"] != "error":
+        executed = [case["id"].removeprefix("checks.") for case in result["cases"]
+                    if case["status"] in {"passed", "failed"}]
+        missing = [module for module in required_modules if not any(
+            identity.startswith((module + "::", module + ".")) for identity in executed)]
+        if missing:
+            result.update(status="error", reason="required_test_module_not_executed",
+                          detail="No executed pytest cases for: " + ", ".join(missing),
+                          unexecuted_modules=missing)
     return result
 
 
@@ -281,7 +290,8 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
             return row
         try:
             run = execute(command) if tests else {"exit_code": 0}
-            result = (pytest_result(run["exit_code"], workspace / "experiments/receipt.xml") if tests else
+            result = (pytest_result(run["exit_code"], workspace / "experiments/receipt.xml",
+                                   required_modules=("test_interactions",) if "test_interactions.py" in tests else ()) if tests else
                       {"status": "passed", "cases": [], "tests": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0})
             if regression.is_dir():
                 # Keep acceptance IDs tied to the frozen spec despite relocation.
@@ -304,7 +314,7 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
                 result[{"passed": "passed", "failed": "failed", "error": "errors"}[state]] += 1
             if result["errors"]:
                 result["status"] = "error"
-            elif result["failed"]:
+            elif result["failed"] and result["status"] != "error":
                 result["status"] = "failed"
         finally:
             sandbox.pause()

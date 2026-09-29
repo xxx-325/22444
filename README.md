@@ -332,6 +332,8 @@ availability. `source.json` records provenance, each `pair-NN/manifest.json` sav
 cumulative results, and the usual reports include failures and partial pairs.
 Reports list agent execution status separately from acceptance of the saved code,
 so provider interruptions remain visible even when that code can be evaluated.
+Supplementary pytest checks must produce executed test cases; an imported script
+or a skipped-only module does not establish additional coverage.
 Neither prior results nor successful repetitions select which pairs are retained.
 Interrupted runs keep completed results and mark the remaining pair pending; use a
 new output directory for another run. Invoke this command for each admitted task.

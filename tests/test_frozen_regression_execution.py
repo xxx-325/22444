@@ -11,11 +11,39 @@ import unittest
 from unittest.mock import patch
 
 from dialogue_benchmark.task_eval.artifacts import copy_tree, fingerprint, save
-from dialogue_benchmark.task_eval.checks import assess_acceptance, run_checks
+from dialogue_benchmark.task_eval.checks import assess_acceptance, pytest_result, run_checks
 from dialogue_benchmark.task_eval.runtime import review_checks, write_tests
 
 
 class FrozenRegressionExecutionTests(unittest.TestCase):
+    def test_supplementary_checks_must_run_as_pytest_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            acceptance, interactions = root / "test_acceptance.py", root / "test_interactions.py"
+            acceptance.write_text("def test_feature(): assert True\n")
+            examples = (
+                ("script", "def main(): assert False\nif __name__ == '__main__': main()\n", "error"),
+                ("skipped", "import pytest\n@pytest.mark.skip\ndef test_case(): assert True\n", "error"),
+                ("passed", "def test_case(): assert True\n", "passed"),
+                ("failed", "class TestCases:\n    def test_case(self): assert False\n", "failed"),
+                ("missing_data", "from pathlib import Path\ndef test_case(): Path('absent.json').read_text()\n", "failed"),
+            )
+            for name, source, expected in examples:
+                with self.subTest(name=name):
+                    interactions.write_text(source)
+                    receipt = root / (name + ".xml")
+                    completed = subprocess.run(
+                        [sys.executable, "-m", "pytest", "-c", "/dev/null", "--rootdir=" + str(root),
+                         "-p", "no:cacheprovider", "-q", str(acceptance), str(interactions),
+                         "--junitxml=" + str(receipt)], cwd=root, text=True, capture_output=True,
+                        env=dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONDONTWRITEBYTECODE="1"))
+                    result = pytest_result(completed.returncode, receipt, required_modules=("test_interactions",))
+                    self.assertEqual(result["status"], expected, result)
+                    if expected == "error":
+                        self.assertEqual(result["reason"], "required_test_module_not_executed")
+                    else:
+                        self.assertNotIn("unexecuted_modules", result)
+
     def test_frozen_tests_use_candidate_implementation_and_repository_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
