@@ -768,6 +768,7 @@ def _check_simple_request_budget(prompt, payload, budget):
     if request_chars > budget:
         raise ModelStageError(
             "request_budget", request_chars=request_chars, limit_chars=budget)
+    return request_chars
 
 
 def _restore_local_sources(document, ref_to_source):
@@ -1820,15 +1821,14 @@ class ChatClient:
         self.usage = []
         self.responses = []
 
-    def ask(self, prompt, data):
+    def ask(self, prompt, data, *, request_budget=None):
         content = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-        scope = data.get("scope", data)
         # Evidence and request budgets are separate: facts/candidate metadata is
         # part of the request but not part of the raw scope budget.
-        request_chars = scope.get("model_request_chars", scope.get("max_context_chars", 60000))
-        estimated = request_size(prompt, data)
-        if estimated > request_chars:
-            raise ModelStageError("request_budget", request_chars=estimated, limit_chars=request_chars)
+        if request_budget is None:
+            scope = data.get("scope", data)
+            request_budget = scope.get("model_request_chars", scope.get("max_context_chars", 60000))
+        estimated = _check_simple_request_budget(prompt, data, request_budget)
         outbound_guard(content, self.key)
         payload = {"model": self.model, "temperature": 0,
                    "messages": [{"role": "system", "content": self.system},
@@ -1883,12 +1883,15 @@ class ChatClient:
             raise ModelStageError("protocol_error") from None
 
 
-def _ask_stage(client, prompt, data, stage):
-    """Label transport usage without changing injectable client signatures."""
+def _ask_stage(client, prompt, data, stage, *, request_budget=None):
+    """Label usage and forward local budgets without changing injectable clients."""
     usage = getattr(client, "usage", None)
     before = len(usage) if isinstance(usage, list) else 0
     try:
-        document = client.ask(prompt, data)
+        if request_budget is not None and isinstance(client, ChatClient):
+            document = client.ask(prompt, data, request_budget=request_budget)
+        else:
+            document = client.ask(prompt, data)
         # This version is selected by the caller, not a semantic model judgment.
         if (stage in {"review_evidence", "review_evidence_supplement"}
                 and "review_contract: simple_v1" in prompt and isinstance(document, dict)):
@@ -1948,10 +1951,11 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None, external_only=
                       if external_only and scope.get("external_event_id") else
                       _scope_material_source_ids(scope))
         fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)
-        _check_simple_request_budget(fact_prompt, fact_payload,
-                                     scope.get("model_request_chars", 32000))
+        budget = scope.get("model_request_chars", 32000)
+        _check_simple_request_budget(fact_prompt, fact_payload, budget)
         facts_document = _restore_fact_sources(
-            _ask_stage(client, fact_prompt, fact_payload, "facts"), ref_to_source)
+            _ask_stage(client, fact_prompt, fact_payload, "facts", request_budget=budget),
+            ref_to_source)
         facts, fact_rejected = validate_facts(facts_document, scope,
                                                return_rejected=True, qa_mode=qa_mode)
         result["facts"] = facts
@@ -2047,7 +2051,8 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 save("workflow-input.json", {"system_prompt": SYSTEM, "prompt": MEMORY_WORKFLOW_PROMPT,
                                              "payload": workflow_payload, "ref_to_source": workflow_ref_to_source})
                 result["generation_request_count"] += 1
-                document = _ask_stage(client, MEMORY_WORKFLOW_PROMPT, workflow_payload, "workflow")
+                document = _ask_stage(client, MEMORY_WORKFLOW_PROMPT, workflow_payload, "workflow",
+                                      request_budget=qa_budget)
                 if document == {"questions": []}:
                     save("workflow.json", document)
                     result["stage_status"].update(workflow="completed", focus="not_submitted", qa="not_submitted")
@@ -2066,7 +2071,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                                       "ref_to_source": focus_ref_to_source})
             result["generation_request_count"] += 1
             focus_document = _ask_stage(
-                client, focus_prompt, focus_payload, "focus")
+                client, focus_prompt, focus_payload, "focus", request_budget=qa_budget)
             save("focus-response.json", focus_document)
             focus_document = _restore_local_focus(
                 focus_document, focus_ref_to_source)
@@ -2086,7 +2091,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 result["generation_request_count"] += 1
                 focus_document = _ask_stage(
                     client, refinement_prompt, refinement_payload,
-                    "focus_refinement")
+                    "focus_refinement", request_budget=qa_budget)
                 save("focus-refinement-response.json", focus_document)
                 focus_document = _restore_local_focus(
                     focus_document, focus_ref_to_source)
@@ -2151,7 +2156,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
         save("qa-input.json", {"system_prompt": SYSTEM, "prompt": qa_prompt, "payload": payload,
                                "ref_to_source": ref_to_source if simple_mode else {}})
         result["generation_request_count"] += 1
-        emitted = _ask_stage(client, qa_prompt, payload, "qa")
+        emitted = _ask_stage(client, qa_prompt, payload, "qa", request_budget=qa_budget)
         if simple_mode:
             emitted = _restore_local_sources(emitted, ref_to_source)
         if "missing_kind" in emitted:
@@ -2503,7 +2508,7 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
             _check_simple_request_budget(repair_prompt, payload, budget)
             save("repair-input.json", {"system_prompt": SYSTEM, "prompt": repair_prompt, "payload": payload,
                                        "ref_to_source": ref_to_source})
-            response = _ask_stage(client, repair_prompt, payload, "repair")
+            response = _ask_stage(client, repair_prompt, payload, "repair", request_budget=budget)
             response = _restore_local_sources(response, ref_to_source)
             save("repair-response.json", response)
             revision["response"] = deepcopy(response)
@@ -2575,7 +2580,7 @@ conjunctive conditions for one result remain one point. Return one QA or NO_QA.
             prompt, scope, sources,
             {"facts": facts, "candidate": candidate, "review": decision}, budget,
             full_range=bool(scope.get("full_range_required")))
-        response = _ask_stage(client, prompt, payload, "repair")
+        response = _ask_stage(client, prompt, payload, "repair", request_budget=budget)
         save("repair-response.json", response)
         revision["response"] = deepcopy(response)
         repaired, invalid = validate_candidates(
@@ -2739,7 +2744,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 else:
                     distinctiveness_document = _ask_stage(
                         client, target_prompt,
-                        distinctiveness_payload, "review_target")
+                        distinctiveness_payload, "review_target", request_budget=qa_budget)
                 save("target-review.json", distinctiveness_document)
                 distinctive_kept, distinctive_failed = (
                     apply_target_review(
@@ -2791,7 +2796,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 relevance_prompt, relevance_payload, qa_budget)
             relevance_document = _ask_stage(
                 client, relevance_prompt, relevance_payload,
-                "review_relevance")
+                "review_relevance", request_budget=qa_budget)
             save("relevance-review.json", relevance_document)
             relevance_kept, relevance_failed = apply_simple_relevance_review(
                 [candidate], relevance_document)
@@ -2819,7 +2824,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 atomicity_prompt, atomicity_payload, qa_budget)
             atomicity_document = _ask_stage(
                 client, atomicity_prompt, atomicity_payload,
-                "review_atomicity")
+                "review_atomicity", request_budget=qa_budget)
             save("atomicity-review.json", atomicity_document)
             atomicity_kept, atomicity_failed = apply_simple_atomicity_review(
                 [candidate], atomicity_document)
@@ -2867,7 +2872,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 completeness_prompt, completeness_payload, qa_budget)
             completeness_document = _ask_stage(
                 client, completeness_prompt, completeness_payload,
-                "review_completeness")
+                "review_completeness", request_budget=qa_budget)
             save("completeness-review.json", completeness_document)
             completeness_kept, completeness_failed = apply_simple_completeness_review(
                 [candidate], completeness_document)
@@ -2920,7 +2925,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 scope, material_sources, result["facts"], candidate)
             _check_simple_request_budget(evidence_prompt, evidence_payload, qa_budget)
             evidence_document = _ask_stage(
-                client, evidence_prompt, evidence_payload, "review_evidence")
+                client, evidence_prompt, evidence_payload, "review_evidence", request_budget=qa_budget)
             evidence_document = _restore_local_sources(
                 evidence_document, ref_to_source)
             save("evidence-review.json", evidence_document)
@@ -2955,7 +2960,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                     supplement_prompt, supplement_payload, qa_budget)
                 supplement_document = _ask_stage(
                     client, supplement_prompt, supplement_payload,
-                    "review_evidence_supplement")
+                    "review_evidence_supplement", request_budget=qa_budget)
                 supplement_document = _restore_local_sources(
                     supplement_document, supplement_ref_to_source)
                 save("evidence-review-supplement.json", supplement_document)
@@ -3044,7 +3049,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 review_prompt, scope, sources,
                 {"facts": result["facts"], "candidates": [candidate]}, qa_budget,
                 full_range=full_range_question)
-            review = _ask_stage(client, review_prompt, payload, "review_single")
+            review = _ask_stage(client, review_prompt, payload, "review_single", request_budget=qa_budget)
             save("review.json", review)
             result["questions"], failed = apply_review(
                 [candidate], review, require_structured=True,
@@ -3060,7 +3065,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 raise ModelStageError(
                     "request_budget", request_chars=structure_size, limit_chars=qa_budget)
             structure_document = _ask_stage(
-                client, structure_prompt, structure_payload, "review_structure")
+                client, structure_prompt, structure_payload, "review_structure", request_budget=qa_budget)
             save("structure-review.json", structure_document)
             structure_kept, structure_failed = apply_answer_structure_review(
                 [candidate], structure_document)
@@ -3099,7 +3104,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                  "candidates": [_evidence_review_candidate(candidate)]}, qa_budget,
                 full_range=full_range_question)
             evidence_document = _ask_stage(
-                client, evidence_prompt, evidence_payload, "review_evidence")
+                client, evidence_prompt, evidence_payload, "review_evidence", request_budget=qa_budget)
             save("evidence-review.json", evidence_document)
             merged_review, evidence_decision, merge_error = _merged_split_review(
                 candidate, structure_decision, evidence_document)
