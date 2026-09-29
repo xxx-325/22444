@@ -1154,8 +1154,10 @@ external business facts by themselves. Keep the customer's actual choice,
 authorization, business agreement, or external state, including its object and
 applicable scope. Generic API behavior and sample data are context, not separate
 fact targets. An explicit customer selection for one named job or cycle remains a
-fact even beside API requirements or expressed as parameters or code. Preserve that
-scope; do not infer a permanent policy or claim the requested work was completed.
+fact even beside API requirements or expressed as parameters or code. Preserve its
+source-confirmed date or cycle, including anchors for 今天 or 下一周期 in headings or
+surrounding text, without inventing dates or cycles; do not infer a permanent policy or claim
+the requested work was completed.
 Keep recorded corrections, external constraints, observations, failures and test
 conclusions with their conditions and consequences. A file count or byte total
 alone is not a conclusion. Do not extract standalone file names, signatures,

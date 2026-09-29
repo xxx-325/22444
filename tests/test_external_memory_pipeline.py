@@ -136,6 +136,10 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             self.assertEqual(payload["facts"], focus["facts"])
             self.assertIn("2025-04-18T16:10:00Z", str(payload["materials"]))
             self.assertIn("render_summary", str(payload["materials"]))
+            self.assertEqual(
+                [record["text"] for material in payload["materials"]
+                 for record in material["original_records"]],
+                [record["text"] for record in scope["dialogue"]])
         self.assertEqual([receipt["stage"] for receipt in client.usage], [
             "workflow", "focus", "qa", "review_target", "review_relevance", "review_atomicity",
             "review_completeness", "review_evidence"])

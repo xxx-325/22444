@@ -690,7 +690,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_history_review_separates_private_rules_from_public_evidence(self):
         from dialogue_benchmark.task_eval.runtime import review_task
-        evidence = {"history_targets": [{"id": "h1", "sources": ["event1"]}],
+        evidence = {"history_targets": [{"id": "h1", "scope": "Maple exports on 2025-06-11",
+                                         "sources": ["event1"]}],
                     "repository_exploration": "api.py exposes configurable null handling.",
                     "contracts": [{"statement": "Private rule"}],
                     "sources": [{"id": "event1", "text": "Private raw history"}]}
@@ -706,6 +707,7 @@ class SelectionTests(unittest.TestCase):
         payload = ask.call_args.args[1]
         self.assertEqual(set(payload), {"public_task", "public_repository",
                                        "private_history_targets", "injected_answer"})
+        self.assertEqual(payload["private_history_targets"], evidence["history_targets"])
         self.assertEqual(payload["public_repository"], [{"id": "repository_exploration",
                                                        "result": evidence["repository_exploration"]}])
         response["history_reviews"][0].update(public="full", public_sources="none")

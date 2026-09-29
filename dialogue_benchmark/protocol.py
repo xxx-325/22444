@@ -73,7 +73,10 @@ SIMPLE_TEMPORAL_WORDING_RULE = (
     "A local evidence window does not prove that an event was the previous, latest, "
     "or final occurrence. In generated prose, do not write 上次, 上一次, 最近一次, "
     "or 最后一次. Use 之前 and identify the concrete test, error, task, or change. "
-    "Preserve those words only when quoting supplied code or a literal string."
+    "Preserve those words only when quoting supplied code or a literal string. "
+    "When source text explicitly anchors relative wording such as 今天 or 下一周期 "
+    "to a date or cycle, retain that anchor as part of the stated scope. "
+    "Never invent a missing date or cycle."
 )
 
 SIMPLE_ATOMICITY_RULE = (
