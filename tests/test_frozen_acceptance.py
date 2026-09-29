@@ -3,13 +3,15 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from dialogue_benchmark.task_eval.artifacts import save
+from dialogue_benchmark.task_eval.artifacts import read, save
 from dialogue_benchmark.task_eval.checks import (
     acceptance_items, assess_acceptance, check_history_mutations, pytest_result)
 from dialogue_benchmark.task_eval.history import answer_quote_supported, historical_question, qualified_oracle_complete
 from dialogue_benchmark.task_eval.metrics import measure
+from dialogue_benchmark.task_eval.run import inspect_acceptance
+from dialogue_benchmark.task_eval.selection import SelectionBudget
 
 
 class FrozenAcceptanceTests(unittest.TestCase):
@@ -183,9 +185,12 @@ class FrozenAcceptanceTests(unittest.TestCase):
             result = self.checks("passed" if namespace["keep_other_nulls"] else "failed")
             result["cases"][0]["status"] = "passed" if namespace["feature"] else "failed"
             return result
+        inspector = Mock(side_effect=AssertionError("Automatic checks must not invoke a judge"))
         with patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
-            result = check_history_mutations(candidate, spec, validator, self.root / "mutations", "image")
+            result = check_history_mutations(candidate, spec, validator, self.root / "mutations", "image",
+                                             inspector=inspector)
         self.assertEqual(result["status"], "caught")
+        inspector.assert_not_called()
         self.assertIn("keep_other_nulls = True", (candidate / "export.py").read_text())
         self.assertTrue((self.root / "mutations/m1/result.json").exists())
         # A mixed public/history row cannot establish a specifically historical failure.
@@ -203,6 +208,101 @@ class FrozenAcceptanceTests(unittest.TestCase):
         with patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
             result = check_history_mutations(candidate, spec, validator, self.root / "broken", "image")
         self.assertEqual(result["status"], "unverified")
+
+    def test_mutation_inspects_the_replayed_delivery(self):
+        spec, candidate, validator = [self.root / name for name in ("spec", "candidate", "validator")]
+        for path in (spec, candidate, validator):
+            path.mkdir()
+        items = [dict(self.items[0], tests=[], check="inspect: Confirm both order IDs occur in the report"),
+                 self.items[1]]
+        save(spec / "acceptance.json", items)
+        save(spec / "history.json", {"contracts": [{"id": "h1", "active": True, "repository": "external"}],
+                                    "oracle_answer": "PRIVATE_ORACLE", "reference_information": "oracle_history"})
+        (spec / "memory-use.md").write_text("PRIVATE_ORACLE")
+        (spec / "history-review.md").write_text("PRIVATE_ORACLE")
+        (candidate / "report.txt").write_text("one: delivered\ntwo: failed\n")
+        (validator / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
+        (validator / "acceptance-review.txt").write_text(
+            "REVIEW a1\nstatus: passed\nevidence: /reference/implementation/report.txt:1-2\nEND_REVIEW")
+        (validator / "m1.patch").write_text(
+            "diff --git a/report.txt b/report.txt\n--- a/report.txt\n+++ b/report.txt\n"
+            "@@ -1,2 +1,2 @@\n-one: delivered\n+one: failed\n two: failed\n")
+
+        def checks(code, *args, **kwargs):
+            self.assertEqual((code / "report.txt").read_text(), "one: failed\ntwo: failed\n")
+            if mode in {"inspect_history", "history_passed"}:
+                return {"status": "unavailable", "cases": []}
+            return {"status": "error" if mode == "execution_error" else "failed",
+                    "cases": [{"id": "test_export::test_null", "status": "failed"}]}
+
+        def judge(root, config, role, message, **options):
+            from dialogue_benchmark.task_eval.prompts import JUDGE
+            self.assertEqual(role, "judge")
+            self.assertEqual(message, JUDGE)
+            self.assertEqual(options["max_requests"], 8)
+            self.assertEqual((root / "workspace/candidate/report.txt").read_text(), "one: failed\ntwo: failed\n")
+            reference = options["reference"]
+            self.assertEqual(read(reference / "checks.json")["status"],
+                             "unavailable" if mode in {"inspect_history", "history_passed"} else "failed")
+            self.assertEqual(read(reference / "spec/acceptance.json"), items)
+            self.assertNotIn("PRIVATE_ORACLE", str(read(reference / "spec/history.json")))
+            self.assertFalse((reference / "spec/memory-use.md").exists())
+            self.assertFalse((reference / "spec/history-review.md").exists())
+            self.assertFalse((reference / "implementation").exists())
+            self.assertFalse((reference / "mutations.txt").exists())
+            workspace_checks = root / "workspace/checks"
+            workspace_checks.mkdir()
+            evidence = "/workspace/candidate/report.txt:1-2"
+            if mode == "invalid_evidence":
+                evidence = "/workspace/candidate/report.txt:99"
+            elif mode == "reference_evidence":
+                evidence = "/reference/implementation/report.txt:1-2"
+            if mode != "missing_review":
+                workspace_checks.joinpath("acceptance-review.txt").write_text(
+                    "REVIEW a1\nstatus: %s\nevidence: %s\nEND_REVIEW" % (
+                        "failed" if mode == "public_failed" else "passed", evidence))
+                if mode in {"inspect_history", "history_passed"}:
+                    with (workspace_checks / "acceptance-review.txt").open("a") as handle:
+                        handle.write("\nREVIEW a2\nstatus: %s\nevidence: %s\nEND_REVIEW" % (
+                            "failed" if mode == "inspect_history" else "passed", evidence))
+            metrics = {"attempted_requests": 2, "prompt_tokens": 40, "completion_tokens": 10, "usage_complete": True}
+            if mode == "missing_usage":
+                metrics = {"attempted_requests": 2, "usage_complete": False}
+            return {"status": "error" if mode == "judge_refused" else "finished", "metrics": metrics}
+
+        def inspector(code, criteria, execution, output):
+            _, review_path, roots = inspect_acceptance(
+                code, criteria, items, execution, output, {}, {}, budget=budget)
+            self.assertEqual(roots["/workspace/candidate"], output / "judge/workspace/candidate")
+            self.assertNotIn("/reference/implementation", roots)
+            return review_path, roots
+
+        for mode in ("passed", "inspect_history", "history_passed", "public_failed",
+                     "missing_review", "invalid_evidence", "reference_evidence",
+                     "judge_refused", "missing_usage", "budget_exhausted", "execution_error", "no_inspector"):
+            with self.subTest(mode=mode):
+                items[1] = (dict(self.items[1], tests=[], check="inspect: Verify the recorded order statuses")
+                            if mode in {"inspect_history", "history_passed"} else self.items[1])
+                save(spec / "acceptance.json", items)
+                output = self.root / mode
+                budget = SelectionBudget(output / "budget", {"max_requests": 0 if mode == "budget_exhausted" else 8})
+                with patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks), \
+                     patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=judge) as worker:
+                    result = check_history_mutations(candidate, spec, validator, output, "image",
+                                                     inspector=None if mode == "no_inspector" else inspector)
+                self.assertEqual(result["status"], "caught" if mode in {"passed", "inspect_history"} else "unverified")
+                task_status = ("passed" if mode in {"passed", "inspect_history", "history_passed"}
+                               else "failed" if mode == "public_failed" else "uncertain")
+                self.assertEqual([row["status"] for row in result["variants"][0]["acceptance"]["rows"]],
+                                 [task_status, "passed" if mode == "history_passed" else "failed"])
+                called = mode not in {"budget_exhausted", "execution_error", "no_inspector"}
+                self.assertEqual(worker.call_count, int(called))
+                self.assertEqual(budget.requests, 2 if called else 0)
+                self.assertEqual(budget.tokens, 50 if called and mode != "missing_usage" else 0)
+                self.assertEqual(budget.usage_complete, mode != "missing_usage")
+                if called:
+                    self.assertEqual(read(output / "budget/selection-budget.json")["requests"], 2)
+                self.assertEqual((candidate / "report.txt").read_text(), "one: delivered\ntwo: failed\n")
 
 
 if __name__ == "__main__":

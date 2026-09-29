@@ -244,7 +244,8 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
     return result
 
 
-def check_history_mutations(candidate, spec, validator_checks, output, image, *, candidate_pythonpath=None):
+def check_history_mutations(candidate, spec, validator_checks, output, image, *, candidate_pythonpath=None,
+                            inspector=None):
     """Replay saved wrong implementations; functioning task rows must still pass."""
     from ..llm import parse_text_response
     from .artifacts import read
@@ -278,7 +279,10 @@ def check_history_mutations(candidate, spec, validator_checks, output, image, *,
         if process.returncode == 0:
             checks = run_checks(root / "candidate", spec, root / "checks", image,
                                 candidate_pythonpath=candidate_pythonpath)
-            assessment = assess_acceptance(items, checks)
+            review_path, roots = None, None
+            if inspector and any(not item["tests"] for item in items) and checks["status"] != "error":
+                review_path, roots = inspector(root / "candidate", spec, checks, root)
+            assessment = assess_acceptance(items, checks, review_path, roots)
             functional = [r for r in assessment["rows"] if "task" in r["basis"]]
             target = next(r for r in assessment["rows"] if r["id"] == row["acceptance"])
             receipt.update(checks=checks, acceptance=assessment,

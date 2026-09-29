@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from dialogue_benchmark.llm import parse_text_response
 from dialogue_benchmark.task_eval.artifacts import copy_tree, read, save, fingerprint
 from dialogue_benchmark.task_eval.checks import acceptance_items, assess_acceptance, check_history_mutations, run_checks
-from dialogue_benchmark.task_eval.run import construct, prepare_test_reference
+from dialogue_benchmark.task_eval.run import construct, evaluate, freeze, inspect_acceptance, prepare_test_reference
 from dialogue_benchmark.task_eval.runtime import review_task, write_history_mutation
 from dialogue_benchmark.task_eval.versions import export_change, pin_baseline
 
@@ -104,6 +104,114 @@ class TaskPreflightTests(unittest.TestCase):
              patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=results) as checks:
             receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0, {}, **options)
         return receipt, checks
+
+    def test_paired_evaluation_inspects_each_actual_delivery_with_the_shared_judge(self):
+        spec = self.base / "spec"
+        spec.mkdir()
+        (spec / "task.md").write_text("Deliver the order status report.")
+        (spec / "acceptance.md").write_text(
+            "| a1 | Report the recorded status | task | inspect: Read report.txt; one must be delivered |\n")
+        save(spec / "acceptance.json", acceptance_items(spec))
+        receipt = freeze(spec, self.root / "frozen", self.baseline)
+
+        def agent(root, config, role, message, **options):
+            if role == "code":
+                text = "one: failed\n" if root.name == "trial-1" else "one: delivered\n"
+                (root / "workspace/candidate/report.txt").write_text(text)
+                return {"status": "finished", "metrics": {}}
+            self.assertEqual(role, "judge")
+            text = (root / "workspace/candidate/report.txt").read_text()
+            status = "passed" if text == "one: delivered\n" else "failed"
+            checks = root / "workspace/checks"
+            checks.mkdir()
+            (checks / "acceptance-review.txt").write_text(
+                "REVIEW a1\nstatus: %s\nevidence: /workspace/candidate/report.txt:1\nEND_REVIEW" % status)
+            return {"status": "finished"}
+
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", return_value={"status": "passed", "cases": []}), \
+             patch("dialogue_benchmark.task_eval.run.inspect_acceptance", wraps=inspect_acceptance) as inspector:
+            result = evaluate(self.item, self.root, self.baseline, receipt, {"execution_image": "image"}, {}, 0)
+        self.assertEqual(inspector.call_count, 2)
+        self.assertEqual(result["without_memory"]["result"], "failed")
+        self.assertEqual(result["with_memory"]["result"], "passed")
+
+    def test_construction_inspects_mutant_and_charges_the_same_preflight_budget(self):
+        rule = "Keep other null values."
+        self.item["qa"]["answer_points"] = [{"text": rule}]
+        self.item["public_records"] = [dict(id="e1", original_id="choice", order=1, kind="message", text=rule)]
+        save(Path(self.item["generation_input"]), {"ref_to_source": {"资料1": "e1"}})
+
+        def draft(selection, config, output, spec, budget, feedback=""):
+            self.fake_draft(selection, config, output, spec, budget, feedback)
+            (spec / "history-contract.txt").write_text(
+                "REVIEW h1\nstatement: " + rule + "\nscope: All exports\nsources: choice\n"
+                "supersedes: none\nbehavior: Preserve other nulls\nactive: yes\nrepository: external\nEND_REVIEW")
+            (spec / "acceptance.md").write_text(
+                "| a1 | Export works | task | inspect: Read a.py; feature must be True |\n"
+                "| a2 | Preserve other nulls | h1 | test: test_export::test_null |\n")
+
+        def review(task, answer, config, output, *, evidence, budget):
+            return {"status": "clean", "task_review": {"leakage": "clean"}, "history_rows": [
+                dict(id=row["id"], applicable="yes", public="none", answer="sufficient",
+                     historical_sources=row["sources"], answer_quote=rule) for row in evidence["contracts"]]}
+
+        def coverage(spec, baseline, candidate, changed, results, config, output, budget):
+            output.mkdir(parents=True)
+            (output / "coverage.md").write_text("Fixed feature inspection and exact historical test.")
+            return {"status": "complete", "rows": []}
+
+        def checks(candidate, *args, **kwargs):
+            namespace = {}
+            exec((candidate / "a.py").read_text(), namespace)
+            status = "passed" if namespace.get("keep_other_nulls") else "failed"
+            return {"status": status, "cases": [{"id": "test_export::test_null", "status": status}]}
+
+        def agent(root, config, role, message, **options):
+            if root.name == "author":
+                (root / "workspace/checks/test_acceptance.py").write_text("# Fixed historical check\n")
+            elif root.name == "reference-solver":
+                (root / "workspace/candidate/a.py").write_text("feature = True\nkeep_other_nulls = True\n")
+            elif root.name == "validator":
+                folder = root / "workspace/checks"
+                folder.mkdir()
+                (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
+                (folder / "m1.patch").write_text(
+                    "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+                    "@@ -1,2 +1,2 @@\n feature = True\n-keep_other_nulls = True\n+keep_other_nulls = False\n")
+                (folder / "acceptance-review.txt").write_text(
+                    "REVIEW a1\nstatus: passed\nevidence: /reference/implementation/a.py:1\nEND_REVIEW")
+                return {"status": "finished", "metrics": {
+                    "attempted_requests": 1, "prompt_tokens": 10, "completion_tokens": 5, "usage_complete": True}}
+            elif root.name == "judge":
+                self.assertEqual(options["max_requests"], 7)
+                self.assertEqual(options["max_tokens"], 185)
+                self.assertEqual((root / "workspace/candidate/a.py").read_text(),
+                                 "feature = True\nkeep_other_nulls = False\n")
+                folder = root / "workspace/checks"
+                folder.mkdir()
+                (folder / "acceptance-review.txt").write_text(
+                    "REVIEW a1\nstatus: passed\nevidence: /workspace/candidate/a.py:1\nEND_REVIEW")
+                return {"status": "finished", "metrics": {
+                    "attempted_requests": 2, "prompt_tokens": 40, "completion_tokens": 10, "usage_complete": True}}
+            return {"status": "finished"}
+
+        with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
+             patch("dialogue_benchmark.task_eval.run.review_task", side_effect=review), \
+             patch("dialogue_benchmark.task_eval.run.review_sources", return_value={"support": "supported"}), \
+             patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
+             patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+             patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0,
+                                {"max_requests": 8, "max_tokens": 200})
+        self.assertIsNotNone(receipt)
+        record = read(self.root / "construction.json")[0]
+        self.assertEqual(record["history_mutations"]["status"], "caught")
+        self.assertEqual(record["reference_acceptance"]["status"], "passed")
+        self.assertEqual(record["preflight_budget"]["requests"], 3)
+        self.assertEqual(record["preflight_budget"]["total_tokens"], 65)
+        self.assertEqual(record["preflight_budget"], read(self.root / "construction-00/preflight/selection-budget.json"))
 
     def test_reuse_preparation_revalidates_without_regenerating_tests(self):
         self.validator_status = "ConversationExecutionStatus.STUCK"

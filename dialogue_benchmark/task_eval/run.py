@@ -138,6 +138,44 @@ def agent_finished(outcome):
     return str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}
 
 
+def inspect_acceptance(candidate, spec, items, checks, root, config, agent_options, *, budget=None):
+    """Inspect this candidate against frozen criteria, retaining its own evidence."""
+    reference = root / "judge-reference"
+    copy_tree(spec, reference / "spec")
+    if (reference / "spec/history.json").exists():
+        # Expose criteria and observations, never condition labels or injected answers.
+        for name in ("history-review.md", "memory-use.md"):
+            (reference / "spec" / name).unlink(missing_ok=True)
+        judge_history = read(reference / "spec/history.json")
+        for key in ("oracle_answer", "reference_information", "oracle_sufficiency"):
+            judge_history.pop(key, None)
+        save(reference / "spec/history.json", judge_history)
+    save(reference / "checks.json", checks)
+    judge = root / "judge"
+    prepare(judge, candidate)
+    roots = {"/workspace/candidate": judge / "workspace/candidate",
+             "/workspace/checks": judge / "workspace/checks",
+             "/workspace/experiments": judge / "workspace/experiments"}
+    judged = {"status": "not_needed"}
+    if any(not row["tests"] for row in items):
+        try:
+            options = budget.remaining() if budget is not None else agent_options
+            judged = run_agent(judge, config, "judge", prompts.JUDGE, reference=reference, **options)
+        except Exception as error:
+            result_path = judge / "result.json"
+            judged = read(result_path) if result_path.exists() else {}
+            judged.update(status="error", error_type=type(error).__name__, detail=str(error))
+            save(result_path, judged)
+        if budget is not None and "metrics" in judged:
+            metrics = judged["metrics"]
+            budget.record([dict(request_count=metrics.get("attempted_requests", 0),
+                **({k: metrics[k] for k in ("prompt_tokens", "completion_tokens") if k in metrics}
+                   if metrics.get("usage_complete") else {}))])
+        if not agent_finished(judged) or (budget is not None and not budget.usage_complete):
+            return judged, None, roots
+    return judged, judge / "workspace/checks/acceptance-review.txt", roots
+
+
 def load_preparation(attempt, item, baseline, public_history):
     """Reuse model-authored criteria only for the same QA, evidence and baseline."""
     attempt = Path(attempt).resolve()
@@ -551,11 +589,17 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         else:
             record["reason"] = "missing_coverage_checks"
         if history and final_spec is not None and oracle_complete:
+            def inspect_mutant(mutant, criteria, checks, output):
+                _, review_path, roots = inspect_acceptance(
+                    mutant, criteria, items, checks, output, config, agent_options, budget=preflight_budget)
+                return review_path, roots
+
             record["history_mutations"] = check_history_mutations(
                 candidate, final_spec, validator / "workspace/checks",
                 run / "history-mutations", config["execution_image"],
-                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+                candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"), inspector=inspect_mutant)
             record["validation"]["MUTATIONS"] = record["history_mutations"]["status"]
+            record["preflight_budget"] = read(run / "preflight/selection-budget.json")
         reference_acceptance = (assess_acceptance(items, reference_checks,
             validator / "workspace/checks/acceptance-review.txt",
             {"/reference/implementation": candidate,
@@ -637,29 +681,12 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
         changed = write_diff(baseline, candidate, trial / "changes.patch")
         checks = run_checks(candidate, spec, trial / "checks", config["execution_image"],
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
-        reference = trial / "judge-reference"
-        copy_tree(spec, reference / "spec")
-        if history:
-            # The judge sees criteria and observable actions, never condition labels or injected answers.
-            for name in ("history-review.md", "memory-use.md"):
-                (reference / "spec" / name).unlink(missing_ok=True)
-            judge_history = read(reference / "spec/history.json")
-            for key in ("oracle_answer", "reference_information", "oracle_sufficiency"):
-                judge_history.pop(key, None)
-            save(reference / "spec/history.json", judge_history)
-        save(reference / "checks.json", checks)
+        judged, review_path, roots = inspect_acceptance(
+            candidate, spec, items, checks, trial, config, agent_options)
         judge = trial / "judge"
-        prepare(judge, candidate)
-        if any(not row["tests"] for row in items):
-            judged = run_agent(judge, config, "judge", prompts.JUDGE,
-                               reference=reference, **agent_options)
-        else:
-            judged = {"status": "not_needed"}
         verdict_path = judge / "workspace/checks/verdict.txt"
         verdict = verdict_path.read_text() if verdict_path.exists() else ""
-        acceptance = assess_acceptance(items, checks, judge / "workspace/checks/acceptance-review.txt",
-            {"/workspace/candidate": candidate, "/workspace/checks": judge / "workspace/checks",
-             "/workspace/experiments": judge / "workspace/experiments"})
+        acceptance = assess_acceptance(items, checks, review_path, roots)
         status = acceptance["status"]
         result[condition] = {"result": status, "solver_status": solved["status"],
                              "judge_status": judged["status"],
