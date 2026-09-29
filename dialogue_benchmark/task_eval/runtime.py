@@ -114,6 +114,12 @@ def write_history_mutation(spec, candidate, changed_files, config, output, budge
         rows = parse_text_response(files["mutations.txt"]).get("reviews", [])
         name = rows[0].get("file") if len(rows) == 1 and rows[0].get("id") == "m1" else None
         before, after = files["before.txt"], files["after.txt"]
+        # FILE blocks add a final line break. An inline fragment may end
+        # before a comma or another token; remove only that framing newline.
+        if name in sources and sources[name].count(before) == 0 and before.endswith("\n"):
+            fragment = before.removesuffix("\n")
+            if fragment and sources[name].count(fragment) == 1:
+                before, after = fragment, after.removesuffix("\n")
         if name not in sources or before == after or sources[name].count(before) != 1:
             raise ValueError("Mutation must change one exact, unique reference fragment")
         checks = output / "workspace/checks"

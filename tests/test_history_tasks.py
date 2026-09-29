@@ -797,6 +797,37 @@ class CheckReviewTests(unittest.TestCase):
             self.assertEqual(result["status"], "error")
             self.assertFalse((root / "outside.py").exists())
 
+    def test_mutation_file_protocol_can_replace_one_inline_json_fragment(self):
+        response = parse_text_response(
+            'FILE mutations.txt\nREVIEW m1\nacceptance: a2\nfile: rules.json\nEND_REVIEW\nEND_FILE\n'
+            'FILE before.txt\n"not delivered": "FAILED"\nEND_FILE\n'
+            'FILE after.txt\n"not delivered": "DELIVERED"\nEND_FILE\n')
+        self.assertTrue(response["files"][1]["content"].endswith("\n"))
+        original = '{\n  "not delivered": "FAILED",\n  "ok": "DELIVERED"\n}\n'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec, candidate = root / "spec", root / "candidate"
+            spec.mkdir()
+            candidate.mkdir()
+            for name in ("task.md", "history-contract.txt"):
+                (spec / name).write_text("Apply the customer status mapping")
+            save(spec / "acceptance.json", [{"id": "a2", "basis": ["h1"]}])
+            path = candidate / "rules.json"
+            path.write_text(original)
+            budget = SimpleNamespace(call=lambda *args: response)
+            result = write_history_mutation(spec, candidate, ["rules.json"], {}, root / "review", budget)
+            self.assertEqual(result["status"], "finished", result)
+            self.assertTrue(read(root / "review/version/version.json")["replay_verified"])
+            patch_text = (root / "review/workspace/checks/m1.patch").read_text()
+            self.assertIn('+  "not delivered": "DELIVERED",\n', patch_text)
+            self.assertEqual(path.read_text(), original)
+
+            path.write_text('{"one": {"not delivered": "FAILED"}, '
+                            '"two": {"not delivered": "FAILED"}}\n')
+            result = write_history_mutation(spec, candidate, ["rules.json"], {}, root / "ambiguous", budget)
+            self.assertEqual(result["status"], "error")
+            self.assertFalse((root / "ambiguous/workspace/checks/m1.patch").exists())
+
     def test_review_uses_saved_tests_and_changed_sources_and_requires_all_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
