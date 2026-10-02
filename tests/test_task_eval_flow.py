@@ -970,6 +970,7 @@ class TaskPreflightTests(unittest.TestCase):
             result = run_checks(self.baseline, spec, output, "image")
         command = run.call_args.args[0]
         self.assertIn("-t", command)
+        self.assertEqual(command[command.index("-w") + 1], "/workspace/checks/validation-candidate")
         self.assertIn("--rootdir=/workspace/checks", command)
         self.assertFalse(any("PYTHONPATH=" in part for part in command))
         self.assertIn("/workspace/checks/test_interactions.py", command)

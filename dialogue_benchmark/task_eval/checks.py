@@ -260,7 +260,16 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
             elif candidate_tests.exists():
                 candidate_tests.unlink()
             copy_tree(regression, candidate_tests)
-        test_paths = ["/workspace/candidate/" + name.removeprefix("regression/")
+        # Run inherited tests in a disposable writable copy. The submitted
+        # snapshot and candidate_root fixture remain read-only.
+        validation = workspace / "checks/validation-candidate"
+        copy_tree(workspace / "candidate", validation)
+        validation_path = "/workspace/checks/validation-candidate"
+        for script in scripts:
+            execution_script = workspace / "checks/commands" / script.name
+            execution_script.write_text(
+                script.read_text().replace("/workspace/candidate", validation_path), encoding="utf-8")
+        test_paths = [validation_path + "/" + name.removeprefix("regression/")
                       if name.startswith("regression/tests/") else "/workspace/checks/" + name
                       for name in tests]
         install_candidate_fixture(workspace / "checks")
@@ -270,7 +279,7 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
         sandbox.unpause()
         # Match the agent's PTY-enabled terminal, including /dev/tty availability.
         # Source, tests, and dependencies use the same execution image and mounts.
-        command = ["docker", "exec", "-t", "--user", "1000", "-w", "/workspace/candidate",
+        command = ["docker", "exec", "-t", "--user", "1000", "-w", validation_path,
                    "-e", "PYTHONDONTWRITEBYTECODE=1",
                    sandbox.name, "python", "-m", "pytest", "-c", "/dev/null",
                    "--rootdir=/workspace" if regression.is_dir() else "--rootdir=/workspace/checks",
@@ -278,7 +287,8 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
                    *test_paths,
                    "--junitxml=/workspace/experiments/receipt.xml"]
         if candidate_pythonpath:
-            command[command.index(sandbox.name):command.index(sandbox.name)] = ["-e", "PYTHONPATH=" + candidate_pythonpath]
+            pythonpath = candidate_pythonpath.replace("/workspace/candidate", validation_path)
+            command[command.index(sandbox.name):command.index(sandbox.name)] = ["-e", "PYTHONPATH=" + pythonpath]
         executions = []
         def execute(argv):
             try:
@@ -300,6 +310,8 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
                         case["id"] = case["id"].removeprefix("checks.")
                     elif case["id"].startswith("candidate.tests."):
                         case["id"] = "regression.tests." + case["id"].removeprefix("candidate.tests.")
+                    elif case["id"].startswith("validation-candidate.tests."):
+                        case["id"] = "regression.tests." + case["id"].removeprefix("validation-candidate.tests.")
             for script in scripts:
                 # Generated command checks are shell scripts.  Run them with
                 # bash so arrays, pipefail, and parameter expansion work
