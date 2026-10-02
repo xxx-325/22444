@@ -85,15 +85,17 @@ def write_report(output, manifest):
         lines += ["", "Pass-rate difference (with − without): %.1f percentage points." %
                   (100 * (rates["with_memory"] - rates["without_memory"]))]
     lines += ["", "## Paired differences", "",
-              "Differences are with memory minus without memory. Cost differences require both to pass. "
-              "Token differences cover the solver; responder tokens are listed separately above.",
-              "", "| Task | Both passed | History questions | Development tools | File views | Reads/searches | Solver tokens |",
-              "|---|---|---|---|---|---|---|"]
+              "Differences are with memory minus without memory. Raw costs are retained even when one arm "
+              "fails; comparable costs are shown only when both arms pass. Token differences cover the "
+              "solver; responder tokens are listed separately above.",
+              "", "| Task | Both passed | History questions | Raw tools | Raw views | Raw reads | Raw tokens | Comparable tools | Comparable views | Comparable reads | Comparable tokens |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
     for task in tasks:
         pair = compare_trials(task.get("comparison", {}))
-        delta = pair["cost_differences"]
-        lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
+        raw, delta = pair["raw_cost_differences"], pair["comparable_cost_differences"]
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             task["task"], pair["both_passed"], pair["history_question_difference"],
+            *(raw[k] for k in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens")),
             *(delta[k] for k in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"))))
     successful = [compare_trials(t.get("comparison", {})) for t in tasks
                   if compare_trials(t.get("comparison", {}))["both_passed"]]

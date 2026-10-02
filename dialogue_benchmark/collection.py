@@ -13,7 +13,8 @@ from .task_eval.artifacts import read, save
 
 EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=2, task_workers=1, revisions=3,
-                           model_request_chars=96000, qa_only=False)
+                           model_request_chars=96000, qa_only=False,
+                           general_count=50, code_count=50)
 
 
 def sum_usage(rows):
@@ -72,6 +73,13 @@ def _identifier(value):
 def validate_plan(plan):
     if not plan.get("projects") or not plan.get("runtime_config"):
         raise ValueError("A runtime_config and fixed projects list are required")
+    sources = plan.get("qa_sources", ["external"])
+    if (not isinstance(sources, list) or not sources
+            or any(source not in ("graph", "external") for source in sources)
+            or len(set(sources)) != len(sources)):
+        raise ValueError("qa_sources must select distinct graph/external routes")
+    if plan.get("dialogue_quality") not in (None, "scale"):
+        raise ValueError("dialogue_quality must be 'scale' when provided")
     for key in ("max_total_requests", "max_total_tokens"):
         if type(plan.get(key)) is not int or plan[key] <= 0:
             raise ValueError(key + " must be a positive stage-admission budget")
@@ -110,6 +118,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     state = dict(status="running", projects=[], stages=[],
                  qa_only=plan.get("evaluation", {}).get("qa_only", False),
+                 qa_sources=plan.get("qa_sources", ["external"]),
                  plan_sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
                  limits={k: plan[k] for k in ("max_total_requests", "max_total_tokens")},
                  budget_boundary="Finish each started stage, then check cumulative usage before the next stage")
@@ -168,6 +177,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             state["projects"].append(entry)
             if project.get("prepared_config"):
                 config = read((plan_path.parent / project["prepared_config"]).resolve())
+                for role in ("user", "code", "judge", "decomposer"):
+                    config.setdefault(role, {}).update(runtime.get(role, {}))
                 entry["preparation"] = "reused; original cost not charged to this collection"
             else:
                 config = copy.deepcopy(runtime)
@@ -181,6 +192,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     entry["status"] = "project_rejected"
                     continue
                 config = read(target / "config.json")
+            if plan.get("dialogue_quality"):
+                config["dialogue_quality"] = plan["dialogue_quality"]
             repo = Path(config["repository"])
             for role in ("user", "code", "judge", "decomposer"):
                 if isinstance(config.get(role), dict):
@@ -228,27 +241,40 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 events = read(exported["external_events"])["events"] if exported.get("external_events") else []
                 record["public_memory_counts"] = {kind: sum(e.get("memory_kind") == kind for e in events)
                                                    for kind in ("M1", "M2", "M3", "M4", "M5", "M6")}
-                if not events:
-                    record.update(status="no_external_history", published_qa=0, paired_tasks=0, tasks=[])
-                    continue
-                target = scenario_root / "evaluation"
-                command = [str(python), str(Path(__file__).resolve().parents[1] / "run_episode.py"),
-                    "--episode-manifest", str(package / "manifest.json"), "--qa-source", "external",
-                    "--simulator-path", str(simulator), "--env-file", str(env_file), "--output", str(target)]
-                defaults = dict(EVALUATION_DEFAULTS)
-                defaults.update(plan.get("evaluation", {}))
-                if defaults.pop("qa_only"):
-                    command.append("--qa-only")
-                for key, value in defaults.items():
-                    command.extend(["--" + key.replace("_", "-"), str(value)])
-                completed = stage("evaluation", target, command, Path(__file__).resolve().parents[1],
-                                  target / "pipeline.json", {"completed"}, target / "usage.json")
-                record["status"] = completed.get("stop_reason", "completed") if completed else "evaluation_failed"
-                record["published_qa"] = len(_read_if(target / "qa/qa-public.json").get("questions", []))
-                tasks = _read_if(target / "tasks/manifest.json").get("tasks", [])
-                record["tasks"] = tasks
-                record["paired_tasks"] = sum(set(t.get("comparison", {})) >= {"with_memory", "without_memory"}
-                                              for t in tasks)
+                record["evaluations"] = {}
+                for qa_source in state["qa_sources"]:
+                    evaluated = record["evaluations"][qa_source] = {}
+                    if qa_source == "external" and not events:
+                        evaluated.update(status="no_external_history", published_qa=0, paired_tasks=0, tasks=[])
+                        continue
+                    target = scenario_root / "evaluation" / qa_source
+                    command = [str(python), str(Path(__file__).resolve().parents[1] / "run_episode.py"),
+                        "--episode-manifest", str(package / "manifest.json"), "--qa-source", qa_source,
+                        "--simulator-path", str(simulator), "--env-file", str(env_file), "--output", str(target)]
+                    options = dict(EVALUATION_DEFAULTS)
+                    options.update(plan.get("evaluation", {}))
+                    qa_only = options.pop("qa_only") or (qa_source == "graph" and len(state["qa_sources"]) > 1)
+                    if qa_only:
+                        command.append("--qa-only")
+                    excluded = ({"qa_count", "group_budget"} if qa_source == "graph"
+                                else {"general_count", "code_count"})
+                    for key, value in options.items():
+                        if key not in excluded:
+                            command.extend(["--" + key.replace("_", "-"), str(value)])
+                    completed = stage("evaluation", target, command, Path(__file__).resolve().parents[1],
+                                      target / "pipeline.json", {"completed"}, target / "usage.json")
+                    evaluated.update(status=completed.get("stop_reason", "completed") if completed else "evaluation_failed",
+                                     qa_only=qa_only, path=str(target.relative_to(output)))
+                    public = _read_if(target / "qa/qa-public.json")
+                    evaluated["published_qa"] = len(public.get("questions", []))
+                    evaluated["counts"] = public.get("counts", {})
+                    tasks = _read_if(target / "tasks/manifest.json").get("tasks", [])
+                    evaluated["tasks"] = tasks
+                    evaluated["paired_tasks"] = sum(set(t.get("comparison", {})) >= {"with_memory", "without_memory"}
+                                                      for t in tasks)
+                outcomes = [row["status"] for row in record["evaluations"].values()]
+                record["status"] = (outcomes[0] if len(outcomes) == 1 else
+                                    "partial_failure" if "evaluation_failed" in outcomes else "completed")
             entry["status"] = "completed"
         state["status"] = "completed"
     except BaseException as error:
@@ -273,17 +299,35 @@ def write_collection_report(output, state):
     tasks = []
     qa_only = state.get("qa_only", False)
     lines = ["# Collection construction", "", "Status: " + state["status"], "",
-             "| Project | Scenario | Outcome | Published QA | Completed pairs |",
-             "|---|---|---|---:|---:|"]
+             "| Project | Scenario | Route | Outcome | Published QA | Completed pairs |",
+             "|---|---|---|---|---:|---:|"]
     for project in state["projects"]:
         for scenario in project["scenarios"]:
-            path = project["id"] + "/" + scenario["id"]
-            lines.append("| %s | %s | %s | %s | %s |" % (
-                project["id"], scenario["id"], scenario["status"],
-                scenario.get("published_qa", 0),
-                "Not scheduled" if qa_only else scenario.get("paired_tasks", 0)))
-            tasks.extend(dict(t, task=path + "/evaluation/tasks/" + t["task"])
-                         for t in scenario.get("tasks", []))
+            routes = scenario.get("evaluations", {})
+            if not routes:
+                lines.append("| %s | %s | — | %s | 0 | 0 |" % (
+                    project["id"], scenario["id"], scenario["status"]))
+            for qa_source, evaluated in routes.items():
+                lines.append("| %s | %s | %s | %s | %s | %s |" % (
+                    project["id"], scenario["id"], qa_source, evaluated["status"],
+                    evaluated.get("published_qa", 0),
+                    "Not scheduled" if evaluated.get("qa_only", qa_only) else evaluated.get("paired_tasks", 0)))
+                tasks.extend(dict(t, task=evaluated["path"] + "/tasks/" + t["task"])
+                             for t in evaluated.get("tasks", []))
+    lines += ["", "QA counts are reported per route. They are not added into a combined unique count."]
+    totals = {}
+    for project in state["projects"]:
+        for scenario in project["scenarios"]:
+            for source, evaluated in scenario.get("evaluations", {}).items():
+                total = totals.setdefault(source, {"qa": 0, "tasks": 0, "pairs": 0})
+                total["qa"] += evaluated.get("published_qa", 0)
+                total["tasks"] += len(evaluated.get("tasks", []))
+                total["pairs"] += evaluated.get("paired_tasks", 0)
+    lines += ["", "| Route | Published QA | Task records | Completed pairs |",
+              "|---|---:|---:|---:|"]
+    for source, total in totals.items():
+        lines.append("| %s | %s | %s | %s |" % (
+            source, total["qa"], total["tasks"], total["pairs"]))
     lines += ["", "## Construction and evaluation usage", "",
               "Each primary ledger is counted once, including failed stages. Counts exclude reused project preparation.",
               "", "| Stage | Status | Requests | Tokens | Complete usage |", "|---|---|---:|---:|---|"]

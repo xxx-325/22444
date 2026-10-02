@@ -11,8 +11,9 @@ from dialogue_benchmark.task_eval.artifacts import qa_inputs
 from dialogue_benchmark.task_eval.checks import pytest_result, _test_write_violations
 from dialogue_benchmark.task_eval.metrics import compare_trials, measure
 from dialogue_benchmark.task_eval.runtime import configure, readable_reference, release_completed_execution, run_agent
-from dialogue_benchmark.task_eval.run import (admission, freeze, reference_solver_answer,
-                                              solver_input, unchanged, validated_spec)
+from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_pollution,
+                                               reference_solver_answer,
+                                               solver_input, unchanged, validated_spec)
 
 
 class TaskEvaluationTests(unittest.TestCase):
@@ -292,8 +293,35 @@ class TaskEvaluationTests(unittest.TestCase):
         pair = {"without_memory": {"result": "passed", "metrics": {"tool_calls": 10}},
                 "with_memory": {"result": "failed", "metrics": {"tool_calls": 1}}}
         self.assertIsNone(compare_trials(pair)["cost_differences"]["tool_calls"])
+        self.assertEqual(compare_trials(pair)["raw_cost_differences"]["tool_calls"], -9)
         pair["with_memory"]["result"] = "passed"
         self.assertEqual(compare_trials(pair)["cost_differences"]["tool_calls"], -9)
+        self.assertEqual(compare_trials(pair)["comparable_cost_differences"]["tool_calls"], -9)
+
+    def test_raw_token_delta_requires_complete_usage_but_other_costs_survive_failure(self):
+        pair = {
+            "without_memory": {"result": "failed", "metrics": {
+                "tool_calls": 8, "file_view_calls": 4, "shell_read_or_search_calls": 3,
+                "total_tokens": 100, "usage_complete": True}},
+            "with_memory": {"result": "passed", "metrics": {
+                "tool_calls": 5, "file_view_calls": 2, "shell_read_or_search_calls": 1,
+                "total_tokens": 60, "usage_complete": False}},
+        }
+        compared = compare_trials(pair)
+        self.assertEqual(compared["raw_cost_differences"]["tool_calls"], -3)
+        self.assertEqual(compared["raw_cost_differences"]["file_view_calls"], -2)
+        self.assertEqual(compared["raw_cost_differences"]["shell_read_or_search_calls"], -2)
+        self.assertIsNone(compared["raw_cost_differences"]["total_tokens"])
+        self.assertIsNone(compared["comparable_cost_differences"]["tool_calls"])
+
+    def test_implementation_pollution_finds_frozen_inputs(self):
+        self.assertEqual(
+            implementation_pollution([
+                "src/app.py", "tests/test_app.py", "fixtures/input.json",
+                "docs/acceptance.md", "src/testdata/input.json", "README.md"]),
+            ["docs/acceptance.md", "fixtures/input.json", "src/testdata/input.json",
+             "tests/test_app.py"])
+        self.assertEqual(implementation_pollution(["src/testdata_parser.py"]), [])
 
     def test_completion_difference_waits_for_both_outcomes(self):
         self.assertIsNone(compare_trials({})["completion_difference"])

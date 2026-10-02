@@ -137,6 +137,34 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(result["with_memory"]["result"], "passed")
         self.assertFalse(result["with_memory"]["history_available"])
 
+    def test_paired_evaluation_records_test_changes_as_pollution(self):
+        spec = self.base / "spec"
+        spec.mkdir()
+        (spec / "task.md").write_text("Deliver the report.")
+        (spec / "acceptance.md").write_text(
+            "| a1 | Report is delivered | task | test: test_acceptance::test_report |\n")
+        save(spec / "acceptance.json", acceptance_items(spec))
+        receipt = freeze(spec, self.root / "frozen", self.baseline)
+
+        def agent(root, config, role, message, **options):
+            if role == "code":
+                candidate = root / "workspace/candidate"
+                (candidate / "tests").mkdir()
+                (candidate / "tests/test_acceptance.py").write_text(
+                    "def test_report(): pass\n")
+            return {"status": "finished", "metrics": {}}
+
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.run_checks",
+                   return_value={"status": "passed", "cases": [
+                       {"id": "test_acceptance::test_report", "status": "passed"}]}):
+            result = evaluate(self.item, self.root, self.baseline, receipt,
+                              {"execution_image": "image"}, {}, 0)
+        for condition in ("without_memory", "with_memory"):
+            self.assertEqual(result[condition]["result"], "uncertain")
+            self.assertEqual(result[condition]["implementation_pollution"],
+                             ["tests/test_acceptance.py"])
+
     def test_changed_qa_is_rejected_before_evaluation(self):
         receipt = {"qa_sha256": qa_fingerprint(self.item["qa"])}
         self.item["qa"]["answer_points"] = ["Different historical answer"]
@@ -217,31 +245,37 @@ class TaskPreflightTests(unittest.TestCase):
             elif root.name == "reference-solver":
                 self.assertIn("Preserve other null values.", message)
                 (root / "workspace/candidate/a.py").write_text("feature = True\nkeep_nulls = True\n")
-            elif root.name == "validator":
-                folder = root / "workspace/checks"
-                folder.mkdir()
-                (folder / "coverage.md").write_text("Both requirements have tests.")
-                (folder / "validation.txt").write_text(
-                    "BASELINE: unmet\nREFERENCE: pass\nTESTS: executable\n"
-                    "MUTATIONS: caught\nCOVERAGE: complete\nVERDICT: accept\n")
-                if saved_patch:
-                    (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
-                    (folder / "m1.patch").write_text(
-                        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
-                        "@@ -1,2 +1,2 @@\n feature = True\n-keep_nulls = True\n+keep_nulls = False\n")
             return {"status": "finished", "metrics": {}}
+
+        def coverage(spec, baseline, candidate, changed, results, config, output, budget):
+            output.mkdir(parents=True)
+            (output / "coverage.md").write_text("Both requirements have tests.")
+            return {"status": "complete"}
+
+        def mutation(spec, candidate, changed, config, output, budget):
+            folder = output / "workspace/checks"
+            folder.mkdir(parents=True)
+            if saved_patch:
+                (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
+                (folder / "m1.patch").write_text(
+                    "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+                    "@@ -1,2 +1,2 @@\n feature = True\n-keep_nulls = True\n+keep_nulls = False\n")
+            return {"status": "finished", "method": "model_file_generation", "metrics": {}}
 
         for saved_patch in (False, True):
             root = self.base / ("external-" + str(saved_patch))
             with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
                  patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
                  patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+                 patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
+                 patch("dialogue_benchmark.task_eval.run.write_history_mutation", side_effect=mutation), \
                  patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
                  patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
                 receipt = construct(self.item, root, self.baseline, config, 0, {})
             self.assertEqual(receipt is not None, saved_patch)
             record = read(root / "construction.json")[0]
             self.assertEqual(record["history_mutations"]["status"], "caught" if saved_patch else "unverified")
+            self.assertEqual(record["validator_method"], "model_file_generation")
             self.assertEqual(record["validation_accepted"], saved_patch)
 
     def test_failed_exploration_retains_attempted_usage(self):
@@ -262,6 +296,33 @@ class TaskPreflightTests(unittest.TestCase):
                 self.assertEqual(budget["requests"], requests)
                 self.assertEqual(budget["usage_complete"], complete)
                 self.assertEqual(budget["total_tokens"], 35 if requests == 2 else 0)
+
+    def test_mutation_feedback_identifies_unverified_public_requirement(self):
+        candidate = self.base / "reference"
+        candidate.mkdir()
+        (candidate / "a.py").write_text("feature = True\nhistory = True\n")
+        spec = self.base / "spec"
+        spec.mkdir()
+        save(spec / "oracle-answer.json", {"answer": "history must be True"})
+        (spec / "acceptance.md").write_text(
+            "| a1 | Feature remains usable | task | inspect: Read a.py and verify feature is True |\n"
+            "| a2 | Historical rule applies | answer | test: test_acceptance::test_history |\n")
+        save(spec / "acceptance.json", acceptance_items(spec))
+        validator = self.base / "validator"
+        validator.mkdir()
+        (validator / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW\n")
+        (validator / "m1.patch").write_text(
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+            "@@ -1,2 +1,2 @@\n feature = True\n-history = True\n+history = False\n")
+        checks = {"status": "failed", "cases": [
+            {"id": "test_acceptance::test_history", "status": "failed"}]}
+        with patch("dialogue_benchmark.task_eval.checks.run_checks", return_value=checks):
+            result = check_history_mutations(
+                candidate, spec, validator, self.base / "replay", "image",
+                inspector=lambda *args: (None, {}))
+        self.assertEqual(result["status"], "unverified")
+        self.assertIn("public requirements not verified: a1", result["detail"])
+        self.assertEqual(result["variants"][0]["acceptance"]["rows"][1]["status"], "failed")
 
     def test_construction_inspects_mutant_and_charges_the_same_preflight_budget(self):
         rule = "Keep other null values."

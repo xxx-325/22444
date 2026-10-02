@@ -79,19 +79,31 @@ def measure(events, provider_path):
 
 
 def compare_trials(comparison):
-    """Compare completed outcomes; compare costs only when both pass."""
+    """Compare outcomes and retain raw costs separately from fair comparisons.
+
+    Raw deltas describe what each arm actually spent, even when one arm did
+    not pass.  Comparable deltas are intentionally limited to pairs where
+    both arms passed, so an early failure is never reported as an efficiency
+    win.
+    """
     left, right = (comparison.get(k, {}) for k in ("without_memory", "with_memory"))
     complete = all(trial.get("result") in {"passed", "failed", "uncertain"} for trial in (left, right))
     both = left.get("result") == right.get("result") == "passed"
     result = {"both_passed": both, "completion_difference":
               int(right.get("result") == "passed") - int(left.get("result") == "passed") if complete else None,
-              "cost_differences": {}}
+              "raw_cost_differences": {}, "comparable_cost_differences": {}}
     for key in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"):
         a, b = left.get("metrics", {}).get(key), right.get("metrics", {}).get(key)
-        valid = both and isinstance(a, (int, float)) and isinstance(b, (int, float))
+        raw_valid = isinstance(a, (int, float)) and isinstance(b, (int, float))
         if key == "total_tokens":
-            valid = valid and all(t.get("metrics", {}).get("usage_complete") for t in (left, right))
-        result["cost_differences"][key] = b - a if valid else None
+            raw_valid = raw_valid and all(
+                t.get("metrics", {}).get("usage_complete") for t in (left, right))
+        raw = b - a if raw_valid else None
+        result["raw_cost_differences"][key] = raw
+        result["comparable_cost_differences"][key] = raw if both else None
+    # Keep the old key as the fair, both-passed-only view for existing reports
+    # and callers.  New consumers should use the explicit names above.
+    result["cost_differences"] = dict(result["comparable_cost_differences"])
     a, b = left.get("history_question_count"), right.get("history_question_count")
     result["history_question_difference"] = b - a if isinstance(a, int) and isinstance(b, int) else None
     return result

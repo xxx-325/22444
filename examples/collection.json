@@ -2,26 +2,32 @@
   "runtime_config": "runtime.local.json",
   "max_total_requests": 500,
   "max_total_tokens": 6000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": "scale",
   "projects": [
     {
       "id": "dependency-planner",
       "brief": "A small offline Python tool for planning local jobs with dependencies. Users need useful plans and clear results without running a service. Use only the standard library.",
-      "increments": 2,
+      "increments": 6,
       "scenarios": [
         {
           "id": "customer-workflow",
-          "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work.",
+          "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work. Across the six increments, create about twenty distinct public external facts, each tied to a real action, result, or correction.",
+          "external_fact_target": 20,
           "memory_kinds": ["M1", "M2", "M3", "M6"]
         }
       ]
     }
   ],
   "evaluation": {
-    "qa_count": 8,
-    "task_count": 1,
-    "task_budget": 2,
+    "general_count": 50,
+    "code_count": 50,
+    "qa_count": 20,
+    "group_budget": 80,
+    "task_count": 10,
+    "task_budget": 40,
     "task_workers": 1,
-    "parallel_workers": 2,
-    "revisions": 3
+    "parallel_workers": 8,
+    "revisions": 5
   }
 }

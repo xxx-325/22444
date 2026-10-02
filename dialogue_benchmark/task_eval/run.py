@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
+from pathlib import PurePosixPath
 import shutil
 
 from . import prompts
@@ -22,6 +23,29 @@ def solver_input(task, answer=None):
     if answer is not None:
         message += "\n\n历史经验（描述过去，适用性请结合当前需求判断）：\n" + answer
     return message
+
+
+def implementation_pollution(changed_files):
+    """Return candidate paths that alter frozen checks or their inputs.
+
+    The scored repository is the candidate only.  Changes under test/fixture
+    directories (or to task/acceptance artifacts) are therefore not normal
+    implementation work and must not silently count as a passing delivery.
+    """
+    protected_roots = {"test", "tests", "fixtures", "fixture", "testdata", "test-data"}
+    protected_names = {
+        "task.md", "acceptance.md", "acceptance.json", "history.json",
+        "history-contract.txt", "memory-use.md", "history-review.md",
+        "tests_unavailable.md",
+    }
+    polluted = []
+    for raw in changed_files or ():
+        path = PurePosixPath(str(raw).replace("\\", "/"))
+        if any(part.lower() in protected_roots for part in path.parts[:-1]):
+            polluted.append(str(raw))
+        elif path.name.lower() in protected_names:
+            polluted.append(str(raw))
+    return sorted(set(polluted))
 
 
 def answer_text(question):
@@ -601,6 +625,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             save(root / "construction.json", attempts)
             continue
         preflight_budget = SelectionBudget(run / "preflight", agent_options)
+        memory_check = bool(history) or item.get("qa_source") == "external"
         source_review = None
         if history:
             source_review = review_sources(history, config, run / "history-review", preflight_budget)
@@ -609,6 +634,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 record.update(accepted=False, reason="history_source_not_verified")
                 save(root / "construction.json", attempts)
                 break
+        coverage_review = None
+        if memory_check:
             coverage_review = review_checks(spec, baseline, candidate,
                 record["reference_version"]["changed_files"],
                 {"baseline": baseline_checks, "reference": reference_checks},
@@ -631,7 +658,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         save(validation_reference / "checks.json", record)
         validator = run / "validator"
         print(root.name, "preflight validation", attempt, flush=True)
-        if history and not any(item["check"].startswith("inspect:") for item in items):
+        if memory_check and not any(item["check"].startswith("inspect:") for item in items):
             validated = write_history_mutation(spec, candidate, record["reference_version"]["changed_files"],
                                                 config, validator, preflight_budget)
         else:
@@ -642,13 +669,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         verdict_file = validator / "workspace/checks/validation.txt"
         feedback = verdict_file.read_text() if verdict_file.exists() else "验收者未完成验证，请核查需求和测试。"
         record["validation"] = labels(feedback)
-        if source_review:
+        if coverage_review:
             record["validation"] = {
                 "BASELINE": "uncertain", "REFERENCE": "uncertain",
                 "TESTS": "executable" if reference_checks.get("cases") else "unavailable",
                 "MUTATIONS": "unavailable", "COVERAGE": coverage_review["status"],
                 "VERDICT": "accept" if coverage_review["status"] == "complete" else "revise",
-                "HISTORY": source_review["support"],
+                "HISTORY": source_review["support"] if source_review else "not_applicable",
             }
             feedback = (run / "checks-review/coverage.md").read_text()
         record["validation_evidence"] = feedback
@@ -667,10 +694,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                            ("error_code", "error_type", "detail") if k in validated})
             save(root / "construction.json", attempts)
             break
-        if history:
+        if coverage_review:
             shutil.copy2(run / "checks-review/coverage.md", validator / "workspace/checks/coverage.md")
         final_spec = validated_spec(spec, validator / "workspace/checks", run / "validated-spec",
-                                    allow_new_tests=not history)
+                                    allow_new_tests=not memory_check)
         if final_spec is not None:
             # Never freeze model-written extra tests without executing those exact files.
             baseline_checks = run_checks(baseline, final_spec, run / "final-baseline-checks",
@@ -683,7 +710,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         else:
             record["reason"] = "missing_coverage_checks"
 
-        memory_check = bool(history) or item.get("qa_source") == "external"
         if memory_check and final_spec is not None and oracle_complete:
             def inspect_mutant(mutant, criteria, checks, output):
                 _, review_path, roots = inspect_acceptance(
@@ -827,11 +853,17 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
         verdict = verdict_path.read_text() if verdict_path.exists() else ""
         acceptance = assess_acceptance(items, checks, review_path, roots)
         status = acceptance["status"]
+        polluted = implementation_pollution(changed)
+        if polluted and status == "passed":
+            # Keep the functional result visible, but do not count a delivery
+            # that changed its frozen tests/fixtures as an ordinary pass.
+            status = "uncertain"
         result[condition] = {"result": status, "solver_status": solved["status"],
                              "judge_status": judged["status"],
                              "metrics": solved["metrics"], "checks": checks,
                              "history_available": history is not None,
                              "acceptance": acceptance, "changed_files": changed,
+                             "implementation_pollution": polluted,
                              "judge_evidence": verdict, "trial": trial.name}
         counterexample = judge / "workspace/checks/counterexample.md"
         if counterexample.is_file():
