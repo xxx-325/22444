@@ -308,7 +308,7 @@ def run_checks(candidate, spec, output, image, *, candidate_pythonpath=None):
                 for case in result["cases"]:
                     if case["id"].startswith("checks."):
                         case["id"] = case["id"].removeprefix("checks.")
-                    elif case["id"].startswith("candidate.tests."):
+                    if case["id"].startswith("candidate.tests."):
                         case["id"] = "regression.tests." + case["id"].removeprefix("candidate.tests.")
                     elif case["id"].startswith("validation-candidate.tests."):
                         case["id"] = "regression.tests." + case["id"].removeprefix("validation-candidate.tests.")
