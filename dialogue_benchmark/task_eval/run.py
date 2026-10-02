@@ -265,8 +265,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     fixed_qualification = None
     previous_tests = None
     reference_feedback = ""
+    previous_reference = None
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
+    if reused and (Path(reuse_preparation) / "reference-solver/result.json").is_file():
+        prior_solver = Path(reuse_preparation) / "reference-solver"
+        if agent_finished(read(prior_solver / "result.json")):
+            previous_reference = prior_solver / "workspace/candidate"
     if reused and (Path(reuse_preparation) / "reference-checks/result.json").is_file():
         prior_checks = read(Path(reuse_preparation) / "reference-checks/result.json")
         if prior_checks["status"] in {"failed", "error"}:
@@ -564,13 +569,15 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             save(root / "construction.json", attempts)
             continue
         implementation = run / "reference-solver"
-        prepare(implementation, baseline)
+        prepare(implementation, previous_reference or baseline)
         print(root.name, "reference implementation", attempt, flush=True)
         reference_answer = reference_solver_answer(item, history)
         solved = run_agent(implementation, config, "code",
                            solver_input((spec / "task.md").read_text(), reference_answer)
                            + reference_feedback, **agent_options)
         candidate = implementation / "workspace/candidate"
+        if agent_finished(solved):
+            previous_reference = candidate
         record["reference_version"] = export_change(baseline, candidate, implementation)
         reference_checks = run_checks(candidate, spec, run / "reference-checks", config["execution_image"],
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
