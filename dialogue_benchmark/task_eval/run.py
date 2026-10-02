@@ -706,6 +706,16 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
              "/workspace/experiments": validator / "workspace/experiments"})
             if final_spec else {"status": "uncertain"})
         record["reference_acceptance"] = reference_acceptance
+        if (final_spec is not None and reference_acceptance["status"] == "uncertain"
+                and any(not item["tests"] for item in items)):
+            judged, review_path, roots = inspect_acceptance(
+                candidate, final_spec, items, reference_checks, run / "reference-inspection",
+                config, agent_options, budget=preflight_budget)
+            reference_acceptance = assess_acceptance(items, reference_checks, review_path, roots)
+            record["reference_acceptance"] = reference_acceptance
+            record["reference_inspection"] = {key: judged[key] for key in
+                ("status", "error_type", "detail", "metrics") if key in judged}
+            record["preflight_budget"] = read(run / "preflight/selection-budget.json")
         baseline_acceptance = None
         if memory_check and final_spec is not None:
             baseline_acceptance = assess_acceptance(items, baseline_checks)

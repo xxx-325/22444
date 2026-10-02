@@ -330,11 +330,12 @@ class TaskPreflightTests(unittest.TestCase):
                 return {"status": "finished", "metrics": {
                     "attempted_requests": 1, "prompt_tokens": 10, "completion_tokens": 5, "usage_complete": True}}
             elif root.name == "judge":
-                stages.append("mutant_inspection")
-                self.assertEqual(options["max_requests"], 7)
-                self.assertEqual(options["max_tokens"], 185)
+                reference_check = root.parent.name == "reference-inspection"
+                stages.append("reference_inspection" if reference_check else "mutant_inspection")
+                self.assertEqual(options["max_requests"], 5 if reference_check else 7)
+                self.assertEqual(options["max_tokens"], 135 if reference_check else 185)
                 self.assertEqual((root / "workspace/candidate/a.py").read_text(),
-                                 "feature = True\nkeep_other_nulls = False\n")
+                                 "feature = True\nkeep_other_nulls = %s\n" % reference_check)
                 folder = root / "workspace/checks"
                 folder.mkdir()
                 (folder / "acceptance-review.txt").write_text(
@@ -358,9 +359,10 @@ class TaskPreflightTests(unittest.TestCase):
                      patch("dialogue_benchmark.task_eval.checks.run_checks", side_effect=checks):
                     receipt = construct(self.item, root, self.baseline, {"execution_image": "image"}, 0,
                                         {"max_requests": 8, "max_tokens": 200})
-                self.assertEqual(stages, ["coverage", "validator"] + (["mutant_inspection"] if known_acceptance else []))
-                self.assertEqual(receipt is not None, with_reference_inspection and known_acceptance)
-                self.assertEqual((root / "frozen.json").exists(), with_reference_inspection and known_acceptance)
+                self.assertEqual(stages, ["coverage", "validator"] + (["mutant_inspection"] if known_acceptance else [])
+                                 + (["reference_inspection"] if not with_reference_inspection else []))
+                self.assertEqual(receipt is not None, known_acceptance)
+                self.assertEqual((root / "frozen.json").exists(), known_acceptance)
                 record = read(root / "construction.json")[0]
                 self.assertEqual(record["checks_review"]["status"], "complete")
                 self.assertEqual(record["history_mutations"]["status"], "caught" if known_acceptance else "unverified")
@@ -368,10 +370,12 @@ class TaskPreflightTests(unittest.TestCase):
                     self.assertEqual(record["reason"], "historical_mutation_not_verified")
                     self.assertIn("Unknown acceptance IDs: '8'", record["validation_evidence"])
                 self.assertEqual(record["reference_acceptance"]["status"],
-                                 "passed" if with_reference_inspection else "uncertain")
-                self.assertEqual(record["validation_accepted"], with_reference_inspection and known_acceptance)
-                self.assertEqual(record["preflight_budget"]["requests"], 3 if known_acceptance else 1)
-                self.assertEqual(record["preflight_budget"]["total_tokens"], 65 if known_acceptance else 15)
+                                 "passed")
+                self.assertEqual(record["validation_accepted"], known_acceptance)
+                self.assertEqual(record["preflight_budget"]["requests"], (3 if known_acceptance else 1)
+                                 + (0 if with_reference_inspection else 2))
+                self.assertEqual(record["preflight_budget"]["total_tokens"], (65 if known_acceptance else 15)
+                                 + (0 if with_reference_inspection else 50))
                 self.assertEqual(record["preflight_budget"], read(root / "construction-00/preflight/selection-budget.json"))
 
     def test_history_admission_checks_missing_baseline_inspection_after_mutant(self):
