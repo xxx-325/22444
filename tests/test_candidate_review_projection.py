@@ -6,10 +6,40 @@ import unittest
 from dialogue_benchmark.fact_index import (
     build_evidence_index,
     candidate_review_projection,
+    group_review_projection,
 )
 
 
 class CandidateReviewProjectionTests(unittest.TestCase):
+    def test_graph_review_does_not_expand_to_other_versions_of_selected_file(self):
+        scope = self._scope()
+        selected = copy.deepcopy(scope)
+        selected["dialogue"] = [scope["dialogue"][0]]
+        selected["versions"] = [scope["versions"][0]]
+        group = self._group(selected, [self._facts()[0]])
+        projected, audit = group_review_projection(group, self._candidate("f-base", "base"))
+        self.assertTrue(audit["complete"])
+        self.assertEqual(audit["review_scope"], "selected_subgraph")
+        self.assertEqual(audit["required_source_ids"], ["base"])
+        self.assertEqual([r["id"] for r in projected["scope"]["dialogue"]], ["base"])
+        self.assertNotIn("a-later", audit["required_source_ids"])
+
+    def test_graph_review_still_rejects_citations_outside_selected_subgraph(self):
+        group = self._group(self._scope(), [self._facts()[0]])
+        candidate = self._candidate("f-base", "missing")
+        projected, audit = group_review_projection(group, candidate)
+        self.assertIsNone(projected)
+        self.assertEqual(audit["reason"], "answer_source_out_of_scope")
+
+    def test_graph_full_range_retains_uncited_messages(self):
+        scope = self._scope()
+        scope.update(full_range_required=True, full_range_covered=True)
+        group = self._group(scope, [self._facts()[0]])
+        projected, audit = group_review_projection(group, self._candidate("f-base", "base"))
+        self.assertTrue(audit["complete"])
+        self.assertEqual(projected["scope"]["dialogue"], scope["dialogue"])
+        self.assertTrue(projected["scope"]["full_range_covered"])
+
     @staticmethod
     def _scope():
         return {

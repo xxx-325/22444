@@ -546,8 +546,8 @@ END_REVIEW""",
             self.scope, self.facts,
             [{"reason": "local_reference_in_public_text", "question": candidate}],
             client, qa_mode="memory", generation_context=context)
-        self.assertEqual(reviewed["questions"], [])
-        self.assertEqual(reviewed["rejected"][0]["reason"], "answer_target_mismatch")
+        self.assertEqual(reviewed["questions"][0]["status"], "approved")
+        self.assertTrue(reviewed["questions"][0]["target_review_conflict"])
         self.assertEqual(reviewed["stage_errors"], [])
         for field in ("focus", "workflow"):
             self.assertEqual(revision["after"]["_generation_" + field],

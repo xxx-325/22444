@@ -1,5 +1,6 @@
 """Opt-in chat-completions transport; never execute model responses."""
 
+import http.client
 import json
 import math
 from copy import deepcopy
@@ -459,7 +460,7 @@ def _excerpt_value(value, terms):
 
 
 def _material_view(reference, records, relative_position, excerpt_terms=None,
-                   preserve_changes=False):
+                   preserve_changes=False, reference_only=False):
     """Project source records without operational graph/scope metadata."""
     item = {"reference": reference, "relative_position": relative_position}
     kinds = sorted({source_kind_for(record) for _, record in records})
@@ -483,6 +484,9 @@ def _material_view(reference, records, relative_position, excerpt_terms=None,
                 paths.append(path)
     if paths:
         item["project_paths"] = paths
+    if reference_only:
+        item["evidence_note"] = "仅为可能使用的定位线索，未提供原文，不能据此认定已执行或已验证。"
+        return item
     raw = []
     raw_seen = set()
     for collection, record in records:
@@ -594,7 +598,8 @@ def _simple_local_candidate(candidate, source_to_ref=None, include_sources=False
     return projected
 
 
-def simple_evidence_payload(scope, source_ids, facts=None, candidate=None):
+def simple_evidence_payload(scope, source_ids, facts=None, candidate=None, *,
+                            reference_only_sources=()):
     """Build a request-local reading view and its non-exported source map."""
     selected = {item for item in source_ids if isinstance(item, str)}
     metadata_tokens, material_ids, _ = _scope_wrapper_metadata(scope)
@@ -622,12 +627,21 @@ def simple_evidence_payload(scope, source_ids, facts=None, candidate=None):
     if generation_excerpt:
         excerpt_terms = _candidate_excerpt_terms({"answer_points": [
             {"text": fact.get("statement", "")} for fact in facts]})
-    materials = [_material_view(source_to_ref[source], records_by_source[source],
-                                index + 1, excerpt_terms=(excerpt_terms
-                                    if not generation_excerpt or any(source_kind_for(record) == "code"
-                                        for _, record in records_by_source[source]) else None),
-                                preserve_changes=generation_excerpt)
-                 for index, source in enumerate(ordered_sources)]
+    reference_only_sources = set(reference_only_sources)
+    materials = []
+    for index, source in enumerate(ordered_sources):
+        source_records = records_by_source[source]
+        terms = excerpt_terms
+        if scope.get("external_event_id") and any(
+                record.get("kind") == "message" for _, record in source_records):
+            terms = None
+        elif generation_excerpt and not any(
+                source_kind_for(record) == "code" for _, record in source_records):
+            terms = None
+        materials.append(_material_view(
+            source_to_ref[source], source_records, index + 1, excerpt_terms=terms,
+            preserve_changes=generation_excerpt,
+            reference_only=source in reference_only_sources))
     duplicate_relations = _dedupe_material_bodies(materials)
     payload = {
         "materials": materials,
@@ -640,6 +654,18 @@ def simple_evidence_payload(scope, source_ids, facts=None, candidate=None):
         payload["candidates"] = [_simple_local_candidate(
             candidate, source_to_ref, include_sources=True)]
     return payload, ref_to_source
+
+
+def memory_authoring_payload(scope, source_ids, facts):
+    """Read public conversation and fact sources; index optional tool context."""
+    required = set(scope.get("external_source_ids", []))
+    required.update(source for fact in facts for source in fact.get("sources", []))
+    reference_only = {
+        row["id"] for row in scope.get("dialogue", [])
+        if row.get("kind") != "message" and row.get("id") not in required
+    }
+    return simple_evidence_payload(scope, source_ids, facts=facts,
+                                   reference_only_sources=reference_only)
 
 
 def simple_evidence_request_size(scope, source_ids, facts, candidate):
@@ -1158,6 +1184,9 @@ fact even beside API requirements or expressed as parameters or code. Preserve i
 source-confirmed date or cycle, including anchors for 今天 or 下一周期 in headings or
 surrounding text, without inventing dates or cycles; do not infer a permanent policy or claim
 the requested work was completed.
+Keep technical feasibility, customer authorization and observed completion separate.
+A planned assignment or a record in a proceed/ready list does not establish dispatch
+or execution. State it as planned/eligible unless actual completion is confirmed.
 Keep recorded corrections, external constraints, observations, failures and test
 conclusions with their conditions and consequences. A file count or byte total
 alone is not a conclusion. Do not extract standalone file names, signatures,
@@ -1870,6 +1899,9 @@ class ChatClient:
             code = "timeout" if isinstance(error.reason, (TimeoutError, socket.timeout)) else "connection_error"
             receipt["status"] = code
             raise ModelStageError(code) from None
+        except (http.client.IncompleteRead, ConnectionError):
+            receipt["status"] = "connection_error"
+            raise ModelStageError("connection_error") from None
         finally:
             receipt["elapsed_seconds"] = round(time.monotonic() - started, 3)
         try:
@@ -1947,7 +1979,8 @@ def _prompt_for_mode(qa_mode, allowed_types, max_questions):
 
 def _empty_result(facts=None, questions=None):
     return {"questions": list(questions or []), "rejected": [],
-            "facts": list(facts or []), "stage_errors": [], "stage_status": {}}
+            "facts": list(facts or []), "stage_errors": [], "stage_status": {},
+            "review_warnings": []}
 
 
 def extract_facts(scope, client, qa_mode="code", checkpoint=None, external_only=False):
@@ -2061,7 +2094,7 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             workflow = None
             if qa_mode == "memory":
                 failed_stage = "workflow"
-                workflow_payload, workflow_ref_to_source = simple_evidence_payload(
+                workflow_payload, workflow_ref_to_source = memory_authoring_payload(
                     scope, focus_sources, result["facts"])
                 _check_simple_request_budget(MEMORY_WORKFLOW_PROMPT, workflow_payload, qa_budget)
                 save("workflow-input.json", {"system_prompt": SYSTEM, "prompt": MEMORY_WORKFLOW_PROMPT,
@@ -2142,8 +2175,8 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                                 selected_focus_sources | corresponding_sources
                                 | generation_extra_sources)
             failed_stage = "qa"
-            payload, ref_to_source = simple_evidence_payload(
-                scope, material_sources, facts=focus_facts)
+            payload_builder = memory_authoring_payload if qa_mode == "memory" else simple_evidence_payload
+            payload, ref_to_source = payload_builder(scope, material_sources, facts=focus_facts)
             qa_source_to_ref = {
                 source: reference for reference, source in ref_to_source.items()}
             payload["focus"] = {
@@ -2288,8 +2321,15 @@ def _target_review_request(scope, sources, facts, candidate, qa_mode):
             "inventory, byte total from one run, or test count is not a decision; "
             "a recorded external size limit can be useful for future output. "
             "Example calculations are not additional historical targets.")
-    payload, _ = simple_evidence_payload(scope, sources, facts=facts)
-    payload["candidates"] = [{"id": "q1", "immutable_question": candidate.get("question")}]
+    # Target review is an annotation, not an evidence check. Keep this
+    # request deliberately small: the question and optional generation focus
+    # are enough to compare wording with the selected purpose. Truth, source
+    # completeness, and historical applicability are checked independently in
+    # the later stages with the candidate-scoped evidence.
+    payload = {"candidates": [{
+        "id": "q1",
+        "immutable_question": candidate.get("question"),
+    }]}
     for field in ("focus", "workflow"):
         value = candidate.get("_generation_" + field)
         if isinstance(value, dict):
@@ -2466,6 +2506,87 @@ def _simple_repair_issue(failure):
     return str(reason or "unknown review failure")
 
 
+def _compact_repair_payload(payload, candidate, failure, ref_to_source):
+    """Keep only useful material when a one-candidate repair is over budget.
+
+    Repair is a local edit, not a second generation pass.  The original QA and
+    its cited material are authoritative for the edit; focus/workflow material
+    is retained when present, while unrelated raw tool output becomes a
+    reference-only locator.  Facts remain available as short summaries, and
+    the final evidence review still reopens the candidate-specific projection.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    source_to_ref = {source: reference for reference, source in
+                     (ref_to_source or {}).items()}
+    keep_refs = set()
+    for key in ("answer_points", "forbidden_points"):
+        for point in candidate.get(key, []) if isinstance(candidate, dict) else []:
+            if not isinstance(point, dict):
+                continue
+            keep_refs.update(source_to_ref.get(source)
+                             for source in point.get("sources", [])
+                             if source in source_to_ref)
+    for field in ("focus", "workflow"):
+        value = payload.get(field)
+        if isinstance(value, dict):
+            keep_refs.update(value.get("sources", []))
+    decision = failure.get("review", {}) if isinstance(failure, dict) else {}
+    for source in decision.get("necessary_source_ids", []) if isinstance(decision, dict) else []:
+        if source in source_to_ref:
+            keep_refs.add(source_to_ref[source])
+
+    compact = deepcopy(payload)
+    materials = []
+    for material in payload.get("materials", []):
+        if not isinstance(material, dict):
+            continue
+        reference = material.get("reference")
+        if reference in keep_refs:
+            materials.append(deepcopy(material))
+            continue
+        locator = {key: deepcopy(material[key]) for key in (
+            "reference", "relative_position", "source_kinds", "roles",
+            "timestamps", "project_paths") if key in material}
+        locator["evidence_note"] = (
+            "仅保留定位信息；修正阶段不提供该材料原文。"
+        )
+        materials.append(locator)
+    compact["materials"] = materials
+
+    refs_in_relation = re.compile(r"资料\d+")
+    compact["relations"] = [
+        relation for relation in payload.get("relations", [])
+        if isinstance(relation, str)
+        and (not refs_in_relation.findall(relation)
+             or set(refs_in_relation.findall(relation)) & keep_refs)
+    ]
+    return compact
+
+
+def _drop_repair_material_bodies(payload, repair_prompt, budget):
+    """Drop the largest raw bodies only when a target-only repair is too large."""
+    if not isinstance(payload, dict):
+        return payload
+    compact = deepcopy(payload)
+    materials = compact.get("materials")
+    if not isinstance(materials, list):
+        return compact
+    for material in sorted(
+            (item for item in materials
+             if isinstance(item, dict) and item.get("original_records")),
+            key=lambda item: len(json.dumps(item.get("original_records"),
+                                             ensure_ascii=False)),
+            reverse=True):
+        material.pop("original_records", None)
+        material["evidence_note"] = (
+            "目标修正阶段不提供原文正文；事实摘要和原题引用仍保留。"
+        )
+        if request_size(repair_prompt, compact) <= budget:
+            break
+    return compact
+
+
 def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_mode,
                       sources, save, simple_evidence_supplement_used=False,
                       generation_context=None, repair_state=None,
@@ -2524,6 +2645,13 @@ def _repair_candidate(scope, facts, candidate, failure, client, qa_mode, review_
                     "If focus contains no useful confirmed external decision, return NO_QA. "
                     "Keep workflow as context only.")
             repair_prompt = prompt + "\n\n" + SIMPLE_REPAIR_PROMPT
+            if request_size(repair_prompt, payload) > budget:
+                payload = _compact_repair_payload(
+                    payload, candidate, failure, ref_to_source)
+            if (failure.get("reason") == "answer_target_mismatch"
+                    and request_size(repair_prompt, payload) > budget):
+                payload = _drop_repair_material_bodies(
+                    payload, repair_prompt, budget)
             _check_simple_request_budget(repair_prompt, payload, budget)
             save("repair-input.json", {"system_prompt": SYSTEM, "prompt": repair_prompt, "payload": payload,
                                        "ref_to_source": ref_to_source})
@@ -2689,6 +2817,7 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
             merged["questions"].extend(stage["questions"])
             merged["rejected"].extend(stage["rejected"])
             merged["stage_errors"].extend(stage["stage_errors"])
+            merged["review_warnings"].extend(stage.get("review_warnings", []))
             merged.setdefault("revisions", []).extend(stage.get("revisions", []))
             merged.setdefault("candidate_review_guards", []).extend(
                 stage.get("candidate_review_guards", []))
@@ -2758,17 +2887,37 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 reused = (isinstance(_target_review_context, dict)
                           and _target_review_context.get("prompt") == target_prompt
                           and _target_review_context.get("payload") == distinctiveness_payload)
-                if reused:
-                    distinctiveness_document = deepcopy(_target_review_context["document"])
-                else:
-                    distinctiveness_document = _ask_stage(
-                        client, target_prompt,
-                        distinctiveness_payload, "review_target", request_budget=qa_budget)
-                save("target-review.json", distinctiveness_document)
-                distinctive_kept, distinctive_failed = (
-                    apply_target_review(
-                        [candidate], distinctiveness_document))
-                result["stage_status"]["review_target"] = "reused" if reused else "completed"
+                target_review_failed = None
+                try:
+                    if reused:
+                        distinctiveness_document = deepcopy(_target_review_context["document"])
+                    else:
+                        distinctiveness_document = _ask_stage(
+                            client, target_prompt,
+                            distinctiveness_payload, "review_target", request_budget=qa_budget)
+                    save("target-review.json", distinctiveness_document)
+                    distinctive_kept, distinctive_failed = (
+                        apply_target_review(
+                            [candidate], distinctiveness_document))
+                    # Target/type review is an annotation.  Keep malformed
+                    # response diagnostics for the audit, but never make them
+                    # prevent the independent content checks below.
+                    if distinctive_failed:
+                        result["review_warnings"].extend(
+                            dict(item, stage="review_target")
+                            if isinstance(item, dict) else item
+                            for item in distinctive_failed)
+                    result["stage_status"]["review_target"] = "reused" if reused else "completed"
+                except Exception as error:
+                    target_review_failed = stage_error("review_target", error)
+                    save("target-review-error.json", target_review_failed)
+                    result["review_warnings"].append(target_review_failed)
+                    result["stage_status"]["review_target"] = "failed_nonblocking"
+                    distinctive_kept = [dict(
+                        candidate, status="awaiting_atomicity_review",
+                        target_review_status="unavailable",
+                        target_review_error=target_review_failed.get("error_code", "review_failed"))]
+                    distinctive_failed = []
                 distinctive_ready = [
                     item for item in distinctive_kept
                     if item.get("status") == "awaiting_atomicity_review"]
@@ -2804,7 +2953,8 @@ def review_candidates(scope, facts, candidates, client, qa_mode="code",
                 result["questions"] = [candidate]
                 target_review_context = {"prompt": target_prompt,
                     "payload": deepcopy(distinctiveness_payload),
-                    "document": deepcopy(distinctiveness_document)}
+                    "document": (deepcopy(distinctiveness_document)
+                                 if target_review_failed is None else None)}
 
             simple_review_stage = "review_relevance"
             relevance_prompt = _focused_review_prompt(

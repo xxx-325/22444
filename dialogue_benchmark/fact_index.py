@@ -861,6 +861,42 @@ def _candidate_guard_closure(base_infos, all_infos, historical_event=False):
     return selected
 
 
+def group_review_projection(group, candidate):
+    """Review graph QA inside its selected subgraph, without history closure."""
+    from .llm import evidence_projection, simple_evidence_request_size
+
+    scope = group["scope"]
+    available = scope_source_ids(scope, group.get("qa_mode"))
+    cited = _candidate_sources(candidate)
+    audit = {"complete": False, "reason": "answer_source_out_of_scope",
+             "review_scope": "selected_subgraph",
+             "required_source_ids": sorted(cited), "guard_source_count": len(cited)}
+    if not cited or not cited <= available:
+        return None, audit
+    # Keep the actual selected group's evidence, not its graph's ancestors or
+    # other facts from the session. Full-range questions retain their range.
+    sources = available if scope.get("full_range_required") else cited | (
+        set(scope.get("review_guard_sources", group.get("review_guard_sources", []))) & available)
+    sources.update(source for fact in group.get("facts", [])
+                   for source in fact.get("sources", []) if source in available)
+    budget = scope.get("model_request_chars", scope.get("max_context_chars", 32000))
+    projected = evidence_projection(scope, sources, padding_records=0,
+                                    max_chars=budget,
+                                    full_range=bool(scope.get("full_range_required")))
+    projected.update(review_guard_sources=sorted(sources),
+                     review_guard_complete=True,
+                     review_guard_reason="selected_subgraph",
+                     model_request_chars=budget)
+    chars = simple_evidence_request_size(projected, sources, group.get("facts", []), candidate)
+    audit.update(required_source_ids=sorted(sources), guard_source_count=len(sources),
+                 request_chars=chars)
+    if chars > budget:
+        audit["reason"] = "selected_subgraph_over_budget"
+        return None, audit
+    audit.update(complete=True, reason="selected_subgraph")
+    return dict(group, scope=projected), audit
+
+
 def candidate_review_projection(group, evidence_index, candidate,
                                 target_chars=16000, max_chars=None):
     """Build a bounded counterevidence scope from one candidate's real anchors.
@@ -2225,10 +2261,15 @@ def static_candidate_labels(group, candidate, evidence_index, target_type,
         "relation_path_complete": relation["path_complete"],
         "static_evidence_path": relation,
     }
-    requirement = static_evidence_check(group, evidence_index, target_type, candidate)
+    requirement = (static_evidence_check(group, evidence_index, target_type, candidate)
+                   if target_type is not None else
+                   {"status": "unknown", "reason": "no_static_type"})
     labels.update(static_evidence_status=requirement["status"],
-                  static_evidence_reason=requirement["reason"])
-    if type_candidates:
+                  static_evidence_reason=requirement["reason"],
+                  type_status=("unresolved" if target_type is None else
+                               "assigned" if requirement["status"] == "supported" else
+                               "uncertain"))
+    if type_candidates is not None:
         labels["type_candidates"] = list(type_candidates)
     if group.get("qa_mode") == "code":
         labels.update(

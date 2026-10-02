@@ -84,6 +84,8 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertIn("Generic API behavior and sample data are context, not separate fact targets", prompt)
         self.assertIn("customer selection for one named job or cycle remains a fact", prompt)
         self.assertIn("do not infer a permanent policy", prompt)
+        self.assertIn("Keep technical feasibility, customer authorization and observed completion separate", prompt)
+        self.assertIn("does not establish dispatch or execution", prompt)
         self.assertIn("Later stages assess future usefulness and final-repository recoverability", prompt)
 
     def test_memory_focus_keeps_order_choices_without_neighboring_api_contracts(self):
@@ -132,14 +134,15 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertIn("focus fixes the selected object, scope, and one decision within facts", target_prompt)
         self.assertIn("Other facts may remain unused", target_prompt)
         self.assertIn("states remain historical targets even when written as parameters or code", target_prompt)
-        for payload in (target_payload, client.calls[-1][1]):
-            self.assertEqual(payload["facts"], focus["facts"])
-            self.assertIn("2025-04-18T16:10:00Z", str(payload["materials"]))
-            self.assertIn("render_summary", str(payload["materials"]))
-            self.assertEqual(
-                [record["text"] for material in payload["materials"]
-                 for record in material["original_records"]],
-                [record["text"] for record in scope["dialogue"]])
+        self.assertNotIn("materials", target_payload)
+        evidence_payload = client.calls[-1][1]
+        self.assertEqual(evidence_payload["facts"], focus["facts"])
+        self.assertIn("2025-04-18T16:10:00Z", str(evidence_payload["materials"]))
+        self.assertIn("render_summary", str(evidence_payload["materials"]))
+        self.assertEqual(
+            [record["text"] for material in evidence_payload["materials"]
+             for record in material["original_records"]],
+            [record["text"] for record in scope["dialogue"]])
         self.assertEqual([receipt["stage"] for receipt in client.usage], [
             "workflow", "focus", "qa", "review_target", "review_relevance", "review_atomicity",
             "review_completeness", "review_evidence"])
@@ -459,6 +462,61 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertEqual(result["stage_errors"][0]["error_code"], "request_budget")
         self.assertEqual(result["stage_status"]["workflow"], "failed")
 
+    def test_memory_authoring_indexes_optional_tools_but_keeps_public_sources(self):
+        scope = self.scope("M1")
+        scope["dialogue"][0]["text"] += " 客户已确认的适用条件。" * 500
+        observation = "实际下游观察：保留空值的导出已被接收。"
+        correction = "客户 A 的 note 例外改为省略，其他空字段继续保留。" + "有效条件。" * 900
+        scope["dialogue"].extend([
+            dict(id="e3", kind="call", order=3, text="WRITE_TEST_DETAIL\n" * 5000),
+            dict(id="e4", kind="result", order=4, text="保留空值。\n" * 10000),
+            dict(id="e5", kind="result", order=5, text=observation),
+            dict(id="e6", kind="message", role="user", order=6, text=correction),
+        ])
+        scope["cutoff"] = 6
+        scope["external_source_ids"].append("e5")
+        scope["external_usage_ids"].extend(["e3", "e4"])
+        facts = [dict(id="f1", statement="导出必须保留空值。", sources=["e1"]),
+                 dict(id="f2", statement=observation, sources=["e5"])]
+        client, saved = Client(), {}
+        result = generate_from_facts(scope, facts, client, qa_mode="memory", target_type="M1",
+            checkpoint=lambda name, value: saved.update({name: value}))
+        self.assertEqual(result["stage_errors"], [])
+        for name in ("workflow-input.json", "qa-input.json"):
+            request = saved[name]
+            by_source = {request["ref_to_source"][item["reference"]]: item
+                         for item in request["payload"]["materials"]}
+            for source in ("e1", "e5", "e6"):
+                text = next(row["text"] for row in scope["dialogue"] if row["id"] == source)
+                self.assertEqual(by_source[source]["original_records"][0]["text"], text)
+            for source in ("e3", "e4"):
+                self.assertNotIn("original_records", by_source[source])
+                self.assertIn("未提供原文", by_source[source]["evidence_note"])
+        self.assertEqual(saved["workflow-input.json"]["ref_to_source"],
+                         saved["qa-input.json"]["ref_to_source"])
+        self.assertEqual(saved["focus-input.json"]["ref_to_source"],
+                         saved["qa-input.json"]["ref_to_source"])
+        self.assertNotIn("WRITE_TEST_DETAIL", str(result["_repair_context"]))
+        from dialogue_benchmark.llm import _target_review_request
+        _, target_payload = _target_review_request(scope, set(saved["qa-input.json"]["ref_to_source"].values()),
+            facts, result["questions"][0], "memory")
+        self.assertNotIn("WRITE_TEST_DETAIL", str(target_payload))
+        self.assertNotIn(correction, str(target_payload))
+        self.assertIn("focus", target_payload)
+
+        # Usage indexing is an authoring projection, not a source deletion.
+        scope["model_request_chars"] = 200000
+        projected, audit = external_review_projection(dict(scope=scope, facts=facts), result["questions"][0])
+        self.assertTrue(audit["complete"])
+        self.assertEqual(projected["scope"]["dialogue"], scope["dialogue"])
+        from dialogue_benchmark.llm import _evidence_review_request
+        _, payload, refs = _evidence_review_request(projected["scope"],
+            projected["scope"]["review_guard_sources"], facts, result["questions"][0])
+        reviewed_tools = next(item for item in payload["materials"] if refs[item["reference"]] == "e4")
+        self.assertIn("original_records", reviewed_tools)
+        self.assertNotIn("evidence_note", reviewed_tools)
+        self.assertIn(correction, str(payload))
+
     def external_correction_group(self):
         scope = self.unlinked_correction_scope()
         facts = [dict(id="f1", statement="amount 差异不超过 0.01 视为未变化。", sources=["e1"])]
@@ -520,9 +578,10 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         client = Client(alignment="drifted")
         reviewed = review_candidates(group["scope"], group["facts"], [candidate], client,
             qa_mode="memory", review_mode="simple", allow_repair=False)
-        self.assertEqual(reviewed["questions"], [])
-        self.assertEqual(reviewed["rejected"][0]["reason"], "answer_target_mismatch")
-        self.assertEqual([receipt["stage"] for receipt in client.usage], ["review_target"])
+        self.assertTrue(reviewed["questions"])
+        self.assertEqual(reviewed["questions"][0]["status"], "needs_review")
+        self.assertTrue(reviewed["questions"][0]["target_review_conflict"])
+        self.assertGreater(len(client.usage), 1)
 
     def scope(self, kind):
         return {"cutoff": 2, "track": "memory", "memory_kind": kind,
@@ -597,9 +656,9 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                      "forbidden_points": []}
         result = review_candidates(self.scope("M2"), [], [candidate], client,
                                    qa_mode="memory", review_mode="simple", allow_repair=False)
-        self.assertEqual(result["questions"], [])
-        self.assertEqual(result["rejected"][0]["reason"], "answer_target_mismatch")
-        self.assertEqual(len(client.calls), 1)
+        self.assertTrue(result["questions"])
+        self.assertTrue(result["questions"][0]["target_review_conflict"])
+        self.assertGreater(len(client.calls), 1)
         self.assertIn("byte total from one run", client.calls[0][0])
         self.assertIn("external size limit can be useful", client.calls[0][0])
 
@@ -615,13 +674,7 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         result = review_candidates(scope, facts, generated["questions"], client,
                                    qa_mode="memory", review_mode="simple", generation_context=context)
         self.assertEqual(result["questions"][0]["status"], "approved")
-        self.assertEqual(len(result["revisions"]), 1)
-        repair, = [payload for _, payload in client.calls if "review_issue" in payload]
-        self.assertEqual(repair["facts"], context["payload"]["facts"])
-        self.assertEqual(repair["materials"], context["payload"]["materials"])
-        self.assertIn("one decision selected by focus from the external candidates in facts", repair["review_issue"])
-        self.assertIn("Leave unselected facts unused", repair["review_issue"])
-        self.assertIn("even if focus included them", repair["review_issue"])
+        self.assertNotIn("revisions", result)
 
     def test_customer_named_api_focus_can_be_rejected_without_replacement_qa(self):
         class InvalidFocusClient(OrderChoiceClient):
@@ -654,22 +707,15 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                 self.assertIn("allowed external candidate set", target_prompt)
                 self.assertIn("focus fixes the selected object, scope, and one decision within facts", target_prompt)
                 self.assertEqual(target_payload["focus"]["text"], api_focus)
-                self.assertEqual(target_payload["facts"], context["payload"]["facts"])
+                self.assertNotIn("materials", target_payload)
                 if not allow_repair:
-                    self.assertEqual(reviewed["questions"], [])
-                    self.assertEqual(reviewed["rejected"][0]["reason"], "answer_target_mismatch")
-                    self.assertEqual([receipt["stage"] for receipt in client.usage[3:]], ["review_target"])
+                    self.assertTrue(reviewed["questions"])
+                    self.assertTrue(reviewed["questions"][0]["target_review_conflict"])
+                    self.assertGreater(len(client.usage[3:]), 1)
                     continue
-                self.assertEqual(reviewed["questions"], [])
-                self.assertEqual(reviewed["rejected"][0]["reason"], "answer_target_mismatch")
-                self.assertEqual(len(reviewed["revisions"]), 1)
-                self.assertEqual(reviewed["revisions"][0]["before"]["question"], candidate["question"])
-                repair, = [payload for _, payload in client.calls if "review_issue" in payload]
-                self.assertEqual(repair["facts"], context["payload"]["facts"])
-                self.assertEqual(repair["materials"], context["payload"]["materials"])
-                self.assertIn("If focus contains no useful confirmed external decision, return NO_QA", repair["review_issue"])
-                self.assertIn("2025-04-18T16:10:00Z", str(repair["materials"]))
-                self.assertEqual([receipt["stage"] for receipt in client.usage[3:]], ["review_target", "repair"])
+                self.assertTrue(reviewed["questions"])
+                self.assertTrue(reviewed["questions"][0]["target_review_conflict"])
+                self.assertNotIn("revisions", reviewed)
 
     def test_cli_extracts_once_publishes_one_pool_and_joins_original_task_input(self):
         with tempfile.TemporaryDirectory() as directory:

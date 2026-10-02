@@ -12,7 +12,7 @@ from pathlib import Path
 from .chunking import split_scope
 from .fact_index import (build_evidence_groups, build_evidence_index,
                          merge_scopes,
-                         candidate_review_projection, coverage_report,
+                         group_review_projection, coverage_report,
                          expand_evidence_group_once,
                          static_candidate_labels, static_candidate_types,
                          static_evidence_check)
@@ -600,14 +600,24 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
     """Generate bounded candidates per group, reviewing each independently."""
     if not tasks:
         return {"questions": [], "rejected": [], "usage": [],
-                "stage_errors": [], "stage_status": [],
+                "stage_errors": [], "review_warnings": [], "stage_status": [],
                 "question_stats": _empty_question_stats()}
 
-    def run(item):
+    prepared = {}
+    generation_failures = {}
+
+    def run(item, phase):
         index, track, group = item
+        task_key = (index, track)
+        if phase == "review" and task_key in generation_failures:
+            return generation_failures[task_key]
         client = None
         try:
-            client = ChatClient(endpoint, model, key_env, request_timeout, reasoning_effort=reasoning_effort)
+            if phase == "generate":
+                client = ChatClient(endpoint, model, key_env, request_timeout, reasoning_effort=reasoning_effort)
+                prepared[task_key] = {"client": client, "attempts": {}}
+            else:
+                client = prepared[task_key]["client"]
             if review_mode == "simple":
                 evidence_index = (evidence_indexes or {}).get(track)
                 if evidence_index is None:
@@ -616,6 +626,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     "all_candidates": [], "revisions": [], "questions": [],
                     "raw_generated": 0, "generated_unique": 0,
                     "rejected": [], "stage_errors": [], "stage_status": {},
+                    "review_warnings": [],
                     "expansion_audits": [], "type_attempts": [],
                     "candidate_review_guards": [],
                 }
@@ -647,12 +658,20 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         if base_checkpoint is not None:
                             base_checkpoint(phase + "-" + name, data)
 
-                    generation = generate_simple_target(
-                        attempt_group, evidence_index, target_type, client, track,
-                        candidate_prefix=prefix,
-                        checkpoint=(generation_checkpoint
-                                    if base_checkpoint is not None else None),
-                        expansion_budget=expansion_budget)
+                    if phase == "generate":
+                        generation = generate_simple_target(
+                            attempt_group, evidence_index, target_type, client, track,
+                            candidate_prefix=prefix,
+                            checkpoint=(generation_checkpoint
+                                        if base_checkpoint is not None else None),
+                            expansion_budget=expansion_budget)
+                        prepared[task_key]["attempts"][type_index] = generation
+                        combined["all_candidates"].extend(
+                            generation["generated"].get("all_candidates", []))
+                        combined["stage_errors"].extend(
+                            generation["generated"].get("stage_errors", []))
+                        continue
+                    generation = prepared[task_key]["attempts"][type_index]
                     generated = generation["generated"]
                     active_group = generation["active_group"]
                     static_precheck = generation["static_precheck"]
@@ -674,8 +693,12 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                                 active_group, question, evidence_index,
                                 group.get("allowed_types"))
                             if not options:
-                                question["type_candidates"] = []
-                                return None, checks
+                                chosen = None
+                                question.update(static_candidate_labels(
+                                    active_group, question, evidence_index, chosen,
+                                    type_origin="static_unresolved",
+                                    type_candidates=[]))
+                                return chosen, checks
                             chosen = options[0]
                             question.update(static_candidate_labels(
                                 active_group, question, evidence_index, chosen,
@@ -701,8 +724,8 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         question["evidence_group_id"] = group.get(
                             "id", "%s-group-%d" % (track, index))
                         check = checks.get(chosen) if chosen else None
-                        if chosen is None or (check is not None and
-                                              check.get("status") == "insufficient"):
+                        if target_type is not None and (chosen is None or (
+                                check is not None and check.get("status") == "insufficient")):
                             static_post_rejected.append({
                                 "question": dict(question, status="rejected"),
                                 "reason": "type_evidence_static_insufficient",
@@ -732,8 +755,8 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                             projected_group, guard_audit = external_review_projection(
                                 active_group, review_candidate)
                         else:
-                            projected_group, guard_audit = candidate_review_projection(
-                                active_group, evidence_index, review_candidate)
+                            projected_group, guard_audit = group_review_projection(
+                                active_group, review_candidate)
                         guard_audit.update(
                             candidate_id=review_candidate.get("id"),
                             target_type=review_candidate.get("type", target_type),
@@ -765,6 +788,8 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                                     for item in revised.get("rejected", []))
                                 combined["stage_errors"].extend(
                                     revised.get("stage_errors", []))
+                                combined["review_warnings"].extend(
+                                    revised.get("review_warnings", []))
                                 combined["stage_status"].update(
                                     revised.get("stage_status", {}))
                                 combined["candidate_review_guards"].extend(
@@ -789,6 +814,8 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                             for item in reviewed.get("rejected", []))
                         combined["stage_errors"].extend(
                             reviewed.get("stage_errors", []))
+                        combined["review_warnings"].extend(
+                            reviewed.get("review_warnings", []))
                         combined["stage_status"].update(
                             reviewed.get("stage_status", {}))
                         combined["candidate_review_guards"].extend(
@@ -798,16 +825,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     for question in reviewed_questions:
                         if isinstance(question, dict):
                             chosen, checks = label_candidate(question)
-                            if chosen is None:
-                                type_rejected.append({
-                                    "question": dict(question, status="rejected"),
-                                    "reason": "type_evidence_static_insufficient",
-                                    "static_reason": "no_static_type",
-                                    "failed_checks": ["type_evidence_sufficient"],
-                                    "static_type_evidence": checks,
-                                    "stage": "static_post_review",
-                                })
-                            else:
+                            if chosen is not None or target_type is None:
                                 labeled_reviewed.append(question)
                     reviewed_questions = labeled_reviewed
                     for revision in type_revisions:
@@ -824,7 +842,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                                      if check_type is not None else
                                      {"status": "insufficient", "reason": "no_static_type"})
                             question["static_type_evidence"] = check
-                            if check.get("status") == "insufficient":
+                            if check.get("status") == "insufficient" and target_type is not None:
                                 type_rejected.append({
                                     "question": dict(question, status="rejected"),
                                     "reason": "type_evidence_static_insufficient",
@@ -871,16 +889,23 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     "review", "completed" if combined["questions"] else "skipped")
                 checkpoint = _checkpoint(checkpoint_dir, track, "group", index)
                 if checkpoint:
-                    checkpoint("task-result.json", combined)
+                    checkpoint("generated-candidates.json" if phase == "generate"
+                               else "task-result.json", combined)
                 return index, track, combined, client.usage
 
             checkpoint = _checkpoint(checkpoint_dir, track, "group", index)
-            generated = generate_from_facts(
-                group["scope"], group["facts"], client,
-                max_questions=min(3, max(1, group.get("max_questions", 1))),
-                qa_mode=track, allowed_types=group["allowed_types"],
-                checkpoint=checkpoint, candidate_prefix="%s_g%d_" % (track, index),
-                generation_mode="legacy")
+            if phase == "generate":
+                generated = generate_from_facts(
+                    group["scope"], group["facts"], client,
+                    max_questions=min(3, max(1, group.get("max_questions", 1))),
+                    qa_mode=track, allowed_types=group["allowed_types"],
+                    checkpoint=checkpoint, candidate_prefix="%s_g%d_" % (track, index),
+                    generation_mode="legacy")
+                prepared[task_key]["generated"] = generated
+                if checkpoint:
+                    checkpoint("generated-candidates.json", generated)
+                return index, track, generated, client.usage
+            generated = prepared[task_key]["generated"]
             generated_questions = list(generated.get("questions", []))
             generated_keys = set()
             for question in generated_questions:
@@ -939,20 +964,34 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
             return index, track, result, client.usage
         except Exception as error:
             usage = client.usage if client is not None else []
-            return index, track, {
+            failed = index, track, {
                 "questions": [], "rejected": [],
                 "raw_generated": 0, "generated_unique": 0,
                 "stage_errors": [stage_error("qa_task", error)],
+                "review_warnings": [],
                 "stage_status": {"qa": "failed", "review": "skipped"},
             }, usage
+            if phase == "generate":
+                generation_failures[task_key] = failed
+            return failed
 
     results = []
+    # The generation pool finishes (and saves its candidates) before any
+    # review starts. The second pool consumes saved in-memory attempts; it
+    # never regenerates an already attempted group.
     with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-        for future in as_completed([pool.submit(run, task) for task in tasks]):
-            results.append(future.result())
+        generated_results = [future.result() for future in as_completed(
+            [pool.submit(run, task, "generate") for task in tasks])]
+    if any(globally_blocked(row[2].get("stage_errors", [])) for row in generated_results):
+        results = generated_results
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
+            for future in as_completed([pool.submit(run, task, "review") for task in tasks]):
+                results.append(future.result())
     merged = {"questions": [], "rejected": [], "usage": [],
               "stage_errors": [], "stage_status": [], "all_candidates": [],
               "reviewed_questions": [], "revisions": [],
+              "review_warnings": [],
               "expansion_audits": [], "type_attempts": []}
     raw_generated = 0
     generated_unique = 0
@@ -978,6 +1017,10 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
         unique_by_track[track] = unique_by_track.get(track, 0) + unique_count
         merged["stage_errors"].extend(dict(error, track=track, task_index=index)
                                       for error in result.get("stage_errors", []))
+        merged["review_warnings"].extend(
+            dict(item, track=track, task_index=index)
+            if isinstance(item, dict) else item
+            for item in result.get("review_warnings", []))
         merged["stage_status"].append({"track": track, "phase": "qa_review",
                                         "task_index": index,
                                         "generated": raw_count,
@@ -1164,6 +1207,7 @@ def _public_question(question):
         "question": question.get("question", ""),
         "difficulty": question.get("difficulty"),
         "type_origin": question.get("type_origin"),
+        "type_status": question.get("type_status"),
         "difficulty_origin": question.get("difficulty_origin"),
         "difficulty_distance": question.get("difficulty_distance"),
         "status": question.get("status", "needs_review"),
@@ -1453,10 +1497,12 @@ def main(argv=None):
 
         result = {"facts": [], "questions": [], "rejected": [],
                   "stage_errors": [], "stage_status": [], "usage": [],
+                  "review_warnings": [],
                   "question_stats": _empty_question_stats(),
                   "all_questions": []}
         track_results = {track: {"facts": [], "questions": [], "rejected": [],
-                                "stage_errors": [], "stage_status": [], "usage": []}
+                                "stage_errors": [], "review_warnings": [],
+                                "stage_status": [], "usage": []}
                          for track in tracks}
         chunk_summaries, fact_tasks = [], []
         track_task_counts = {track: 0 for track in tracks}
@@ -1571,6 +1617,7 @@ def main(argv=None):
                     "rejected": list(facts_result["rejected"]),
                     "usage": list(facts_result["usage"]),
                     "stage_errors": list(facts_result["stage_errors"]),
+                    "review_warnings": [],
                     "stage_status": list(facts_result["stage_status"]),
                     "question_stats": _empty_question_stats(),
                     "all_questions": [],
@@ -1777,12 +1824,12 @@ def main(argv=None):
                     checkpoint=batch_checkpoint, initial_errors=result["stage_errors"],
                     initial_request_count=sum(u.get("request_count", 1) for u in result["usage"]),
                     after_batch=adjudicate_duplicates)
-                for key in ("rejected", "usage", "stage_errors", "stage_status"):
-                    result[key].extend(qa_result[key])
+                for key in ("rejected", "usage", "stage_errors", "review_warnings", "stage_status"):
+                    result.setdefault(key, []).extend(qa_result.get(key, []))
                 result["usage"].extend(recoverability_state["usage"])
                 for key in ("questions", "all_questions", "all_candidates", "selection", "revisions",
                             "duplicate_decisions", "dedup_errors", "progress",
-                            "expansion_audits", "type_attempts"):
+                            "expansion_audits", "type_attempts", "review_warnings"):
                     result[key] = qa_result.get(key, [])
                 result["expansion_audits"] = [
                     audit for row in qa_result.get("stage_status", [])
@@ -1837,6 +1884,7 @@ def main(argv=None):
                  result.get("all_candidates", result.get("all_questions", result.get("questions", []))))
             save(args.output, "stage-status.json", result.get("stage_status", []))
             save(args.output, "stage-errors.json", result.get("stage_errors", []))
+            save(args.output, "review-warnings.json", result.get("review_warnings", []))
         else:
             result["status"] = "static_only"
             # The dual-track files are written once below, after the common
@@ -1954,6 +2002,7 @@ def main(argv=None):
                  "questions": result.get("all_questions",
                                            result.get("questions", [])),
                  "stage_errors": result.get("stage_errors", []),
+                 "review_warnings": result.get("review_warnings", []),
                  "stage_status": result.get("stage_status", []),
                  "duplicate_decisions": result.get("duplicate_decisions", []),
                  "dedup_errors": result.get("dedup_errors", []),

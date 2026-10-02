@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,61 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "dialogue.json"
 
 
 class SimpleCliPipelineTests(unittest.TestCase):
+    def test_all_groups_generate_and_save_before_review_without_reclassification_gate(self):
+        scope = {"cutoff": 1, "dialogue": [{"id": "e1", "order": 1,
+                 "kind": "message", "role": "user", "text": "保留 yaml"}],
+                 "events": [], "versions": [], "model_request_chars": 32000}
+        fact = {"id": "f1", "statement": "保留 yaml", "sources": ["e1"]}
+        index = build_evidence_index([fact], [scope], "general")
+        tasks = [(i, "general", {"id": "g%d" % i, "qa_mode": "general",
+                 "scope": scope, "facts": [fact], "allowed_types": (),
+                 "type_selection": "post_generation"}) for i in range(2)]
+        finished, calls = set(), []
+        lock = threading.Lock()
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.usage = []
+
+        def generate(group, *args, **kwargs):
+            q = {"id": group["id"], "qa_mode": "general", "question": group["id"],
+                 "answer_points": [{"text": "保留 yaml", "sources": ["e1"]}],
+                 "forbidden_points": []}
+            with lock:
+                finished.add(group["id"])
+                calls.append("generate")
+            return {"generated": {"questions": [q], "all_candidates": [q],
+                    "stage_status": {"qa": "completed"}}, "active_group": group,
+                    "static_precheck": {}, "expanded_static_precheck": {},
+                    "expansion_audits": [], "expansion_rounds": 0,
+                    "expansion_stop_reason": "candidate_generated",
+                    "generation_attempt_count": 1, "generation_request_count": 1}
+
+        def review(scope, facts, candidates, *args, **kwargs):
+            self.assertEqual(finished, {"g0", "g1"})
+            self.assertEqual(len(list(checkpoints.glob("*generated-candidates.json"))), 2)
+            calls.append("review")
+            return {"questions": [dict(candidates[0], status="approved")],
+                    "review_warnings": [{"reason": "annotation_unavailable"}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoints = Path(directory)
+            with patch.object(cli, "ChatClient", FakeClient), \
+                    patch.object(cli, "generate_simple_target", generate), \
+                    patch.object(cli, "review_candidates", review), \
+                    patch.object(cli, "static_candidate_types", return_value=([], {})):
+                result = cli._run_qa_tasks(tasks, "https://example.invalid", "model", "KEY", 2,
+                    checkpoint_dir=checkpoints, review_mode="simple",
+                    evidence_indexes={"general": index})
+        self.assertEqual(calls, ["generate", "generate", "review", "review"])
+        self.assertEqual(len(result["questions"]), 2)
+        self.assertEqual(len(result["review_warnings"]), 2)
+        self.assertFalse(result["rejected"])
+        for q in result["questions"]:
+            self.assertEqual(q["status"], "approved")
+            self.assertIsNone(q["type"])
+            self.assertEqual(q["type_status"], "unresolved")
+
     def test_post_generation_group_uses_one_untyped_request_then_static_label(self):
         scope = {
             "cutoff": 1,

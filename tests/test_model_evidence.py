@@ -324,8 +324,9 @@ class ModelEvidenceTests(unittest.TestCase):
         distinctive_prompt, distinctive_request = client.calls[2]
         self.assertIn("target_v1", distinctive_prompt)
         self.assertIn("target_alignment: aligned|mixed|drifted|uncertain", distinctive_prompt)
-        self.assertIn("materials", distinctive_request)
-        self.assertIn("relations", distinctive_request)
+        self.assertNotIn("materials", distinctive_request)
+        self.assertNotIn("relations", distinctive_request)
+        self.assertIn("focus", distinctive_request)
         atomic_prompt = client.calls[4][0]
         self.assertIn(
             "point_atomicity: A1=<single|compound|uncertain>",

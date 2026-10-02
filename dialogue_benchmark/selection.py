@@ -495,7 +495,7 @@ def replenish(tasks, limits, budgets, workers, run_batch, project, checkpoint=No
     pools = {mode: deque(t for t in tasks if t[1] == mode) for mode in limits}
     attempted = Counter()
     merged = {key: [] for key in ("all_candidates", "all_questions", "rejected", "usage",
-                                   "stage_errors", "stage_status", "revisions",
+                                   "stage_errors", "review_warnings", "stage_status", "revisions",
                                    "duplicate_decisions", "dedup_errors")}
     batches, attempted_ids = [], []
     counts = {mode: 0 for mode in limits}

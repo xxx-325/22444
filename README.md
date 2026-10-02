@@ -16,6 +16,24 @@ External QA workflow selection, focus, generation, repair, and evidence review s
 later public User/Code messages up to the cutoff for scoped corrections, even across
 tasks without a declared revision link. Fact extraction uses only the event's
 declared source IDs; the shared context does not add fact seeds or unrelated tool logs.
+Authoring reads the complete public conversation and direct fact sources. Optional
+tool-use records are shown as references, not wholesale code/test dumps or proof of
+execution; evidence review reads their relevant original contents. Interrupted
+provider responses are recorded as connection failures without parsing partial text
+or inventing token usage.
+
+Both routes can run on the same dialogue. Graph QA covers a broader set of historical
+decisions, changes, failures and verification. External QA additionally requires
+information that the final repository does not fully recover. Each route retains its
+own approved set, candidate audit and coverage statistics.
+
+Each batch generates and saves all its candidates before independent per-question
+review begins. Graph QA checks the selected subgraph and cited sources without
+expanding review to the entire file-version history. External QA retains scoped
+correction checks, final-repository recoverability, and strict task admission.
+After review, safe approved candidates are deduplicated and counted; another
+generation batch fills any remaining quota within the exploration budget.
+Type uncertainty is recorded separately from answer quality.
 
 The optional graph mode treats a dialogue as a time-ordered evidence stream:
 
@@ -242,14 +260,27 @@ The host checks frozen feature tests on the prior and new versions and preserves
 previous regressions. An existing project can use `prepared_config` instead of a
 business `brief`. Scenarios start independently from that project's base; each
 paired trial starts from its dialogue's actual final snapshot.
+When reusing a project, model settings come from the collection's `runtime_config`;
+the repository lineage and frozen development plan remain unchanged.
 
 The collection checks cumulative request/token usage between stages; a started
 stage finishes under its own existing budgets. No per-response output cap is
 introduced. Rejected stages remain recorded, and the runner does not add attempts
 to replace failures. Use a new output directory for another fixed plan.
 An episode with no exported external history is recorded as `no_external_history`
-and skips QA/task execution. M4/M5 scenarios require prepared runtime conditions; design counts and public event
+and skips the external route; the graph route can still run. M4/M5 scenarios require prepared runtime conditions; design counts and public event
 counts are reported separately. Root Git lineage groups project families.
+
+Set `qa_sources` to `["graph", "external"]` to run both routes after each dialogue.
+Graph QA uses `evaluation.general_count` and `evaluation.code_count` (50 each by
+default); external QA uses `evaluation.qa_count` and optional `group_budget`.
+Both use the same frozen dialogue and final snapshot. Outputs are separated into
+`evaluation/graph/` and `evaluation/external/`. Graph generation keeps its existing
+source and quality checks, without requiring the external repository probe.
+In a two-route collection, graph processing produces QA only; related repository
+tasks and paired trials come from the external route. `evaluation.qa_only: true`
+stops both routes after QA. A failed route is recorded without suppressing the other.
+Counts are reported per route and are not added as a combined unique total.
 
 For recall dataset construction, set `evaluation.qa_only` to `true`, or use
 `run_episode.py --qa-only`. The run ends after QA review and repository recoverability
@@ -267,7 +298,10 @@ verified compressed traces before disposable runtime files are removed.
 
 The input file may be a unified JSON document or a supported native rollout.
 OpenHands public `session.jsonl` exports preserve paired tools and successful
-file edits. A `dialogue.json` list of user/assistant messages is also accepted;
+file edits. Public editor arguments plus an explicit success response establish
+create/replace events. Complete versions are replayed only from available public
+content; an edit without a complete base remains unknown. Raw SDK metadata is not
+added to the public evidence. A `dialogue.json` list of user/assistant messages is also accepted;
 that list alone does not contain the tool history. Native multiline tool output
 keeps its line boundaries, and complete edit bodies are represented once in the
 version evidence instead of repeated inside tool metadata.

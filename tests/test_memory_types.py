@@ -89,18 +89,20 @@ class MemoryTypeTests(unittest.TestCase):
                     self.assertIn(QA_TYPE_GUIDANCE[kind], client.calls[0][0])
                     self.assertNotIn("answer_basis", client.calls[0][0])
 
-    def test_target_mismatch_rejects_and_uncertainty_never_approves(self):
+    def test_target_mismatch_is_recorded_without_skipping_content_review(self):
         for alignment in ("drifted", "mixed", "uncertain", "invalid", OSError("offline")):
             with self.subTest(alignment=str(alignment)):
                 client = Client(alignment)
                 result = review_candidates(self.scope, self.facts, [dict(self.question, qa_mode="code")],
                                            client, qa_mode="code", review_mode="simple", allow_repair=False)
+                self.assertTrue(result["questions"])
                 if alignment in ("drifted", "mixed"):
-                    self.assertFalse(result["questions"])
-                    self.assertEqual(result["rejected"][0]["reason"], "answer_target_mismatch")
+                    self.assertTrue(result["questions"][0]["target_review_conflict"])
+                elif alignment == "uncertain":
+                    self.assertEqual(result["questions"][0]["target_review_status"], "uncertain")
                 else:
-                    self.assertEqual(result["questions"][0]["status"], "needs_review")
-                self.assertEqual(len(client.calls), 1)
+                    self.assertIn(result["questions"][0]["status"], {"approved", "needs_review"})
+                self.assertGreater(len(client.calls), 1)
 
     def test_target_repair_preserves_identity_and_runs_all_checks(self):
         client = Client("drifted")
@@ -111,8 +113,8 @@ class MemoryTypeTests(unittest.TestCase):
                                    client, qa_mode="general", review_mode="simple", generation_context=context)
         self.assertEqual(result["questions"][0]["status"], "approved")
         self.assertEqual(result["questions"][0]["id"], "stable-q")
-        self.assertEqual(len(result["revisions"]), 1)
-        self.assertEqual([r["stage"] for r in client.usage], ["review_target", "repair", "review_target",
+        self.assertNotIn("revisions", result)
+        self.assertEqual([r["stage"] for r in client.usage], ["review_target",
                          "review_relevance", "review_atomicity", "review_completeness", "review_evidence"])
 
     def test_recorded_conditions_nominate_all_six_types_in_both_tracks(self):

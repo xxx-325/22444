@@ -976,17 +976,20 @@ def apply_simple_relevance_review(candidates, review):
 
 
 def apply_target_review(candidates, review):
-    """Check alignment with one preselected purpose, without relabeling it."""
+    """Check the question's selected target independently of its answer."""
     decisions, malformed, blocked = _match_review_decisions(
         candidates, review, local_single_id="q1")
-    rejected = list(malformed)
+    # Target alignment is an annotation only.  Malformed or unmatched target
+    # responses are retained as warnings so the content reviews still run.
+    rejected = []
     kept = []
     for question in candidates:
         decision = decisions.get(question["id"], {})
         if not decision or question["id"] in blocked:
             kept.append(dict(
-                question, status="needs_review",
-                review_error="target_review_unmatched"))
+                question, status="awaiting_atomicity_review",
+                target_review_status="unavailable",
+                target_review_warning="target_review_unmatched"))
             continue
         unexpected = set(decision) - {
             "id", "returned_id", "id_inferred", "review_contract",
@@ -996,27 +999,27 @@ def apply_target_review(candidates, review):
         if (decision.get("review_contract") != "target_v1"
                 or unexpected or alignment not in {"aligned", "mixed", "drifted", "uncertain"}):
             kept.append(dict(
-                question, status="needs_review",
+                question, status="awaiting_atomicity_review",
                 target_review=decision,
-                review_error="invalid_target_review"))
-        elif alignment in {"mixed", "drifted"}:
-            rejected.append({
-                "question": dict(
-                    question, status="rejected",
-                    target_review=decision),
-                "reason": "answer_target_mismatch",
-                "failed_checks": ["answer_target_aligned"],
-                "review": dict(decision, answer_target_aligned=False),
-            })
-        elif alignment == "uncertain":
-            kept.append(dict(
-                question, status="needs_review",
-                target_review=decision,
-                review_error="uncertain_target_alignment"))
+                target_review_status="unavailable",
+                target_review_warning="invalid_target_review"))
         else:
+            # Target alignment is a classification annotation.  It must not
+            # decide whether the question's historical answer is truthful or
+            # useful; those checks run independently below.  Preserve any
+            # mismatch/uncertainty so it can be counted in the audit.
+            target_status = ("aligned" if alignment == "aligned" else
+                             "conflict" if alignment in {"mixed", "drifted"} else
+                             "uncertain")
             kept.append(dict(
                 question, status="awaiting_atomicity_review",
-                target_review=decision))
+                target_review=decision,
+                target_review_status=target_status,
+                target_review_conflict=(alignment in {"mixed", "drifted"})))
+    # Preserve diagnostics for the audit without turning them into candidate
+    # rejections.  Callers attach the stage name to these warnings.
+    for item in malformed:
+        rejected.append(dict(item, warning_only=True))
     return kept, rejected
 
 
