@@ -440,7 +440,7 @@ class TaskPreflightTests(unittest.TestCase):
         self.root = self.base / "repair/task"
         feedback = self.base / "review.md"
         feedback.write_text("Remove an unsupported exception-class assertion.")
-        def repair(spec, config, output, budget, message):
+        def repair(spec, baseline, config, output, budget, message):
             self.assertIn(feedback.read_text(), message)
             (spec / "test_acceptance.py").write_text("Repaired test")
             return {"status": "finished", "method": "model_file_generation"}
@@ -508,7 +508,7 @@ class TaskPreflightTests(unittest.TestCase):
             id="test_acceptance::collection", status="error", detail="No module named new_api")])]
         checks.extend(dict(status=status, cases=[dict(id="test_acceptance::test_feature", status=status)])
                       for status in ("failed", "passed", "failed", "passed"))
-        def repair(spec, config, output, budget, feedback):
+        def repair(spec, baseline, config, output, budget, feedback):
             self.assertEqual((spec / "test_acceptance.py").read_text(), "Original test")
             from dialogue_benchmark.task_eval.run import run_agent
             return run_agent(output, config, "judge", feedback)
@@ -534,12 +534,15 @@ class TaskPreflightTests(unittest.TestCase):
                     status=status, detail="unrecognized arguments: -q" if index == 1 else "")])
                    for index, status in enumerate(("failed", "failed", "failed", "passed",
                                                    "failed", "passed"))]
+        results[1]["cases"][:0] = [dict(id="regression::test_ok", status="passed",
+                                     detail="passed-only-noise" * 2000)]
         def agent(root, *args, **kwargs):
             if root.name == "reference-solver":
                 (root / "workspace/candidate/a.py").write_text("value = 2\n")
             return self.fake_agent(root, *args, **kwargs)
-        def repair(spec, config, output, budget, feedback):
+        def repair(spec, baseline, config, output, budget, feedback):
             self.assertIn("unrecognized arguments: -q", feedback)
+            self.assertNotIn("passed-only-noise", feedback)
             self.assertIn("+value = 2", feedback)
             self.assertEqual((spec / "test_acceptance.py").read_text(), "Original test")
             return agent(output, config, "judge", feedback)

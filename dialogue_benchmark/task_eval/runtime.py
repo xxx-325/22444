@@ -209,12 +209,13 @@ def write_tests(spec, baseline, config, output, budget, feedback="", private_mem
     return file_generation_result(output, result)
 
 
-def repair_tests(spec, config, output, budget, feedback, private_memory_answer=""):
+def repair_tests(spec, baseline, config, output, budget, feedback, private_memory_answer=""):
     """Repair known test defects from complete saved files in one model request."""
     from .selection import _parse_files
     from .prompts import TEST_REPAIR
+    from ..llm import request_size
 
-    spec, output = Path(spec), Path(output)
+    spec, baseline, output = Path(spec), Path(baseline), Path(output)
     tests = list(spec.glob("test_*.py"))
     if not tests or any(path.name != "existing_suite.sh" for path in (spec / "commands").glob("*.sh")):
         return None
@@ -229,10 +230,14 @@ def repair_tests(spec, config, output, budget, feedback, private_memory_answer="
         fixed = {name: (spec / name).read_text() for name in
                  ("task.md", "history-contract.txt") if (spec / name).is_file()}
         existing = {name: (spec / name).read_text() for name in names}
+        paths = _repository_files(baseline, BUSINESS_DATA_SUFFIXES | {".py"})
+        payload = {"requirements": fixed, "files": existing,
+                   "repository": {path.relative_to(baseline).as_posix(): path.read_text() for path in paths},
+                   "private_memory_answer": private_memory_answer, "feedback": feedback}
+        if request_size(TEST_REPAIR, payload) > config.get("model_request_chars", 60000):
+            return None
         install_candidate_fixture(spec)
-        response = budget.call(TEST_REPAIR, {"requirements": fixed, "files": existing,
-                              "private_memory_answer": private_memory_answer,
-                              "feedback": feedback}, config, output)
+        response = budget.call(TEST_REPAIR, payload, config, output)
         files = _parse_files(response, names, names)
         _write_test_files(spec, files)
         result = {"status": "finished"}

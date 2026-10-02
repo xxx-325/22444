@@ -433,10 +433,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 if preparation_feedback or previous_tests:
                     if private_memory_answer:
                         authored = repair_tests(
-                            spec, config, author, budget, feedback,
+                            spec, baseline, config, author, budget, feedback,
                             private_memory_answer=private_memory_answer)
                     else:
-                        authored = repair_tests(spec, config, author, budget, feedback)
+                        authored = repair_tests(spec, baseline, config, author, budget, feedback)
                 elif private_memory_answer:
                     authored = write_tests(
                         spec, baseline, config, author, budget, feedback,
@@ -561,7 +561,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                         "测试有错则修正，实现有错则保留能发现问题的测试。"
                         "不要降低已冻结的要求。下一轮会重新生成参考实现。\n"
                         "执行结果：%s\n本次参考实现改动（用于定位，不是正确性标准）：\n%s" % (
-                            reference_checks, (implementation / "changes.patch").read_text()))
+                            dict(reference_checks, cases=[case for case in reference_checks.get("cases", [])
+                                 if case.get("status") not in {"passed", "skipped"}]),
+                            (implementation / "changes.patch").read_text()))
             save(root / "construction.json", attempts)
             continue
         preflight_budget = SelectionBudget(run / "preflight", agent_options)

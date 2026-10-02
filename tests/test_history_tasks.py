@@ -461,7 +461,7 @@ class HistoryConstructionTests(unittest.TestCase):
                 return {"status": "finished"}
             return fixture.fake_agent(root, *args, **kwargs)
 
-        def repair(spec, config, output, budget, feedback):
+        def repair(spec, baseline, config, output, budget, feedback):
             from dialogue_benchmark.task_eval.run import run_agent
             return run_agent(output, config, "judge", feedback)
 
@@ -766,11 +766,19 @@ class CheckReviewTests(unittest.TestCase):
             (spec / "test_feature.py").write_text("def test_feature(): pass")
             files = [{"name": "acceptance.md", "content": "Updated references"},
                      {"name": "test_feature.py", "content": "def test_feature(): assert True"}]
-            result = repair_tests(spec, {}, root / "call", SimpleNamespace(call=lambda *a: {"files": files}), "Fix an assertion")
+            baseline = root / "baseline"
+            baseline.mkdir()
+            (baseline / "job.json").write_text('{"responses": [{"note": "Keep this note"}]}')
+            calls = []
+            def call(prompt, payload, *args):
+                calls.append(payload)
+                return {"files": files}
+            result = repair_tests(spec, baseline, {}, root / "call", SimpleNamespace(call=call), "Fix an assertion")
             self.assertEqual(result["status"], "finished")
+            self.assertIn('"note"', calls[0]["repository"]["job.json"])
             self.assertEqual((spec / "task.md").read_text(), "Preserve order")
             files.append({"name": "task.md", "content": "Weaker requirement"})
-            result = repair_tests(spec, {}, root / "invalid", SimpleNamespace(call=lambda *a: {"files": files}), "Fix an assertion")
+            result = repair_tests(spec, baseline, {}, root / "invalid", SimpleNamespace(call=call), "Fix an assertion")
             self.assertEqual(result["status"], "error")
             self.assertEqual((spec / "task.md").read_text(), "Preserve order")
 
