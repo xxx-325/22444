@@ -296,6 +296,8 @@ class TaskPreflightTests(unittest.TestCase):
             self.assertIn("实际检查及证据将在下一阶段完成", prompt)
             self.assertIn("不能仅因没有同名测试或 pytest 结果就判 gaps", prompt)
             self.assertIn("缺少具体检查动作或预期含义，仍判 gaps", prompt)
+            self.assertIn("test: 行只采用其测试结果", prompt)
+            self.assertIn("要求将整行改为 inspect:", prompt)
             self.assertIn("inspect: Read a.py; feature must be True", payload["criteria_and_tests"]["acceptance.md"])
             self.assertNotIn("acceptance-review.txt", payload["criteria_and_tests"])
             self.assertEqual(payload["executed_checks"]["reference"]["cases"],

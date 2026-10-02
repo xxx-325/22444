@@ -268,6 +268,8 @@ AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你�
    测试需要临时输入、输出或 CLI 文件时，使用 pytest 提供的 tmp_path/tmpdir fixture（或 /tmp 下的临时目录），
    并把路径显式传给被测入口；不要把临时文件写到 candidate_root、/workspace/candidate 或其子目录。
 3. 将 acceptance.md 的 Check 列替换成对应测试位置，ID、Requirement、Basis 保持原样。
+   一项要求部分依赖人工检查时，整行 Check 用 inspect:，明确复用已通过测试并检查剩余内容。
+   仅在 TESTS_UNAVAILABLE.md 写人工步骤不会触发验收；不得把未测试的部分藏在 test: 行中。
    例如 test: test_acceptance::test_feature；多个测试用逗号分隔。
    非 pytest 检查可用 command: check_name，保存 commands/check_name.sh，
    成功返回0、违反要求返回1、执行异常返回2。相关离线回归也保存为命令，供两组一致执行。
@@ -401,6 +403,8 @@ CHECKS_REVIEW = """审核每项要求的检查覆盖计划，依据已保存的�
 依据明确要求找能改变该要求结果的具体反例，不要求穷举所有非法输入。保留既有字段不等于禁止新增无害字段；每个缺口须指明违反哪条原要求，不能另加限制。
 test: 与 command: 核对引用的真实执行结果及断言是否覆盖要求。
 inspect: 核对固定输入、检查动作和预期结果是否具体且覆盖要求；实际检查及证据将在下一阶段完成，不能仅因没有同名测试或 pytest 结果就判 gaps。
+程序只执行 acceptance.md 的 Check 列：test: 行只采用其测试结果，不会执行 TESTS_UNAVAILABLE.md 中的人工步骤。
+若一行尚有必要的人工检查但 Check 仍是 test:，判 gaps，要求将整行改为 inspect: 并复用已有测试结果。
 仅写“由 Judge 判断”等泛泛安排，缺少具体检查动作或预期含义，仍判 gaps。
 测试通过不证明测试合理。检查边界、作用范围及公开功能与历史条件的区分。
 核对输入解析是否保留真实记录的完整字段；丢弃分隔符后的内容属于 gaps。报告检查若错误标签含正确标签的子串就能通过，或矛盾值仍能通过，也判 gaps。
