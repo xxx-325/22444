@@ -286,7 +286,7 @@ def repository_overview(root, limit=80):
             "relevant_paths": relevant_paths}
 
 
-def select_task(qa, history, baseline, config, output, budget, *, exploration=None, workflow=None):
+def select_task(qa, history, baseline, config, output, budget, *, exploration=None, workflow=None, feedback=None):
     from .prompts import SELECT_TASK
     output = Path(output)
     focus = _focused_history(history)
@@ -302,6 +302,8 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
                                           for p in Path(baseline).iterdir() if not p.name.startswith("."))}
     if workflow:
         state["development_workflow"] = workflow
+    if feedback:
+        state["rejected_draft"] = feedback
     seen = set()
     known = {"qa"}
     if state["repository_exploration"]:

@@ -412,6 +412,20 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 attempts.append(dict(attempt=attempt, accepted=False, reason="task_" + task_review["status"],
                                      status="pending" if task_review["status"] == "uncertain" else "stop",
                                      task_review=task_review))
+                save(root / "construction.json", attempts)
+                if (item.get("qa_source") == "external" and fixed_draft is None
+                        and not selection_only and attempt < revisions
+                        and task_review.get("status") == "ineligible"):
+                    selection = select_task(item["qa"], public_history, baseline, config,
+                        run / "reselection", budget, exploration=exploration_text,
+                        workflow=item.get("development_workflow"),
+                        feedback={"public_task": (spec / "task.md").read_text()
+                                  if (spec / "task.md").exists() else "",
+                                  "review": task_review})
+                    selection["qa_source"] = "external"
+                    if selection["status"] == "candidate":
+                        feedback = ""
+                        continue
                 break
             if fixed_draft is None:
                 fixed_draft = run / "qualified-draft"

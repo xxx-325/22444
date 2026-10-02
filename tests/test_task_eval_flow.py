@@ -145,6 +145,28 @@ class TaskPreflightTests(unittest.TestCase):
                 evaluate(self.item, self.root, self.baseline, receipt, {}, {}, 0)
         agent.assert_not_called()
 
+    def test_external_rejected_draft_returns_specific_feedback_to_selector(self):
+        self.item["qa_source"] = "external"
+        def draft(selection, config, output, spec, budget, feedback=""):
+            self.fake_draft(selection, config, output, spec, budget, feedback)
+            save(spec / "oracle-answer.json", {"answer": "- Historical behavior"})
+            with (spec / "acceptance.md").open("a") as handle:
+                handle.write("\n| a2 | Known history | answer | inspect: Check saved historical behavior |\n")
+        with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
+             patch("dialogue_benchmark.task_eval.run.select_task", side_effect=[
+                 {"status": "candidate"}, {"status": "stop", "reason": "No grounded replacement"}]) as selector, \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={
+                 "status": "ineligible", "issue": "All required rules already public"}), \
+             patch("dialogue_benchmark.task_eval.run.run_agent") as agent:
+            result = construct(self.item, self.root, self.baseline, {}, 1, {})
+        self.assertIsNone(result)
+        self.assertEqual(selector.call_count, 2)
+        self.assertEqual(selector.call_args.kwargs["feedback"]["review"]["issue"],
+                         "All required rules already public")
+        self.assertIn("Preserve pending", selector.call_args.kwargs["feedback"]["public_task"])
+        self.assertEqual(read(self.root / "construction.json")[0]["reason"], "task_ineligible")
+        agent.assert_not_called()
+
     def test_external_admission_replays_mutation_instead_of_trusting_validator_label(self):
         self.item["qa_source"] = "external"
         self.item["qa"]["answer_points"] = ["Preserve other null values."]
