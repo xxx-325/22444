@@ -192,7 +192,9 @@ class ReviewSourceDiffTests(unittest.TestCase):
                                     if frozen == "directory" else set(changes))
                 self.assertEqual(set(payload["changed_sources"]), expected_sources)
                 self.assertIn("+VALUE = 2\n", payload["changed_sources"]["app.py"])
-                self.assertEqual(payload["criteria_and_tests"], scoring_files)
+                self.assertEqual(payload["criteria_and_tests"], {
+                    name: text for name, text in scoring_files.items()
+                    if not name.startswith("regression/")})
                 self.assertEqual(payload["executed_checks"], checks)
                 if frozen == "directory":
                     self.assertIn("/workspace/candidate/tests", payload["execution_context"])
