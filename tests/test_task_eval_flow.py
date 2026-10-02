@@ -167,6 +167,28 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(read(self.root / "construction.json")[0]["reason"], "task_ineligible")
         agent.assert_not_called()
 
+    def test_reused_failed_reference_receipt_is_passed_to_solver(self):
+        self.validator_status = "ConversationExecutionStatus.INTERRUPTED"
+        self.execute([{"status": "failed"}, {"status": "passed"},
+                      {"status": "failed"}, {"status": "passed"}])
+        prior = self.root / "construction-00"
+        save(prior / "author/result.json", {"status": "ConversationExecutionStatus.FINISHED"})
+        save(prior / "reference-checks/result.json", {"status": "failed", "cases": [
+            {"id": "test_acceptance::test_feature", "status": "failed", "detail": "valid start date rejected"}]})
+        save(self.root / "selection/result.json", {"status": "candidate"})
+        save(self.root.parent / "manifest.json", {"baseline_sha256": fingerprint(self.baseline)})
+        self.root = self.base / "retry/task"
+        self.validator_status = "ConversationExecutionStatus.FINISHED"
+        original = self.fake_agent
+        def agent(root, config, role, message, **kwargs):
+            if root.name == "reference-solver":
+                self.assertIn("valid start date rejected", message)
+            return original(root, config, role, message, **kwargs)
+        with patch.object(self, "fake_agent", side_effect=agent):
+            receipt, _ = self.execute([{"status": "failed"}, {"status": "passed"},
+                                       {"status": "failed"}, {"status": "passed"}], reuse_preparation=prior)
+        self.assertIsNotNone(receipt)
+
     def test_external_admission_replays_mutation_instead_of_trusting_validator_label(self):
         self.item["qa_source"] = "external"
         self.item["qa"]["answer_points"] = ["Preserve other null values."]

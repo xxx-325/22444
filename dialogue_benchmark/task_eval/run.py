@@ -267,6 +267,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     reference_feedback = ""
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
+    if reused and (Path(reuse_preparation) / "reference-checks/result.json").is_file():
+        prior_checks = read(Path(reuse_preparation) / "reference-checks/result.json")
+        if prior_checks["status"] in {"failed", "error"}:
+            reference_feedback = "\n已保存的参考实现失败，请核对并修正，不改变固定需求：\n" + str({
+                "status": prior_checks["status"],
+                "cases": [case for case in prior_checks.get("cases", [])
+                          if case.get("status") not in {"passed", "skipped"}]})
     if preparation_feedback:
         if not reused:
             raise ValueError("Preparation feedback requires an existing qualified task")
