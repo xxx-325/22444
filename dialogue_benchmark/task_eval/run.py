@@ -264,6 +264,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     fixed_draft = None
     fixed_qualification = None
     previous_tests = None
+    reference_feedback = ""
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
     if preparation_feedback:
@@ -560,7 +561,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         print(root.name, "reference implementation", attempt, flush=True)
         reference_answer = reference_solver_answer(item, history)
         solved = run_agent(implementation, config, "code",
-                           solver_input((spec / "task.md").read_text(), reference_answer), **agent_options)
+                           solver_input((spec / "task.md").read_text(), reference_answer)
+                           + reference_feedback, **agent_options)
         candidate = implementation / "workspace/candidate"
         record["reference_version"] = export_change(baseline, candidate, implementation)
         reference_checks = run_checks(candidate, spec, run / "reference-checks", config["execution_image"],
@@ -568,6 +570,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         record.update(baseline_checks=baseline_checks, reference_checks=reference_checks,
                       reference_status=solved["status"])
         if reference_checks["status"] in {"failed", "error"}:
+            reference_feedback = "\n参考实现上一轮实际失败，请核对并修正，不改变固定需求：\n" + str({
+                "status": reference_checks["status"],
+                "cases": [case for case in reference_checks.get("cases", [])
+                          if case.get("status") not in {"passed", "skipped"}]})
             record.update(accepted=False, reason="reference_check_" + reference_checks["status"])
             previous_tests = reference / ("previous-%02d" % attempt)
             copy_tree(spec, previous_tests)

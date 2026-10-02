@@ -560,6 +560,8 @@ class TaskPreflightTests(unittest.TestCase):
                                      detail="passed-only-noise" * 2000)]
         def agent(root, *args, **kwargs):
             if root.name == "reference-solver":
+                if root.parent.name == "construction-01":
+                    self.assertIn("unrecognized arguments: -q", args[2])
                 (root / "workspace/candidate/a.py").write_text("value = 2\n")
             return self.fake_agent(root, *args, **kwargs)
         def repair(spec, baseline, config, output, budget, feedback):
