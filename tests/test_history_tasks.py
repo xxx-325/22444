@@ -857,6 +857,8 @@ class CheckReviewTests(unittest.TestCase):
             (spec / "history-review.md").write_text("Raw history")
             (spec / "task.md").write_text("Export selected records")
             (spec / "test_acceptance.py").write_text("Tests")
+            (spec / "regression/tests").mkdir(parents=True)
+            (spec / "regression/tests/test_old.py").write_text("# frozen old test\n" * 10000)
             (baseline / "entry.py").write_text("Old implementation")
             (baseline / "replies.csv").write_text("id,status\none,Delivered, signed\n")
             (baseline / ".private.json").write_text("Excluded")
@@ -873,6 +875,7 @@ class CheckReviewTests(unittest.TestCase):
                 payload = call.call_args.args[1]
                 self.assertNotIn("history.json", payload["criteria_and_tests"])
                 self.assertNotIn("history-review.md", payload["criteria_and_tests"])
+                self.assertNotIn("regression/tests/test_old.py", payload["criteria_and_tests"])
                 self.assertEqual(set(payload["changed_sources"]), {"entry.py"})
                 self.assertEqual(payload["business_inputs"], {"replies.csv": "id,status\none,Delivered, signed\n"})
                 self.assertIn("-Old implementation\n", payload["changed_sources"]["entry.py"])

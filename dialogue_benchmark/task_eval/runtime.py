@@ -53,6 +53,7 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
         criteria = read(spec / "acceptance.json")
         files = {str(path.relative_to(spec)): path.read_text() for path in spec.rglob("*")
                  if path.is_file() and path.suffix in {".py", ".md", ".txt", ".sh", ".json"}
+                 and path.relative_to(spec).parts[0] != "regression"
                  and path.name not in {"history.json", "history-review.md", "acceptance.json"}}
         frozen_regression = (spec / "regression/tests").is_dir()
         sources = {}
