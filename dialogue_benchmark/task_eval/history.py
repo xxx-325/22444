@@ -28,6 +28,10 @@ def answer_quote_supported(quote, answer):
         return False
     if quote in answer:
         return True
+    quote = quote.strip()
+    if len(quote) >= 2 and (quote[0], quote[-1]) in {
+            ('"', '"'), ("'", "'"), ('“', '”'), ('‘', '’')}:
+        quote = quote[1:-1]
     # A one-line protocol can encode an answer's bullet separator as literal
     # backslash-n. Normalize only that separator, not arbitrary string escapes.
     quote = re.sub(r"(?:\\r\\n|\\n)\s*(?=[-*]\s)", "\n", quote)

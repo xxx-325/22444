@@ -670,7 +670,9 @@ class SelectionTests(unittest.TestCase):
 
     def test_clean_review_requires_quote_from_injected_answer(self):
         from dialogue_benchmark.task_eval.runtime import review_task
-        for quote, status in (("Exact historical fact", "clean"), ("Fact only in source", "uncertain"),
+        for quote, status in (("Exact historical fact", "clean"), ('"Exact historical fact"', "clean"),
+                              ('“Exact historical fact”', "clean"), ('"Fact only in source"', "uncertain"),
+                              ("Fact only in source", "uncertain"),
                               ("none", "uncertain")):
             with self.subTest(quote=quote), patch("dialogue_benchmark.task_eval.runtime.ask_model",
                     return_value={"reviews": [{"leakage": "clean", "issue": "none",

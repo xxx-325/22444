@@ -393,9 +393,10 @@ def review_task(task, answer, config, output, *, evidence=None, budget=None):
                 or (result["status"] == "clean") != (result["issue"] == "none")):
             result = {"status": "uncertain", "issue": "invalid_task_review"}
         if result["status"] == "clean":
+            from .history import answer_quote_supported
             gap, quote = result.get("memory_gap"), result.get("answer_quote")
             if (not isinstance(gap, str) or not gap.strip() or gap == "none"
-                    or not isinstance(quote, str) or not quote.strip() or quote == "none" or quote not in answer):
+                    or not answer_quote_supported(quote, answer)):
                 result.update(status="uncertain", issue="missing_supported_memory_gap")
     except Exception as error:
         result = {"status": "uncertain", "issue": "task_review_failed",
