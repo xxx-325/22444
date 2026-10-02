@@ -80,7 +80,9 @@ def qa_inputs(qa_run):
     public = read(qa_run / "qa-public.json")["questions"]
     run_manifest = read(qa_run / "manifest.json") if (qa_run / "manifest.json").exists() else {}
     types = MEMORY_TYPES if run_manifest.get("qa_source") == "external" else QA_TYPES
-    if any(question.get("type") not in types for question in public):
+    if any(question.get("type") not in types and not (
+            question.get("type") is None and question.get("type_status") == "unresolved"
+            and run_manifest.get("qa_source", "graph") == "graph") for question in public):
         raise ValueError("QA types do not match the source mode; regenerate QA")
     normalized_path = qa_run / "normalized.json"
     normalized = read(normalized_path) if normalized_path.exists() else []

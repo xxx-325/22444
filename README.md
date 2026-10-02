@@ -33,7 +33,9 @@ expanding review to the entire file-version history. External QA retains scoped
 correction checks, final-repository recoverability, and strict task admission.
 After review, safe approved candidates are deduplicated and counted; another
 generation batch fills any remaining quota within the exploration budget.
-Type uncertainty is recorded separately from answer quality.
+Type uncertainty is recorded separately from answer quality. An approved graph
+question with an unresolved type remains available to the task selector; it is
+not silently assigned a category and still needs independent task qualification.
 
 The optional graph mode treats a dialogue as a time-ordered evidence stream:
 

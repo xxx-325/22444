@@ -374,6 +374,21 @@ class TaskEvaluationTests(unittest.TestCase):
             self.assertEqual(result[0]["public_records"][0]["input_schema"],
                              "model-visible-dialogue-v1")
 
+    def test_unresolved_graph_type_does_not_block_other_task_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "stages").mkdir()
+            question = {"type": None, "type_status": "unresolved", "id": "g1_q1",
+                        "status": "approved", "question": "Which agreement applies?"}
+            (root / "qa-public.json").write_text(json.dumps({"questions": [question]}))
+            (root / "stages/group-raw-candidates.json").write_text(
+                json.dumps({"questions": [question]}))
+            (root / "stages/group-qa-input.json").write_text(json.dumps({"payload": "exact"}))
+            self.assertEqual(qa_inputs(root)[0]["qa"]["type_status"], "unresolved")
+            (root / "manifest.json").write_text(json.dumps({"qa_source": "external"}))
+            with self.assertRaises(ValueError):
+                qa_inputs(root)
+
     def test_evidence_contract_is_bound_without_inventing_judgments(self):
         class Client:
             def ask(self, prompt, data):
