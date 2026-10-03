@@ -16,14 +16,14 @@ BUSINESS_DATA_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl"}
 
 
 def preflight_openhands_runtime(simulator_path, *, python_executable=None):
-    """Verify the isolated OpenHands interpreter before any paid model work.
+    """Verify the active host-side OpenHands runtime before paid model work.
 
-    The task evaluator imports the host-side container adapter, while the
-    adapter's worker imports the OpenHands SDK in the execution runtime.  A
-    plain ``find_spec`` check misses transitive imports such as ``httpx``;
-    importing both real entry points in a short subprocess validates the
-    environment without starting a worker, contacting a provider, or touching
-    Docker.
+    The evaluator imports the host-side container adapter in its selected
+    process interpreter, while the adapter's worker runs in the execution
+    image. A plain ``find_spec`` check misses transitive imports such as
+    ``httpx``; importing both real entry points in a short subprocess validates
+    the selected environment without starting a worker, contacting a provider,
+    or touching Docker.
     """
     simulator_path = Path(simulator_path).resolve()
     if python_executable is None:
@@ -35,8 +35,8 @@ def preflight_openhands_runtime(simulator_path, *, python_executable=None):
     if not python_executable.is_file():
         raise RuntimeError(
             "OpenHands runtime unavailable: Python interpreter does not exist: "
-            f"{python_executable}. Create {simulator_path / '.venv-openhands'} "
-            "from the simulator's OpenHands requirements or set OPENHANDS_PYTHON."
+            f"{python_executable}. Run the task command with the simulator's "
+            f"{simulator_path / '.venv-openhands/bin/python'} or collection --python."
         )
     probe = (
         "import importlib\n"
@@ -80,9 +80,10 @@ def preflight_openhands_runtime(simulator_path, *, python_executable=None):
         raise RuntimeError(
             "OpenHands runtime unavailable in "
             f"{python_executable}: {detail}. "
-            "Run the task pipeline with the simulator's .venv-openhands/bin/python "
-            "or set OPENHANDS_PYTHON to an environment containing the OpenHands "
-            "runtime dependencies (including httpx)."
+            "Run the task pipeline with the simulator's "
+            f"{simulator_path / '.venv-openhands/bin/python'} or collection --python "
+            "so the active interpreter contains the OpenHands runtime dependencies "
+            "(including httpx)."
         )
     return {"python": str(python_executable), "simulator": str(simulator_path)}
 
