@@ -27,9 +27,10 @@ def preflight_openhands_runtime(simulator_path, *, python_executable=None):
     """
     simulator_path = Path(simulator_path).resolve()
     if python_executable is None:
-        configured = os.environ.get("OPENHANDS_PYTHON")
-        candidate = simulator_path / ".venv-openhands/bin/python"
-        python_executable = configured or (str(candidate) if candidate.is_file() else sys.executable)
+        # The task evaluator imports the host-side adapter in this process.
+        # Probe that same interpreter; silently validating a different
+        # simulator virtualenv does not prove the imports used by the run.
+        python_executable = sys.executable
     python_executable = Path(python_executable).expanduser()
     if not python_executable.is_file():
         raise RuntimeError(
@@ -487,16 +488,9 @@ def review_task(task, answer, config, output, *, evidence=None, budget=None):
 
 def configure(simulator_path, checkpoint, env_file, *, control_config=None):
     simulator_path = Path(simulator_path).resolve()
-    # The evaluator is normally launched from the QA environment, while the
-    # host-side OpenHands relay dependencies live in the simulator's isolated
-    # environment.  Make those packages visible to this process before the
-    # adapter imports them; the worker itself still runs in its container.
-    site_packages = simulator_path / ".venv-openhands/lib"
-    if site_packages.is_dir():
-        candidates = sorted(site_packages.glob("python*/site-packages"))
-        for candidate in reversed(candidates):
-            if str(candidate) not in sys.path:
-                sys.path.insert(0, str(candidate))
+    # The evaluator must run under the interpreter selected for the
+    # simulator/collection.  Do not graft another Python environment's
+    # site-packages into this process: compiled packages can be ABI-specific.
     if str(simulator_path) not in sys.path:
         sys.path.insert(0, str(simulator_path))
     from simulator.episode import load_environment

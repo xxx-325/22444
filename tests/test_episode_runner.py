@@ -177,7 +177,8 @@ class EpisodeRunnerTests(unittest.TestCase):
                 return 0
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=generated), \
-                 patch("run_episode.run_tasks") as tasks, patch("run_episode.render"):
+                 patch("run_episode.run_tasks") as tasks, patch("run_episode.render"), \
+                 patch("run_episode.preflight_openhands_runtime"):
                 status = main(["--source-run", str(source), "--simulator-path", str(root),
                                "--env-file", str(root / ".env"), "--output", str(root / "run")])
             self.assertEqual(status, 0)
@@ -204,6 +205,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=generated), \
                  patch("run_episode.run_tasks") as tasks, patch("run_episode.render"), \
+                 patch("run_episode.preflight_openhands_runtime"), \
                  patch("run_episode.episode_usage", return_value=receipt):
                 with self.assertRaisesRegex(RuntimeError, "QA generation failed"):
                     main(["--source-run", str(source), "--simulator-path", str(root),
@@ -235,6 +237,7 @@ class EpisodeRunnerTests(unittest.TestCase):
              patch("dialogue_benchmark.llm.urllib.request.build_opener") as transport, \
              patch.dict(os.environ, {"BENCHMARK_OFFLINE_TEST_KEY": "offline-fixture-token"}), \
              patch("run_episode.run_tasks") as tasks, patch("run_episode.render"), \
+             patch("run_episode.preflight_openhands_runtime"), \
              patch("dialogue_benchmark.repository_probe.probe_candidate") as probe:
             transport.return_value.open.return_value = io.BytesIO(json.dumps(envelope).encode())
             transport.return_value.open.side_effect = http_error

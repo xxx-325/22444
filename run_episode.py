@@ -105,6 +105,9 @@ def main(argv=None):
             raise ValueError("Pinned baseline changed")
         config = configure(args.simulator_path, source_run / "private/checkpoint.json", args.env_file,
                            **({"control_config": package["control_config"]} if package else {}))
+        # Fail before any QA model requests when the selected interpreter
+        # cannot import the host-side OpenHands adapter.
+        preflight_openhands_runtime(args.simulator_path)
         model = config["judge"]
         endpoint = model["base_url"].rstrip("/")
         if not endpoint.endswith("/chat/completions"):
@@ -166,7 +169,6 @@ def main(argv=None):
             render(root)
             return 0
         phase("repository_tasks")
-        preflight_openhands_runtime(args.simulator_path)
         task_args = [
             "--simulator-path", str(args.simulator_path), "--source-run", str(source_run),
             "--qa-run", str(root / "qa"), "--env-file", str(args.env_file),

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import sys
 import tempfile
 import time
 import unittest
@@ -19,20 +20,16 @@ from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_
 
 
 class TaskEvaluationTests(unittest.TestCase):
-    def test_openhands_preflight_uses_isolated_interpreter_without_starting_worker(self):
+    def test_openhands_preflight_uses_current_interpreter_without_starting_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             simulator = Path(directory)
-            interpreter = simulator / ".venv-openhands/bin/python"
-            interpreter.parent.mkdir(parents=True)
-            interpreter.write_text("#!/bin/sh\n")
-            interpreter.chmod(0o755)
             completed = SimpleNamespace(returncode=0, stdout="", stderr="")
             with patch("dialogue_benchmark.task_eval.runtime.subprocess.run",
                        return_value=completed) as probe:
                 result = preflight_openhands_runtime(simulator)
-            self.assertEqual(result["python"], str(interpreter.resolve()))
+            self.assertEqual(result["python"], sys.executable)
             command = probe.call_args.args[0]
-            self.assertEqual(command[:2], [str(interpreter.resolve()), "-c"])
+            self.assertEqual(command[:2], [sys.executable, "-c"])
             self.assertIn("simulator.openhands.container", command[2])
             self.assertIn("simulator.openhands.worker", command[2])
             self.assertEqual(probe.call_args.kwargs["timeout"], 30)
@@ -55,7 +52,7 @@ class TaskEvaluationTests(unittest.TestCase):
             with patch("dialogue_benchmark.task_eval.runtime.subprocess.run",
                        return_value=failed):
                 with self.assertRaisesRegex(RuntimeError, "httpx"):
-                    preflight_openhands_runtime(simulator)
+                    preflight_openhands_runtime(simulator, python_executable=interpreter)
 
     def test_openhands_preflight_reports_missing_interpreter(self):
         with tempfile.TemporaryDirectory() as directory:
