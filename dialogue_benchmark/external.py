@@ -192,14 +192,20 @@ def _has_public_source(source_ids, records_by_id):
                for item in source_ids)
 
 
-def _event_groups(events, records_by_id):
-    """Connect explicit task membership and revisions, never topic similarity."""
+def _event_groups(events, records_by_id, *, merge_task_events=True):
+    """Connect explicit revisions, optionally keeping task events together.
+
+    External QA uses one independently probeable information group per event.
+    Merging every event from one development task hides distinct facts and
+    makes the route's quota depend on the number of commits.  The old merged
+    view remains available for callers that need a task-level projection.
+    """
     by_id = {event["id"]: event for event in events}
     links = {identity: set() for identity in by_id}
     tasks = {}
     for event in events:
         identity = event["id"]
-        task = event.get("task_id")
+        task = event.get("task_id") if merge_task_events else None
         if task:
             if task in tasks:
                 links[identity].add(tasks[task])
@@ -234,7 +240,7 @@ def _event_groups(events, records_by_id):
 
 
 def load_external_scopes(path, records, cutoff, max_chars=32000,
-                         max_groups=None):
+                         max_groups=None, *, merge_task_events=True):
     """Load validated public-source events and build bounded QA scopes.
 
     The sidecar contains provenance and event kind, not a second private answer.
@@ -300,7 +306,8 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
             rejected.append({"id": event_id, "reason": "usage_not_after_source"})
             continue
         accepted.append(raw)
-    for event in _event_groups(accepted, records_by_id):
+    for event in _event_groups(accepted, records_by_id,
+                               merge_task_events=merge_task_events):
         if max_groups is not None and len(scopes) >= max_groups:
             rejected.append({"id": event["id"], "reason": "external_group_budget"})
             continue

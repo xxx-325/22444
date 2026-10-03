@@ -1464,7 +1464,8 @@ def main(argv=None):
             external_bundle = load_external_scopes(
                 args.external_events, records, cutoff,
                 max_chars=args.model_request_chars,
-                max_groups=options["memory_group_budget"])
+                max_groups=options["memory_group_budget"],
+                merge_task_events=False)
             save(args.output, "external-events.json", external_bundle)
         if not external_mode and options["enabled_general"]:
             general_scope = build_general_scope(records, cutoff, args.max_context_chars, graph)

@@ -103,6 +103,23 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in scope["dialogue"]], ["e1", "e2", "e3", "e4", "e5", "e6"])
         self.assertEqual(loaded["rejected"], [{"id": "unrelated", "reason": "external_group_budget"}])
 
+    def test_external_route_can_keep_distinct_facts_in_one_task_separate(self):
+        events = [
+            {"id": "first", "kind": "compatibility_contract", "memory_kind": "M1",
+             "task_id": "same-task", "source_ids": ["e1"], "used_by": ["e3"]},
+            {"id": "second", "kind": "external_observation", "memory_kind": "M2",
+             "task_id": "same-task", "source_ids": ["e1"], "used_by": ["e3"]},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": events}))
+            loaded = load_external_scopes(
+                path, self.records, 3, merge_task_events=False)
+        self.assertEqual([scope["external_event_id"] for scope in loaded["scopes"]],
+                         ["first", "second"])
+        self.assertEqual([scope["external_event_ids"] for scope in loaded["scopes"]],
+                         [["first"], ["second"]])
+
     def test_scope_and_review_share_later_public_correction_without_a_planned_event_link(self):
         records = [*self.records,
             dict(id="later-code", order=4, kind="message", role="assistant",
