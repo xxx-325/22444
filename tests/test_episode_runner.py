@@ -33,6 +33,7 @@ class EpisodeRunnerTests(unittest.TestCase):
                 with patch("run_episode.configure", return_value=config), \
                      patch("run_episode.generate_qa", side_effect=generated), \
                      patch("run_episode.run_tasks") as tasks, \
+                     patch("run_episode.preflight_openhands_runtime"), \
                      patch("run_episode.compact_run") as compact, \
                      patch("render_run.build", return_value={}):
                     self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
@@ -70,6 +71,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=generated), \
                  patch("run_episode.run_tasks", side_effect=tasks), patch("run_episode.render"), \
+                 patch("run_episode.preflight_openhands_runtime"), \
                  patch("run_episode.episode_usage", return_value=receipt) as usage, \
                  patch("run_episode.compact_run", side_effect=RuntimeError("cleanup failed")):
                 with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
@@ -97,6 +99,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=generated) as qa, \
                  patch("run_episode.run_tasks", return_value=0) as tasks, \
+                 patch("run_episode.preflight_openhands_runtime"), \
                  patch("run_episode.render"), patch("run_episode.compact_run"):
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                                        "--env-file", str(root / ".env"), "--output", str(root / "run"),
@@ -147,6 +150,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=qa), \
                  patch("run_episode.run_tasks", side_effect=tasks), \
+                 patch("run_episode.preflight_openhands_runtime"), \
                  patch("run_episode.render") as render:
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                                        "--env-file", str(root / ".env"), "--output", str(root / "run")]), 0)

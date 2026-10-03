@@ -11,7 +11,8 @@ from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs, read, save, write_diff
 from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
 from .metrics import compare_trials
-from .runtime import configure, review_task, review_checks, repair_tests, write_tests, write_history_mutation, run_agent
+from .runtime import (configure, preflight_openhands_runtime, review_task, review_checks,
+                      repair_tests, write_tests, write_history_mutation, run_agent)
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline, source_version
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
@@ -933,6 +934,7 @@ def main(argv=None):
             parser.error("Reusing preparation requires its exact QA and --count 1")
     config = configure(args.simulator_path, args.source_run / "private/checkpoint.json", args.env_file,
                        **({"control_config": args.control_config} if args.control_config else {}))
+    preflight_openhands_runtime(args.simulator_path)
     config["model_request_chars"] = args.model_request_chars
     baseline = args.baseline.resolve() if args.baseline else output / "baseline"
     if args.baseline:

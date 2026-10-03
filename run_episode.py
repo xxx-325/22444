@@ -9,7 +9,7 @@ from dialogue_benchmark.cli import main as generate_qa
 from dialogue_benchmark.llm import DEFAULT_REQUEST_TIMEOUT
 from dialogue_benchmark.task_eval.artifacts import copy_tree, fingerprint, read, save
 from dialogue_benchmark.task_eval.run import main as run_tasks
-from dialogue_benchmark.task_eval.runtime import configure
+from dialogue_benchmark.task_eval.runtime import configure, preflight_openhands_runtime
 from dialogue_benchmark.task_eval.versions import baseline_version, pin_baseline
 from dialogue_benchmark.task_eval.retention import compact_run
 from dialogue_benchmark.task_eval.report import write_report
@@ -166,6 +166,7 @@ def main(argv=None):
             render(root)
             return 0
         phase("repository_tasks")
+        preflight_openhands_runtime(args.simulator_path)
         task_args = [
             "--simulator-path", str(args.simulator_path), "--source-run", str(source_run),
             "--qa-run", str(root / "qa"), "--env-file", str(args.env_file),

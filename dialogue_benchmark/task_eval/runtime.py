@@ -3,6 +3,7 @@
 from pathlib import Path
 from difflib import unified_diff
 import os
+import subprocess
 import sys
 import time
 
@@ -12,6 +13,77 @@ from ..llm import DEFAULT_REQUEST_TIMEOUT, validate_request_timeout, validate_re
 
 
 BUSINESS_DATA_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl"}
+
+
+def preflight_openhands_runtime(simulator_path, *, python_executable=None):
+    """Verify the isolated OpenHands interpreter before any paid model work.
+
+    The task evaluator imports the host-side container adapter, while the
+    adapter's worker imports the OpenHands SDK in the execution runtime.  A
+    plain ``find_spec`` check misses transitive imports such as ``httpx``;
+    importing both real entry points in a short subprocess validates the
+    environment without starting a worker, contacting a provider, or touching
+    Docker.
+    """
+    simulator_path = Path(simulator_path).resolve()
+    if python_executable is None:
+        configured = os.environ.get("OPENHANDS_PYTHON")
+        candidate = simulator_path / ".venv-openhands/bin/python"
+        python_executable = configured or (str(candidate) if candidate.is_file() else sys.executable)
+    python_executable = Path(python_executable).expanduser()
+    if not python_executable.is_file():
+        raise RuntimeError(
+            "OpenHands runtime unavailable: Python interpreter does not exist: "
+            f"{python_executable}. Create {simulator_path / '.venv-openhands'} "
+            "from the simulator's OpenHands requirements or set OPENHANDS_PYTHON."
+        )
+    probe = (
+        "import importlib\n"
+        "modules = ('simulator.openhands.container', 'simulator.openhands.worker')\n"
+        "errors = []\n"
+        "for name in modules:\n"
+        "    try:\n"
+        "        importlib.import_module(name)\n"
+        "    except Exception as error:\n"
+        "        errors.append(f'{name}: {type(error).__name__}: {error}')\n"
+        "if errors:\n"
+        "    raise SystemExit(' ; '.join(errors))\n"
+    )
+    environment = os.environ.copy()
+    environment["OPENHANDS_SUPPRESS_BANNER"] = "1"
+    environment["ANONYMIZED_TELEMETRY"] = "false"
+    environment["DO_NOT_TRACK"] = "1"
+    existing_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        str(simulator_path)
+        if not existing_pythonpath
+        else str(simulator_path) + os.pathsep + existing_pythonpath
+    )
+    try:
+        result = subprocess.run(
+            [str(python_executable), "-c", probe],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(
+            "OpenHands runtime unavailable: could not probe "
+            f"{python_executable}: {type(error).__name__}: {error}. "
+            "Install the simulator's OpenHands environment and retry."
+        ) from error
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "dependency import failed").strip()
+        raise RuntimeError(
+            "OpenHands runtime unavailable in "
+            f"{python_executable}: {detail}. "
+            "Run the task pipeline with the simulator's .venv-openhands/bin/python "
+            "or set OPENHANDS_PYTHON to an environment containing the OpenHands "
+            "runtime dependencies (including httpx)."
+        )
+    return {"python": str(python_executable), "simulator": str(simulator_path)}
 
 
 def _repository_files(root, suffixes):
@@ -414,7 +486,19 @@ def review_task(task, answer, config, output, *, evidence=None, budget=None):
 
 
 def configure(simulator_path, checkpoint, env_file, *, control_config=None):
-    sys.path.insert(0, str(Path(simulator_path).resolve()))
+    simulator_path = Path(simulator_path).resolve()
+    # The evaluator is normally launched from the QA environment, while the
+    # host-side OpenHands relay dependencies live in the simulator's isolated
+    # environment.  Make those packages visible to this process before the
+    # adapter imports them; the worker itself still runs in its container.
+    site_packages = simulator_path / ".venv-openhands/lib"
+    if site_packages.is_dir():
+        candidates = sorted(site_packages.glob("python*/site-packages"))
+        for candidate in reversed(candidates):
+            if str(candidate) not in sys.path:
+                sys.path.insert(0, str(candidate))
+    if str(simulator_path) not in sys.path:
+        sys.path.insert(0, str(simulator_path))
     from simulator.episode import load_environment
     load_environment(env_file)
     original = read(control_config) if control_config else read(checkpoint)["config"]

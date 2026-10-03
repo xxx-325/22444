@@ -10,13 +10,58 @@ from dialogue_benchmark.llm import _ask_stage
 from dialogue_benchmark.task_eval.artifacts import qa_inputs
 from dialogue_benchmark.task_eval.checks import pytest_result, _test_write_violations
 from dialogue_benchmark.task_eval.metrics import compare_trials, measure
-from dialogue_benchmark.task_eval.runtime import configure, readable_reference, release_completed_execution, run_agent
+from dialogue_benchmark.task_eval.runtime import (configure, preflight_openhands_runtime,
+                                                   readable_reference, release_completed_execution,
+                                                   run_agent)
 from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_pollution,
                                                reference_solver_answer,
                                                solver_input, unchanged, validated_spec)
 
 
 class TaskEvaluationTests(unittest.TestCase):
+    def test_openhands_preflight_uses_isolated_interpreter_without_starting_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            simulator = Path(directory)
+            interpreter = simulator / ".venv-openhands/bin/python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_text("#!/bin/sh\n")
+            interpreter.chmod(0o755)
+            completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+            with patch("dialogue_benchmark.task_eval.runtime.subprocess.run",
+                       return_value=completed) as probe:
+                result = preflight_openhands_runtime(simulator)
+            self.assertEqual(result["python"], str(interpreter.resolve()))
+            command = probe.call_args.args[0]
+            self.assertEqual(command[:2], [str(interpreter.resolve()), "-c"])
+            self.assertIn("simulator.openhands.container", command[2])
+            self.assertIn("simulator.openhands.worker", command[2])
+            self.assertEqual(probe.call_args.kwargs["timeout"], 30)
+            self.assertEqual(probe.call_args.kwargs["check"], False)
+            self.assertEqual(probe.call_args.kwargs["env"]["OPENHANDS_SUPPRESS_BANNER"], "1")
+            self.assertEqual(probe.call_args.kwargs["env"]["DO_NOT_TRACK"], "1")
+
+    def test_openhands_preflight_reports_missing_runtime_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            simulator = Path(directory)
+            interpreter = simulator / ".venv-openhands/bin/python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_text("#!/bin/sh\n")
+            interpreter.chmod(0o755)
+            failed = SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="simulator.openhands.container: ModuleNotFoundError: No module named 'httpx'",
+            )
+            with patch("dialogue_benchmark.task_eval.runtime.subprocess.run",
+                       return_value=failed):
+                with self.assertRaisesRegex(RuntimeError, "httpx"):
+                    preflight_openhands_runtime(simulator)
+
+    def test_openhands_preflight_reports_missing_interpreter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "interpreter does not exist"):
+                preflight_openhands_runtime(directory, python_executable=Path(directory) / "missing-python")
+
     def test_generated_acceptance_tests_keep_candidate_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
