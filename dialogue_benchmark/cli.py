@@ -1772,12 +1772,6 @@ def main(argv=None):
                     return probe
 
                 def adjudicate_duplicates(merged, batch_result, batch_number):
-                    # External questions are already partitioned by immutable
-                    # event groups. Publication still performs deterministic
-                    # exact de-duplication, so another cross-group model
-                    # review only adds a large blocking request here.
-                    if external_mode:
-                        return {}
                     candidates = [question for question in merged.get("all_questions", [])
                                   if isinstance(question, dict)
                                   and question.get("status") in {"approved", "needs_review"}]
