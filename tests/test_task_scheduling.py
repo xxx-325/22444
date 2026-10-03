@@ -19,6 +19,7 @@ class TaskSchedulingTests(unittest.TestCase):
             with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=[
                     {"qa": {"type": "constraint_followthrough", "id": "q1"}}]), \
                  patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \
+                 patch("dialogue_benchmark.task_eval.run.preflight_openhands_runtime"), \
                  patch("dialogue_benchmark.task_eval.run.construct", return_value=None):
                 main(["--simulator-path", str(root), "--source-run", str(root / "dialogue"),
                       "--qa-run", str(root), "--env-file", str(root / ".env"),
@@ -39,6 +40,7 @@ class TaskSchedulingTests(unittest.TestCase):
             with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=[
                     {"qa": {"type": "constraint_followthrough", "id": "q1"}}]), \
                  patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \
+                 patch("dialogue_benchmark.task_eval.run.preflight_openhands_runtime"), \
                  patch("dialogue_benchmark.task_eval.run.construct", return_value=None) as construct:
                 main(["--simulator-path", str(root), "--source-run", str(root / "source"),
                       "--qa-run", str(root), "--env-file", str(root / ".env"),
@@ -60,6 +62,7 @@ class TaskSchedulingTests(unittest.TestCase):
                 return None if item["qa"]["id"] == "q0" else {"accepted": True}
             with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=items), \
                  patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \
+                 patch("dialogue_benchmark.task_eval.run.preflight_openhands_runtime"), \
                  patch("dialogue_benchmark.task_eval.run.construct", side_effect=construct) as author, \
                  patch("dialogue_benchmark.task_eval.run.evaluate", return_value={}) as evaluate:
                 main(["--simulator-path", str(root), "--source-run", str(root / "source"),
