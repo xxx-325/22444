@@ -18,10 +18,12 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
 
 
 def sum_usage(rows):
-    result = dict(requests=0, prompt_tokens=0, completion_tokens=0, complete=True)
+    result = dict(requests=0, prompt_tokens=0, completion_tokens=0,
+                  transient_failures=0, complete=True)
     for row in rows:
         count = row.get("attempts", row.get("requests", row.get("request_count", 1)))
         result["requests"] += count
+        result["transient_failures"] += row.get("transient_failures", 0)
         for key in ("prompt_tokens", "completion_tokens"):
             result[key] += row.get(key, 0)
             if count and not isinstance(row.get(key), int):
@@ -272,10 +274,37 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     evaluated["tasks"] = tasks
                     evaluated["paired_tasks"] = sum(set(t.get("comparison", {})) >= {"with_memory", "without_memory"}
                                                       for t in tasks)
+                    if plan.get("dialogue_quality") == "scale":
+                        if qa_source == "graph":
+                            target_qa = options["general_count"] + options["code_count"]
+                            target_tasks = 0
+                        else:
+                            target_qa = options["qa_count"]
+                            target_tasks = options["task_count"] if not qa_only else 0
+                        qa_shortfall = max(0, target_qa - evaluated["published_qa"])
+                        task_shortfall = max(0, target_tasks - evaluated["paired_tasks"])
+                        evaluated["target"] = dict(
+                            published_qa=target_qa, paired_tasks=target_tasks)
+                        evaluated["shortfall"] = dict(
+                            published_qa=qa_shortfall, paired_tasks=task_shortfall)
+                        evaluated["eligible"] = (
+                            evaluated["status"] not in {"evaluation_failed", "stopped"}
+                            and qa_shortfall == 0 and task_shortfall == 0)
+                        if not evaluated["eligible"] and evaluated["status"] == "completed":
+                            evaluated["status"] = "below_target"
                 outcomes = [row["status"] for row in record["evaluations"].values()]
-                record["status"] = (outcomes[0] if len(outcomes) == 1 else
-                                    "partial_failure" if "evaluation_failed" in outcomes else "completed")
-            entry["status"] = "completed"
+                record["status"] = ("completed" if all(
+                    row.get("eligible", row.get("status") == "completed")
+                    for row in record["evaluations"].values())
+                    else "below_target" if "below_target" in outcomes
+                    else outcomes[0] if len(outcomes) == 1
+                    else "partial_failure" if "evaluation_failed" in outcomes
+                    else "completed")
+            entry["status"] = ("completed" if all(
+                scenario.get("status") == "completed" for scenario in entry["scenarios"])
+                else "below_target" if any(
+                    scenario.get("status") == "below_target" for scenario in entry["scenarios"])
+                else "completed")
         state["status"] = "completed"
     except BaseException as error:
         state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "stopped",
