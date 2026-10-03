@@ -1,4 +1,5 @@
 import unittest
+from itertools import combinations
 
 from dialogue_benchmark.llm import parse_text_response
 from dialogue_benchmark.selection import (
@@ -139,6 +140,30 @@ class SelectionTests(unittest.TestCase):
             [pending, approved], reviewed["decisions"])
         self.assertEqual([item["id"] for item in kept], ["approved"])
         self.assertEqual(excluded[0]["reason"], "reviewed_near_duplicate")
+
+    def test_large_shared_source_cluster_is_partitioned_for_review(self):
+        questions = [
+            question(
+                "memory_g%d" % index,
+                "CG-04A cg-2200 HOLD reason variant %d" % index,
+                "cg-2200 remains HOLD for the CG-04A review",
+                source="e303",
+                mode="memory",
+            )
+            for index in range(12)
+        ]
+
+        clusters = near_duplicate_clusters(questions)
+        self.assertTrue(clusters)
+        self.assertTrue(all(1 < len(cluster) <= 4 for cluster in clusters))
+        reviewed_pairs = {
+            tuple(sorted((left["id"], right["id"])))
+            for cluster in clusters
+            for left, right in combinations(cluster, 2)
+        }
+        # Large blocks are windowed, so pair checks remain linear in the
+        # candidate count instead of expanding to every source-sharing pair.
+        self.assertLessEqual(len(reviewed_pairs), len(questions) * 4 * 4)
 
     def test_failed_cluster_review_retains_every_candidate(self):
         left = question("left", "确认 Agent 时限", "Agent 最长 60 分钟")

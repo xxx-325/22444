@@ -235,8 +235,52 @@ def _semantic_block_keys(question):
     return keys
 
 
+def _bounded_chunks(indexes, max_size):
+    """Yield overlapping windows for a block too broad for pairwise review."""
+    if len(indexes) <= max_size:
+        yield list(indexes)
+        return
+    stride = max(1, max_size - 1)
+    for start in range(0, len(indexes), stride):
+        chunk = list(indexes[start:start + max_size])
+        if len(chunk) > 1:
+            yield chunk
+        if start + max_size >= len(indexes):
+            break
+
+
+def _reviewable_components(questions, indexes, max_size):
+    """Build bounded components from one source/object block."""
+    parents = {index: index for index in indexes}
+
+    def find(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left, right):
+        left, right = find(left), find(right)
+        if left != right:
+            parents[right] = left
+
+    for offset, left in enumerate(indexes):
+        for right in indexes[offset + 1:]:
+            if _near_duplicate_candidate(questions[left], questions[right]):
+                union(left, right)
+    grouped = {}
+    for index in indexes:
+        grouped.setdefault(find(index), []).append(questions[index])
+    return [items for items in grouped.values() if 1 < len(items) <= max_size]
+
+
 def near_duplicate_clusters(questions, max_size=4):
-    """Return small evidence/object-blocked clusters without discarding candidates."""
+    """Return bounded evidence/object-blocked clusters.
+
+    A shared source or generic object can create a large block.  Such a block
+    is reviewed through overlapping bounded windows so it cannot disappear
+    silently, while the review request count stays linear in the block size.
+    """
     questions = list(questions)
     parents = list(range(len(questions)))
 
@@ -256,7 +300,16 @@ def near_duplicate_clusters(questions, max_size=4):
         for key in _semantic_block_keys(question):
             blocks.setdefault(key, []).append(index)
     compared = set()
-    for indexes in blocks.values():
+    small_blocks, large_blocks = [], []
+    for key, indexes in blocks.items():
+        if len(indexes) <= max_size:
+            small_blocks.append(indexes)
+        elif key[0] == "source":
+            # Candidate comparison requires shared answer evidence, so an
+            # oversized object block cannot add a valid pair that its source
+            # block does not already cover.
+            large_blocks.append((key, indexes))
+    for indexes in small_blocks:
         for offset, left in enumerate(indexes):
             for right in indexes[offset + 1:]:
                 pair = (min(left, right), max(left, right))
@@ -268,7 +321,27 @@ def near_duplicate_clusters(questions, max_size=4):
     grouped = {}
     for index, question in enumerate(questions):
         grouped.setdefault(find(index), []).append(question)
-    return [items for items in grouped.values() if 1 < len(items) <= max_size]
+    clusters = [items for items in grouped.values() if 1 < len(items) <= max_size]
+    seen = {tuple(item.get("id") for item in items) for items in clusters}
+    # The bounded windows make each block linear, but a document can still
+    # expose many broad object blocks.  Keep the total pair checks linear in
+    # the number of candidates (with a small constant for review recall).
+    pair_budget = max(len(questions) * max_size * 4, max_size)
+    large_blocks.sort(key=lambda item: (len(item[1]), repr(item[0])))
+    for _, indexes in large_blocks:
+        windows = list(_bounded_chunks(indexes, max_size))
+        estimated = sum(len(window) * (len(window) - 1) // 2
+                        for window in windows)
+        if estimated > pair_budget:
+            continue
+        pair_budget -= estimated
+        for chunk in windows:
+            for items in _reviewable_components(questions, chunk, max_size):
+                key = tuple(item.get("id") for item in items)
+                if key not in seen:
+                    clusters.append(items)
+                    seen.add(key)
+    return clusters
 
 
 def review_duplicate_clusters(questions, client, reviewed_pairs=()):
