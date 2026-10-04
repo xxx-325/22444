@@ -7,6 +7,9 @@ read-only final-repository probe can remove questions that the current checkout
 already answers directly. An optional task experiment extends approved QA into
 new repository requirements.
 
+Project goals and acceptance requirements are maintained in
+[Benchmark requirements (Chinese)](BENCHMARK_REQUIREMENTS.zh.md).
+
 ## What it does
 
 The external-information workflow is: public historical events → QA → one related
