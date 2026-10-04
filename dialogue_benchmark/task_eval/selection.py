@@ -11,6 +11,9 @@ from .runtime import ask_model, bounded_model_config
 from .history import freeze_targets, write_contract_from_targets
 
 
+MAX_SELECTION_REQUEST_SECONDS = 600
+
+
 class SelectionBudget:
     """Share request/token limits; each agent retains its execution timeout."""
 
@@ -55,7 +58,10 @@ class SelectionBudget:
         self.remaining()
         error = None
         try:
-            return ask_model(prompt, payload, bounded_model_config(config, self.agent_seconds), output)
+            return ask_model(prompt, payload,
+                             bounded_model_config(config, min(self.agent_seconds,
+                                                               MAX_SELECTION_REQUEST_SECONDS)),
+                             output)
         except Exception as exc:
             error = exc
             raise
