@@ -941,7 +941,13 @@ def validate_resume(manifest, expected, selected, output, baseline):
     if "config_sha256" in manifest and manifest["config_sha256"] != expected["config_sha256"]:
         raise ValueError("Resume configuration hash changed")
     items = {item["qa"]["id"]: item for item in selected}
-    if {row.get("qa_id") for row in manifest["tasks"]} - set(items):
+    # An interrupted worker can fail before the selected QA is written to its
+    # manifest row (for example while creating author-reference).  Keep that
+    # diagnostic row, but do not treat its missing identity as a changed
+    # selection; the resume pass will allocate a fresh directory below.
+    unknown = {row.get("qa_id") for row in manifest["tasks"]
+               if row.get("qa_id") is not None} - set(items)
+    if unknown:
         raise ValueError("Resume task selection changed")
     for row in manifest["tasks"]:
         if row.get("qa_id") not in items:
@@ -1078,9 +1084,20 @@ def main(argv=None):
         used = [int(row["task"].split("-")[-1]) for row in manifest["tasks"]
                 if row.get("task", "").startswith("task-") and row["task"].split("-")[-1].isdigit()]
         next_number = max(used or [0]) + 1
+        orphan_tasks = {row.get("task") for row in manifest["tasks"]
+                        if row.get("qa_id") is None and row.get("task")}
         for index, item in enumerate(selected):
             rows = [row for row in manifest["tasks"] if row.get("qa_id") == item["qa"]["id"]]
             prior = rows[-1] if rows else None
+            default_root = root_by_index[index]
+            if prior is None and default_root in orphan_tasks:
+                replacement = "task-%02d" % next_number
+                next_number += 1
+                root_by_index[index] = replacement
+                manifest["tasks"].append({"task": replacement, "status": "pending",
+                                           "qa_id": item["qa"]["id"], "type": item["qa"]["type"],
+                                           "resume_replaces": default_root})
+                continue
             if prior and prior.get("status") in {"evaluated", "qualified"}:
                 root_by_index[index] = prior["task"]
             elif prior and (output / prior["task"] / "frozen.json").is_file():
