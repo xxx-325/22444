@@ -136,13 +136,17 @@ class EpisodeRunnerTests(unittest.TestCase):
                 self.assertEqual(args[args.index("--request-timeout") + 1], "90")
                 self.assertEqual(read(Path(args[0]))["version"], 1)
                 self.assertEqual(args[args.index("--general-count") + 1], "40")
+                self.assertEqual(args[args.index("--code-count") + 1], "40")
+                self.assertNotIn("--repository", args)
+                self.assertNotIn("--external-events", args)
+                self.assertIn("--adaptive-subgraphs", args)
                 output = Path(args[args.index("--output") + 1])
                 save(output / "manifest.json", {
                     "input_sha256": hashlib.sha256(Path(args[0]).read_bytes()).hexdigest()})
                 save(output / "qa-public.json", {"questions": [{"id": "q1"}]})
                 return 0
             def tasks(args):
-                order.append("recovery" if "--recover-checkpoints" in args else "tasks")
+                order.append("resume" if "--resume" in args else "tasks")
                 base = Path(args[args.index("--baseline") + 1])
                 self.assertTrue((base / ".git").is_dir())
                 self.assertEqual((base / "a.py").read_text(), (candidate / "a.py").read_text())

@@ -46,6 +46,11 @@ def main(argv=None):
     parser.add_argument("--reuse-facts", type=Path)
     parser.add_argument("--resume-tasks", action="store_true",
                         help="Reuse completed QA and start repository tasks in an empty tasks directory")
+    # Collection resume uses the short form when it re-enters an existing
+    # evaluation stage. Keep one internal flag so both entry points share the
+    # same append-only QA/task recovery behavior.
+    parser.add_argument("--resume", dest="resume_tasks", action="store_true",
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.qa_only and args.resume_tasks:
         parser.error("--qa-only cannot be combined with --resume-tasks")
@@ -177,6 +182,8 @@ def main(argv=None):
             "--workers", str(args.task_workers), "--revisions", str(args.revisions),
             "--model-request-chars", str(args.model_request_chars),
         ]
+        if args.resume_tasks and (root / "tasks" / "manifest.json").is_file():
+            task_args += ["--resume"]
         if package:
             task_args += ["--control-config", str(package["control_config"])]
         if args.design_probe:
