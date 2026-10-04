@@ -23,6 +23,20 @@ EXTERNAL_EVENT_KINDS = frozenset({
     "failure_avoidance",
 })
 
+
+def _event_focus(event):
+    """Return only an explicitly supplied target label.
+
+    Event IDs are control metadata. Their slugs must never be promoted to
+    factual targets because the public dialogue may describe a different
+    object (or several objects).
+    """
+    for key in ("focus", "target", "object", "label"):
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
 def external_usage_review(document, scope, reference_map):
     """Separate the event-use judgment from immutable answer-point judgments."""
     cleaned = deepcopy(document)
@@ -170,6 +184,7 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "memory_kinds": event.get("memory_kinds", [target_type]),
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
+        "external_focus": event.get("focus"),
         # Later public use/result is context for composing a useful question;
         # it remains separate from the source IDs that ground extracted facts.
         "generation_extra_sources": list(dict.fromkeys(used_by + context_ids)),
@@ -286,7 +301,8 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
             rejected.append({"id": event_id, "reason": str(error)})
             continue
         raw = dict(raw, id=event_id, kind=kind, source_ids=source_ids,
-                   used_by=used_by, context_ids=context_ids)
+                   used_by=used_by, context_ids=context_ids,
+                   focus=_event_focus(raw))
         if ("task_id" in raw and (not isinstance(raw["task_id"], str) or not raw["task_id"].strip())
                 or not isinstance(raw.get("supersedes", []), list)
                 or any(not isinstance(item, str) or not item for item in raw.get("supersedes", []))):

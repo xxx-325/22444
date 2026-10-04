@@ -150,21 +150,40 @@ class EpisodeRunnerTests(unittest.TestCase):
                 base = Path(args[args.index("--baseline") + 1])
                 self.assertTrue((base / ".git").is_dir())
                 self.assertEqual((base / "a.py").read_text(), (candidate / "a.py").read_text())
+                save(Path(args[args.index("--output") + 1]) / "manifest.json", {"tasks": []})
                 return 0
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=qa), \
                  patch("run_episode.run_tasks", side_effect=tasks), \
                  patch("run_episode.preflight_openhands_runtime"), \
-                 patch("run_episode.render") as render:
+                 patch("run_episode.render") as render, patch("run_episode.compact_run"):
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                                        "--env-file", str(root / ".env"), "--output", str(root / "run")]), 0)
                 self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                                        "--env-file", str(root / ".env"), "--output", str(root / "run"),
                                        "--resume-tasks"]), 0)
-            self.assertEqual(order, ["qa", "tasks", "tasks"])
-            self.assertEqual(render.call_count, 4)
+            self.assertEqual(order, ["qa", "tasks", "resume"])
+            self.assertEqual(render.call_count, 6)
             self.assertEqual(read(root / "run/pipeline.json")["status"], "completed")
             self.assertFalse((candidate / ".git").exists())
+
+    def test_resume_rejects_changed_inputs_before_overwriting_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            (source / "workspace/candidate").mkdir(parents=True)
+            (source / "session.jsonl").write_text('{"kind":"user","content":"rule"}\n')
+            output = root / "run"
+            save(output / "qa/manifest.json", {})
+            save(output / "qa/qa-public.json", {"questions": []})
+            saved = {"parameters": {"task_count": 99}, "status": "failed"}
+            save(output / "pipeline.json", saved)
+            with patch("run_episode.configure") as configure:
+                with self.assertRaisesRegex(ValueError, "same inputs and parameters"):
+                    main(["--source-run", str(source), "--simulator-path", str(root),
+                          "--env-file", str(root / ".env"), "--output", str(output), "--resume"])
+            configure.assert_not_called()
+            self.assertEqual(read(output / "pipeline.json"), saved)
 
     def test_no_eligible_qa_saves_an_empty_task_report_without_starting_agents(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -8,6 +8,8 @@ from dialogue_benchmark import cli
 from dialogue_benchmark.external import (external_review_projection, filter_external_facts,
                                          load_external_scopes, external_usage_review)
 from dialogue_benchmark.fact_index import build_evidence_index, static_evidence_check
+from dialogue_benchmark.llm import (_evidence_review_request, memory_authoring_payload,
+                                     simple_focus_payload)
 from dialogue_benchmark.normalize import load_dialogue
 
 
@@ -60,6 +62,49 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual(scope["edges"], [])
         self.assertEqual(scope["versions"], [])
         self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e2", "e3"])
+
+    def test_same_source_events_keep_distinct_focus_in_generation_requests(self):
+        events = [
+            {"id": "external-customer-a-rule", "kind": "external_observation",
+             "memory_kind": "M2", "focus": "customer a rule",
+             "source_ids": ["e1"], "used_by": ["e3"]},
+            {"id": "external-customer-b-rule", "kind": "external_observation",
+             "memory_kind": "M2", "focus": "customer b rule",
+             "source_ids": ["e1"], "used_by": ["e3"]},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "external-events.json"
+            path.write_text(json.dumps({"version": 1, "events": events}))
+            loaded = load_external_scopes(path, self.records, 3,
+                                          merge_task_events=False)
+
+        self.assertEqual(loaded["rejected"], [])
+        scopes = loaded["scopes"]
+        self.assertEqual([scope["external_focus"] for scope in scopes],
+                         ["customer a rule", "customer b rule"])
+        facts = [{"id": "f1", "statement": self.records[0]["text"], "sources": ["e1"]}]
+        candidate = {"id": "q1", "question": "规则是什么？",
+                     "answer_points": [{"text": "规则", "sources": ["e1"]}]}
+        for scope in scopes:
+            with self.subTest(focus=scope["external_focus"]):
+                authoring, _ = memory_authoring_payload(
+                    scope, {"e1", "e2", "e3"}, facts)
+                focus, _ = simple_focus_payload(scope, {"e1", "e2", "e3"}, facts)
+                prompt, review, _ = _evidence_review_request(
+                    scope, {"e1", "e2", "e3"}, facts, candidate)
+                self.assertEqual(authoring["event_focus"], scope["external_focus"])
+                self.assertEqual(focus["event_focus"], scope["external_focus"])
+                self.assertEqual(review["event_focus"], scope["external_focus"])
+                self.assertIn(scope["external_focus"], prompt)
+
+    def test_event_id_slug_is_not_promoted_to_fact_target(self):
+        events = [{"id": "external-customer-a-rule", "kind": "external_observation",
+                   "memory_kind": "M2", "source_ids": ["e1"], "used_by": ["e3"]}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "external-events.json"
+            path.write_text(json.dumps({"version": 1, "events": events}))
+            loaded = load_external_scopes(path, self.records, 3)
+        self.assertIsNone(loaded["scopes"][0]["external_focus"])
 
     def test_external_event_keeps_explicit_context_and_later_public_messages(self):
         with tempfile.TemporaryDirectory() as directory:

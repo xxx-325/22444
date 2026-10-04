@@ -45,15 +45,13 @@ def main(argv=None):
     parser.add_argument("--revisions", type=int, default=5)
     parser.add_argument("--reuse-facts", type=Path)
     parser.add_argument("--resume-tasks", action="store_true",
-                        help="Reuse completed QA and start repository tasks in an empty tasks directory")
+                        help="Reuse completed QA and resume saved repository tasks")
     # Collection resume uses the short form when it re-enters an existing
     # evaluation stage. Keep one internal flag so both entry points share the
     # same append-only QA/task recovery behavior.
     parser.add_argument("--resume", dest="resume_tasks", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if args.qa_only and args.resume_tasks:
-        parser.error("--qa-only cannot be combined with --resume-tasks")
     if args.qa_source == "external" and (args.general_count is not None or args.code_count is not None):
         parser.error("External QA uses --qa-count, not separate general/code counts")
     if args.qa_source == "graph" and (args.qa_count is not None or args.group_budget is not None):
@@ -77,13 +75,28 @@ def main(argv=None):
     snapshot_path = package["snapshot"] if package else source_run / "workspace/candidate"
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if (root / "tasks").exists() or ((root / "qa").exists() and not args.resume_tasks):
+    if not args.resume_tasks and ((root / "tasks").exists() or (root / "qa").exists()):
         parser.error("Use an output without QA/task results; previous runs are retained")
     if args.resume_tasks and not all((root / "qa" / name).is_file()
                                      for name in ("manifest.json", "qa-public.json")):
         parser.error("Resuming tasks requires completed QA outputs")
+    if args.resume_tasks and (root / "tasks").exists() and not (root / "tasks/manifest.json").is_file():
+        parser.error("Resuming existing tasks requires a saved task manifest")
+    parameters = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
+                  if k != "resume_tasks"}
+    identity = {"dialogue_sha256": hashlib.sha256(dialogue_path.read_bytes()).hexdigest(),
+                "snapshot_sha256": fingerprint(snapshot_path),
+                "external_sha256": (hashlib.sha256(args.external_events.read_bytes()).hexdigest()
+                                    if args.external_events else None)}
+    if args.resume_tasks and (root / "pipeline.json").is_file():
+        previous = read(root / "pipeline.json")
+        previous_parameters = {k: v for k, v in previous.get("parameters", {}).items()
+                               if k != "resume_tasks"}
+        if previous_parameters != parameters or (previous.get("identity") is not None
+                                                  and previous["identity"] != identity):
+            raise ValueError("Episode resume requires the same inputs and parameters")
     state = {"source_run": str(source_run.resolve()),
-             "parameters": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+             "parameters": parameters, "identity": identity,
              "phase": "input", "status": "running"}
     usage_saved = False
     def phase(name):

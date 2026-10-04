@@ -13,8 +13,11 @@ def main(argv=None):
         parser.add_argument("--" + option, required=True, type=Path)
     parser.add_argument("--python", type=Path, default=Path(sys.executable),
                         help="Python environment with the existing simulator dependencies")
+    parser.add_argument("--resume", action="store_true",
+                        help="Continue the same plan and runtime, retaining all prior stage attempts")
     args = parser.parse_args(argv)
-    run_collection(args.config, args.output, args.simulator_path, args.env_file, args.python)
+    run_collection(args.config, args.output, args.simulator_path, args.env_file, args.python,
+                   resume=args.resume)
     return 0
 
 

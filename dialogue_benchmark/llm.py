@@ -96,6 +96,7 @@ _PROJECTION_METADATA = (
     "review_guard_sources", "review_guard_complete", "review_guard_reason",
     "review_guard_omitted_count",
     "generation_extra_sources",
+    "external_focus",
 )
 
 
@@ -664,8 +665,11 @@ def memory_authoring_payload(scope, source_ids, facts):
         row["id"] for row in scope.get("dialogue", [])
         if row.get("kind") != "message" and row.get("id") not in required
     }
-    return simple_evidence_payload(scope, source_ids, facts=facts,
-                                   reference_only_sources=reference_only)
+    payload, ref_to_source = simple_evidence_payload(
+        scope, source_ids, facts=facts, reference_only_sources=reference_only)
+    if isinstance(scope.get("external_focus"), str) and scope["external_focus"].strip():
+        payload["event_focus"] = scope["external_focus"].strip()
+    return payload, ref_to_source
 
 
 def simple_evidence_request_size(scope, source_ids, facts, candidate):
@@ -677,6 +681,11 @@ def simple_evidence_request_size(scope, source_ids, facts, candidate):
 def _evidence_review_request(scope, source_ids, facts, candidate):
     prompt = _focused_review_prompt(SIMPLE_EVIDENCE_PROMPT, candidate)
     payload, refs = simple_evidence_payload(scope, source_ids, facts=facts, candidate=candidate)
+    if isinstance(scope.get("external_focus"), str) and scope["external_focus"].strip():
+        event_focus = scope["external_focus"].strip()
+        payload["event_focus"] = event_focus
+        prompt += ("\n固定本事件目标：" + event_focus + "。"
+                   "只核对这个目标；同一来源中其他事件或相邻事项不能替代它。")
     if scope.get("external_event_id"):
         source_refs = {source: ref for ref, source in refs.items()}
         payload["historical_use"] = {
@@ -718,6 +727,8 @@ def simple_focus_payload(scope, source_ids, facts):
         ],
         "relations": reading.get("relations", []),
     }
+    if isinstance(scope.get("external_focus"), str) and scope["external_focus"].strip():
+        payload["event_focus"] = scope["external_focus"].strip()
     return payload, ref_to_source
 
 
@@ -2072,6 +2083,16 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
             max_questions = 1
         else:
             _, qa_prompt, _ = _prompt_for_mode(qa_mode, allowed_types, max_questions)
+        event_focus = scope.get("external_focus")
+        event_focus_instruction = ""
+        if qa_mode == "memory" and isinstance(event_focus, str) and event_focus.strip():
+            event_focus = event_focus.strip()
+            event_focus_instruction = (
+                "\n固定本事件目标：" + event_focus + "。"
+                "只围绕这个目标出题；同一来源中其他事件或相邻事项不能替代它。"
+            )
+            focus_prompt += event_focus_instruction
+            qa_prompt += event_focus_instruction
         selected_fact_sources = {source for fact in result["facts"]
                                  for source in fact.get("sources", [])}
         fact_sources = set(selected_fact_sources)
@@ -2096,11 +2117,12 @@ def generate_from_facts(scope, facts, client, max_questions=1, qa_mode="code",
                 failed_stage = "workflow"
                 workflow_payload, workflow_ref_to_source = memory_authoring_payload(
                     scope, focus_sources, result["facts"])
-                _check_simple_request_budget(MEMORY_WORKFLOW_PROMPT, workflow_payload, qa_budget)
-                save("workflow-input.json", {"system_prompt": SYSTEM, "prompt": MEMORY_WORKFLOW_PROMPT,
+                workflow_prompt = MEMORY_WORKFLOW_PROMPT + event_focus_instruction
+                _check_simple_request_budget(workflow_prompt, workflow_payload, qa_budget)
+                save("workflow-input.json", {"system_prompt": SYSTEM, "prompt": workflow_prompt,
                                              "payload": workflow_payload, "ref_to_source": workflow_ref_to_source})
                 result["generation_request_count"] += 1
-                document = _ask_stage(client, MEMORY_WORKFLOW_PROMPT, workflow_payload, "workflow",
+                document = _ask_stage(client, workflow_prompt, workflow_payload, "workflow",
                                       request_budget=qa_budget)
                 if document == {"questions": []}:
                     save("workflow.json", document)

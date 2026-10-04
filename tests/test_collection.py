@@ -81,13 +81,24 @@ class CollectionTests(unittest.TestCase):
             save(package / "manifest.json", dict(schema="memory-episode-v1"))
             save(package / "external-events.json", dict(events=[{"memory_kind": "M1"}]))
             save(package / "private/review.json", dict(budget=budget))
-        elif name == "evaluation":
+        elif name in ("external", "graph"):
             self.assertIn("--episode-manifest", command)
-            self.assertIn("external", command)
-            self.assertEqual(command[command.index("--qa-count") + 1], "8")
+            source = command[command.index("--qa-source") + 1]
+            self.assertEqual(source, name)
             self.assertEqual(command[command.index("--model-request-chars") + 1], "96000")
-            self.assertNotIn("--general-count", command)
-            self.assertNotIn("--code-count", command)
+            if source == "external":
+                self.assertEqual(command[command.index("--qa-count") + 1], "8")
+                self.assertNotIn("--general-count", command)
+                self.assertNotIn("--code-count", command)
+            else:
+                self.assertEqual(command[command.index("--general-count") + 1], "50")
+                self.assertEqual(command[command.index("--code-count") + 1], "50")
+                self.assertNotIn("--qa-count", command)
+                self.assertNotIn("--group-budget", command)
+            if source == getattr(self, "fail_route", None):
+                save(target / "pipeline.json", dict(status="failed"))
+                save(target / "usage.json", dict(requests=1, prompt_tokens=10, completion_tokens=2, complete=True))
+                return 1
             paired = getattr(self, "paired", False)
             qa_only = "--qa-only" in command
             save(target / "pipeline.json", dict(status="completed", **(
@@ -121,7 +132,7 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual([s["status"] for s in project["scenarios"]],
                              ["requirements_rejected", "no_eligible_qa"])
             self.assertEqual(result["usage"]["requests"], 7)
-            self.assertEqual(project["scenarios"][1]["paired_tasks"], 0)
+            self.assertEqual(project["scenarios"][1]["evaluations"]["external"]["paired_tasks"], 0)
             for scenario in ("first", "second"):
                 self.assertEqual(read(root / "run/planner" / scenario / "config.json")["base"], "base-sha")
                 self.assertEqual(read(root / "run/planner" / scenario / "config.json")["development_plan"],
@@ -140,6 +151,31 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(result["usage"]["requests"], 2)
             self.assertTrue((root / "run/planner/project/config.json").is_file())
 
+    def test_reused_project_keeps_lineage_but_uses_current_runtime_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            plan["projects"][0].pop("brief")
+            plan["projects"][0]["prepared_config"] = "prepared.json"
+            save(root / "input.json", plan)
+            save(root / "prepared.json", dict(repository=str(root), base="base-sha",
+                tasks=[{"commit": "next-sha"}], development_plan="development-plan.json",
+                judge=dict(model="old", reasoning_effort="low", candidate_pythonpath="/workspace/candidate")))
+            save(root / "runtime.json", dict(
+                user=dict(model="current-user", reasoning_effort="max"),
+                judge=dict(model="current-judge", reasoning_effort="max", max_output_tokens=12)))
+            self.reject_first = False
+            result = self.invoke(root)
+            self.assertFalse(any("simulator.openhands.prepare_project" in c for c in self.commands))
+            for scenario in ("first", "second"):
+                config = read(root / "run/planner" / scenario / "config.json")
+                self.assertEqual(config["base"], "base-sha")
+                self.assertEqual(config["judge"]["model"], "current-judge")
+                self.assertEqual(config["judge"]["reasoning_effort"], "max")
+                self.assertEqual(config["judge"]["candidate_pythonpath"], "/workspace/candidate")
+                self.assertIsNone(config["judge"]["max_output_tokens"])
+            self.assertEqual(result["projects"][0]["lineage"], ["root-sha"])
+
     def test_pairs_are_aggregated_with_distinct_scenario_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -148,11 +184,11 @@ class CollectionTests(unittest.TestCase):
             self.paired = True
             result = self.invoke(root)
             scenes = result["projects"][0]["scenarios"]
-            self.assertEqual(sum(s["paired_tasks"] for s in scenes), 2)
+            self.assertEqual(sum(s["evaluations"]["external"]["paired_tasks"] for s in scenes), 2)
             self.assertEqual(result["usage"]["requests"], 9)
             report = (root / "run/report.md").read_text()
-            self.assertIn("planner/first/evaluation/tasks/task-01", report)
-            self.assertIn("planner/second/evaluation/tasks/task-01", report)
+            self.assertIn("planner/first/evaluation/external/tasks/task-01", report)
+            self.assertIn("planner/second/evaluation/external/tasks/task-01", report)
             self.assertEqual(scenes[0]["public_memory_counts"]["M1"], 1)
 
     def test_duplicate_or_escaping_targets_are_rejected_before_execution(self):
@@ -175,7 +211,8 @@ class CollectionTests(unittest.TestCase):
             self.assertTrue(all("--qa-only" in c for c in evaluation))
             self.assertTrue(all(c[c.index("--qa-only") + 1] != "True" for c in evaluation))
             self.assertTrue(result["qa_only"])
-            self.assertEqual([s["published_qa"] for s in result["projects"][0]["scenarios"]], [1, 1])
+            self.assertEqual([s["evaluations"]["external"]["published_qa"]
+                              for s in result["projects"][0]["scenarios"]], [1, 1])
             self.assertFalse(any((root / "run").glob("planner/*/evaluation/tasks")))
             report = (root / "run/collection.md").read_text()
             self.assertIn("Not scheduled", report)
@@ -204,3 +241,72 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual([s["status"] for s in result["projects"][0]["scenarios"]],
                              ["no_external_history", "no_external_history"])
             self.assertFalse(any("run_episode.py" in " ".join(c) for c in self.commands))
+
+    def test_both_routes_share_one_dialogue_but_keep_separate_qa_and_task_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            plan["qa_sources"] = ["graph", "external"]
+            save(root / "input.json", plan)
+            self.reject_first = False
+            self.paired = True
+            result = self.invoke(root)
+            dialogue_commands = [c for c in self.commands if "simulator" in c]
+            self.assertEqual(len(dialogue_commands), 2)
+            evaluations = [c for c in self.commands if "--episode-manifest" in c]
+            self.assertEqual(len(evaluations), 4)
+            for index in (0, 2):
+                graph, external = evaluations[index:index + 2]
+                self.assertEqual(graph[graph.index("--episode-manifest") + 1],
+                                 external[external.index("--episode-manifest") + 1])
+                self.assertIn("--qa-only", graph)
+                self.assertNotIn("--qa-only", external)
+            for scene in result["projects"][0]["scenarios"]:
+                self.assertEqual(set(scene["evaluations"]), {"graph", "external"})
+                self.assertEqual(scene["evaluations"]["graph"]["published_qa"], 1)
+                self.assertEqual(scene["evaluations"]["graph"]["paired_tasks"], 0)
+                self.assertEqual(scene["evaluations"]["external"]["paired_tasks"], 1)
+                self.assertFalse((root / "run/planner" / scene["id"] / "evaluation/graph/tasks").exists())
+            self.assertEqual(result["usage"]["requests"], 11)
+            report = (root / "run/collection.md").read_text()
+            self.assertIn("| graph |", report)
+            self.assertIn("| external |", report)
+
+    def test_graph_route_runs_even_without_external_sidecar_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            plan["qa_sources"] = ["external", "graph"]
+            save(root / "input.json", plan)
+            self.reject_first = False
+            self.empty = True
+            result = self.invoke(root)
+            evaluated = [c for c in self.commands if "--episode-manifest" in c]
+            self.assertEqual(len(evaluated), 2)
+            self.assertTrue(all(c[c.index("--qa-source") + 1] == "graph" for c in evaluated))
+            for scene in result["projects"][0]["scenarios"]:
+                self.assertEqual(scene["evaluations"]["external"]["status"], "no_external_history")
+                self.assertEqual(scene["evaluations"]["graph"]["status"], "qa_only")
+
+    def test_failure_in_one_route_does_not_suppress_the_other(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            plan["qa_sources"] = ["external", "graph"]
+            save(root / "input.json", plan)
+            self.reject_first = False
+            self.fail_route = "external"
+            result = self.invoke(root)
+            for scene in result["projects"][0]["scenarios"]:
+                self.assertEqual(scene["status"], "partial_failure")
+                self.assertEqual(scene["evaluations"]["external"]["status"], "evaluation_failed")
+                self.assertEqual(scene["evaluations"]["graph"]["status"], "qa_only")
+
+    def test_invalid_route_selection_is_rejected_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self.plan(Path(directory))
+            for sources in ([], "graph", ["unknown"], ["graph", "graph"]):
+                with self.subTest(sources=sources):
+                    plan["qa_sources"] = sources
+                    with self.assertRaisesRegex(ValueError, "qa_sources"):
+                        validate_plan(plan)

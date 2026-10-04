@@ -37,6 +37,8 @@ def sum_usage(rows):
 def episode_usage(root):
     """Read each primary ledger once, before compaction removes stage directories."""
     root = Path(root)
+    saved = _read_if(root / "usage.json")
+    receipts_by_path = {row["path"]: row for row in saved.get("receipts", [])}
     receipts = []
     qa = root / "qa/manifest.json"
     if qa.is_file():
@@ -52,11 +54,17 @@ def episode_usage(root):
             value = read(path)
             rows = value if isinstance(value, list) else [value]
             receipts.append(dict(path=str(path.relative_to(root)), **sum_usage(rows)))
+    receipts_by_path.update({row["path"]: row for row in receipts})
+    receipts = list(receipts_by_path.values())
     return dict(**sum_usage(receipts), receipts=receipts)
 
 
 def _read_if(path):
     return read(path) if path.is_file() else {}
+
+
+def _sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
 def _command(command, cwd, log):
@@ -109,39 +117,114 @@ def validate_plan(plan):
             raise ValueError("Duplicate scenario id")
 
 
-def run_collection(plan_path, output, simulator, env_file, python=sys.executable):
+def run_collection(plan_path, output, simulator, env_file, python=sys.executable, resume=False):
     plan_path, output, simulator = (Path(p).resolve() for p in (plan_path, output, simulator))
     plan = read(plan_path)
     validate_plan(plan)
-    runtime = read((plan_path.parent / plan["runtime_config"]).resolve())
+    runtime_path = (plan_path.parent / plan["runtime_config"]).resolve()
+    runtime = read(runtime_path)
     for role in ("user", "code", "judge", "decomposer"):
         if isinstance(runtime.get(role), dict):
             runtime[role]["max_output_tokens"] = None
-    output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    state = dict(status="running", projects=[], stages=[],
+    identity = dict(plan_sha256=_sha256(plan_path), runtime_sha256=_sha256(runtime_path),
+                    simulator=str(simulator), python=str(Path(python).resolve()),
+                    prepared_configs={p["id"]: _sha256((plan_path.parent / p["prepared_config"]).resolve())
+                                      for p in plan["projects"] if p.get("prepared_config")})
+    if resume:
+        state = read(output / "collection.json")
+        if state.get("identity") != identity:
+            raise ValueError("Collection resume requires the same plan, runtime and prepared inputs")
+    else:
+        output.mkdir(parents=True, exist_ok=False, mode=0o700)
+        state = dict(status="running", projects=[], stages=[], identity=identity,
                  qa_only=plan.get("evaluation", {}).get("qa_only", False),
                  qa_sources=plan.get("qa_sources", ["external"]),
-                 plan_sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                 plan_sha256=identity["plan_sha256"],
                  limits={k: plan[k] for k in ("max_total_requests", "max_total_tokens")},
                  budget_boundary="Finish each started stage, then check cumulative usage before the next stage")
-    save(output / "plan.json", plan)
-    for label, repo in (("qa", Path(__file__).resolve().parents[1]), ("simulator", simulator)):
-        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True)
-        state[label + "_revision"] = result.stdout.strip() if result.returncode == 0 else None
+        save(output / "plan.json", plan)
+        for label, repo in (("qa", Path(__file__).resolve().parents[1]), ("simulator", simulator)):
+            result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True)
+            state[label + "_revision"] = result.stdout.strip() if result.returncode == 0 else None
+    state["status"] = "running"
+    state.pop("stop_reason", None)
+    state.pop("error_type", None)
 
     def persist():
-        state["usage"] = sum_usage([s["usage"] for s in state["stages"] if "usage" in s])
+        state["usage"] = sum_usage([s.get("usage", dict(sum_usage([]), complete=False))
+                                    for s in state["stages"]])
         save(output / "collection.json", state)
 
     def stage(name, folder, command, cwd, receipt, expected, ledger, budget_key=None):
+        def usage():
+            budget = _read_if(ledger)
+            if name == "dialogue" and not budget:
+                budget = {"budget": _read_if(folder / "private/budget.json")}
+            if budget_key:
+                budget = budget.get(budget_key)
+            return sum_usage([budget]) if budget else dict(sum_usage([]), complete=False)
+
+        target = str(folder.relative_to(output))
+        # The config file is enriched as upstream stages complete; command and
+        # workspace identity remain stable across that expected mutation.
+        stage_identity = dict(command=command, cwd=str(cwd))
+        previous = next((s for s in reversed(state["stages"])
+                         if s.get("target", s["path"]) == target), None)
+        if previous:
+            if previous.get("identity") != stage_identity:
+                raise ValueError("Collection stage inputs changed: " + target)
+            if previous["status"] == "completed" or (
+                    previous["status"] == "failed" and previous.get("terminal")):
+                if previous.get("receipt_sha256") != _sha256(receipt):
+                    raise ValueError("Collection stage receipt changed: " + target)
+                if previous["status"] == "completed":
+                    result = read(receipt)
+                    if result.get("status", result.get("schema")) not in expected:
+                        raise ValueError("Collection stage receipt is no longer accepted: " + target)
+                    return result
+                return None
+            previous["usage"] = usage()
+            previous["status"] = "interrupted"
         persist()
         if not state["usage"]["complete"]:
             raise RuntimeError("usage_incomplete")
         if (state["usage"]["requests"] >= plan["max_total_requests"]
                 or state["usage"]["total_tokens"] >= plan["max_total_tokens"]):
             raise RuntimeError("collection_budget_exhausted")
-        row = dict(name=name, path=str(folder.relative_to(output)), status="running", command=command)
-        state["stages"].append(row)
+        completed_qa = all((folder / "qa" / filename).is_file()
+                           for filename in ("manifest.json", "qa-public.json"))
+        if previous and name == "evaluation" and completed_qa:
+            # The episode owns its append-only QA/task recovery and cumulative ledger.
+            row = previous
+            row["status"] = "running"
+            row["resume_count"] = row.get("resume_count", 0) + 1
+            command = [*command, "--resume"]
+        else:
+            if previous:
+                if previous.get("retry", 0) >= 1:
+                    archive = output / "attempts" / target / ("attempt-%d" % (previous.get("retry", 0) + 1))
+                    archive.mkdir(parents=True, exist_ok=False, mode=0o700)
+                    for artifact in (folder, folder.with_suffix(".log"),
+                                     folder.with_name("dialogue-package") if name == "dialogue" else None):
+                        if artifact is not None and artifact.exists():
+                            artifact.rename(archive / artifact.name)
+                    previous["status"] = "retry_exhausted"
+                    previous["receipt_sha256"] = _sha256(receipt)
+                    previous["retry_exhausted_path"] = str(archive.relative_to(output))
+                    persist()
+                    return None
+                archive = output / "attempts" / target / "attempt-1"
+                archive.mkdir(parents=True, exist_ok=False, mode=0o700)
+                for artifact in (folder, folder.with_suffix(".log"),
+                                 folder.with_name("dialogue-package") if name == "dialogue" else None):
+                    if artifact is not None and artifact.exists():
+                        artifact.rename(archive / artifact.name)
+                previous["path"] = str((archive / folder.name).relative_to(output))
+                previous["archived"] = True
+                persist()
+            row = dict(name=name, path=target, target=target, status="running", command=command,
+                       identity=stage_identity, retry=1 if previous else 0)
+            state["stages"].append(row)
         persist()
         print("Collection:", row["path"], name, flush=True)
         try:
@@ -150,21 +233,28 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             row["outcome"] = result.get("status", result.get("schema", "missing_receipt"))
             row["status"] = ("completed" if row["returncode"] == 0
                              and row["outcome"] in expected else "failed")
+            row["terminal"] = row["returncode"] == 0 and row["status"] == "failed"
+            if row["returncode"]:
+                log = folder.with_suffix(".log")
+                text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+                if re.search(r"authentication|invalid api key|unauthorized|missing.*credential", text, re.I):
+                    raise RuntimeError("collection_authentication_failed")
+                if re.search(r"unrecognized arguments|the following arguments are required", text, re.I):
+                    raise RuntimeError("collection_input_failed")
             return result if row["status"] == "completed" else None
         except BaseException as error:
             row.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
                        error_type=type(error).__name__)
-            raise
+            if (not isinstance(error, Exception) or isinstance(error, (ValueError, FileNotFoundError))
+                    or str(error) in {"collection_authentication_failed", "collection_input_failed"}):
+                raise
+            return None
         finally:
             try:
-                budget = _read_if(ledger)
-                if name == "dialogue" and not budget:
-                    budget = {"budget": _read_if(folder / "private/budget.json")}
-                if budget_key:
-                    budget = budget.get(budget_key)
-                row["usage"] = sum_usage([budget]) if budget else dict(sum_usage([]), complete=False)
+                row["usage"] = usage()
             except (OSError, ValueError, TypeError) as error:
                 row["usage"] = dict(sum_usage([]), complete=False, error_type=type(error).__name__)
+            row["receipt_sha256"] = _sha256(receipt)
             persist()
 
     def upstream(module, config, target):
@@ -174,9 +264,12 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
     try:
         for project in plan["projects"]:
             root = output / project["id"]
-            root.mkdir()
-            entry = dict(id=project["id"], status="running", scenarios=[])
-            state["projects"].append(entry)
+            root.mkdir(exist_ok=resume)
+            entry = next((p for p in state["projects"] if p["id"] == project["id"]), None)
+            if entry is None:
+                entry = dict(id=project["id"], status="running", scenarios=[])
+                state["projects"].append(entry)
+            entry["status"] = "running"
             if project.get("prepared_config"):
                 config = read((plan_path.parent / project["prepared_config"]).resolve())
                 for role in ("user", "code", "judge", "decomposer"):
@@ -205,15 +298,19 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             entry["base"] = config["base"]
             for scenario in project["scenarios"]:
                 scenario_root = root / scenario["id"]
-                scenario_root.mkdir()
+                scenario_root.mkdir(exist_ok=resume)
                 current = copy.deepcopy(config)
                 current.pop("scenario_file", None)
                 current.pop("prepared_issues", None)
                 current["scenario_design"] = {k: v for k, v in scenario.items() if k != "id"}
                 cfg = scenario_root / "config.json"
-                save(cfg, current)
-                record = dict(id=scenario["id"], status="running")
-                entry["scenarios"].append(record)
+                if not (resume and cfg.is_file()):
+                    save(cfg, current)
+                record = next((s for s in entry["scenarios"] if s["id"] == scenario["id"]), None)
+                if record is None:
+                    record = dict(id=scenario["id"], status="running")
+                    entry["scenarios"].append(record)
+                record["status"] = "running"
                 target = scenario_root / "scenario"
                 designed = stage("scenario", target, upstream("simulator.openhands.prepare_scenario", cfg, target),
                     simulator, target / "frozen/report.json", {"completed", "candidate_pass"}, target / "budget.json")
@@ -305,6 +402,9 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 else "below_target" if any(
                     scenario.get("status") == "below_target" for scenario in entry["scenarios"])
                 else "completed")
+        persist()
+        if not state["usage"]["complete"]:
+            raise RuntimeError("usage_incomplete")
         state["status"] = "completed"
     except BaseException as error:
         state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "stopped",

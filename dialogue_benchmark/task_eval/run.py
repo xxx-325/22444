@@ -822,34 +822,70 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     return None
 
 
-def evaluate(item, root, baseline, receipt, config, agent_options, index):
+def evaluate(item, root, baseline, receipt, config, agent_options, index, *, resume=False):
     if "qa_sha256" in receipt and receipt["qa_sha256"] != qa_fingerprint(item["qa"]):
         raise ValueError("Frozen QA changed before evaluation")
     spec = root / "frozen"
     task = (spec / "task.md").read_text()
     items = read(spec / "acceptance.json")
     history = read(spec / "history.json") if (spec / "history.json").exists() else None
-    result = {}
+    result = read(root / "comparison.json") if resume and (root / "comparison.json").is_file() else {}
     order = ("without_memory", "with_memory") if index % 2 == 0 else ("with_memory", "without_memory")
     for slot, condition in enumerate(order, 1):
         if not unchanged(receipt, spec, baseline):
             raise ValueError("Frozen inputs changed before evaluation")
+        if condition in result:
+            if result[condition].get("result") not in {"passed", "failed", "uncertain"}:
+                raise ValueError("Saved evaluation arm has no terminal result")
+            continue
         trial = root / ("trial-%d" % slot)
-        prepare(trial, baseline)
-        oracle = history["oracle_answer"] if history else answer_text(item["qa"])
-        message = solver_input(task, oracle if condition == "with_memory" else None)
-        if history:
-            message += prompts.HISTORY_REQUEST
-        print(root.name, "evaluation", condition, flush=True)
-        solved = run_agent(trial, config, "code", message, **agent_options,
-                           **({"history": history} if history else {}))
+        saved_solver = resume and trial.exists()
+        solved = read(trial / "result.json") if saved_solver and (trial / "result.json").is_file() else {}
+        if saved_solver and not agent_finished(solved):
+            # A started arm spent its original budget. Do not reset it or
+            # overwrite its candidate merely because its score was not saved.
+            result[condition] = {"result": "uncertain", "execution_status": "interrupted",
+                "solver_status": solved.get("status", "interrupted"),
+                "judge_status": "unavailable", "metrics": solved.get("metrics", {}),
+                "history_available": history is not None, "trial": trial.name,
+                "detail": "Started trial retained without a complete acceptance score"}
+            save(root / "comparison.json", result)
+            save(root / "paired-differences.json", compare_trials(result))
+            continue
+        if not saved_solver:
+            prepare(trial, baseline)
+            oracle = history["oracle_answer"] if history else answer_text(item["qa"])
+            message = solver_input(task, oracle if condition == "with_memory" else None)
+            if history:
+                message += prompts.HISTORY_REQUEST
+            print(root.name, "evaluation", condition, flush=True)
+            solved = run_agent(trial, config, "code", message, **agent_options,
+                               **({"history": history} if history else {}))
         candidate = trial / "workspace/candidate"
-        changed = write_diff(baseline, candidate, trial / "changes.patch")
-        checks = run_checks(candidate, spec, trial / "checks", config["execution_image"],
-                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
-        judged, review_path, roots = inspect_acceptance(
-            candidate, spec, items, checks, trial, config, agent_options)
-        judge = trial / "judge"
+        changed = (read(trial / "version.json")["changed_files"]
+                   if saved_solver and (trial / "version.json").is_file()
+                   else write_diff(baseline, candidate, trial / "changes.patch"))
+        if saved_solver and (trial / "checks/result.json").is_file():
+            checks = read(trial / "checks/result.json")
+        else:
+            check_root = trial / "checks"
+            while check_root.exists():
+                check_root = check_root.with_name(check_root.name + "-resume")
+            checks = run_checks(candidate, spec, check_root, config["execution_image"],
+                                candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+        inspection = trial / "resume-inspection" if (trial / "resume-inspection").exists() else trial
+        judge = inspection / "judge"
+        if saved_solver and judge.exists():
+            judged = read(judge / "result.json") if (judge / "result.json").is_file() else {"status": "interrupted"}
+            review_path = judge / "workspace/checks/acceptance-review.txt"
+            roots = {"/workspace/" + name: judge / "workspace" / name
+                     for name in ("candidate", "checks", "experiments")}
+        else:
+            if saved_solver and (trial / "judge-reference").exists():
+                inspection = trial / "resume-inspection"
+            judged, review_path, roots = inspect_acceptance(
+                candidate, spec, items, checks, inspection, config, agent_options)
+            judge = inspection / "judge"
         verdict_path = judge / "workspace/checks/verdict.txt"
         verdict = verdict_path.read_text() if verdict_path.exists() else ""
         acceptance = assess_acceptance(items, checks, review_path, roots)
@@ -886,6 +922,46 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index):
     return result
 
 
+def selected_input_hash(item):
+    payload = dict(item)
+    if "generation_input" in payload:
+        payload["generation_input"] = read(payload["generation_input"])
+    return qa_fingerprint(payload)
+
+
+def validate_resume(manifest, expected, selected, output, baseline):
+    """Check experiment identity before changing any retained artifact."""
+    for key in ("source_run", "qa_run", "baseline", "baseline_sha256", "baseline_version",
+                "config", "execution", "target", "task_budget", "selection_only", "selected_qa_ids"):
+        if manifest.get(key) != expected[key]:
+            raise ValueError("Resume inputs changed: " + key)
+    hashes = expected["selected_inputs_sha256"]
+    if "selected_inputs_sha256" in manifest and manifest["selected_inputs_sha256"] != hashes:
+        raise ValueError("Resume QA or generation inputs changed")
+    if "config_sha256" in manifest and manifest["config_sha256"] != expected["config_sha256"]:
+        raise ValueError("Resume configuration hash changed")
+    items = {item["qa"]["id"]: item for item in selected}
+    if {row.get("qa_id") for row in manifest["tasks"]} - set(items):
+        raise ValueError("Resume task selection changed")
+    for row in manifest["tasks"]:
+        if row.get("qa_id") not in items:
+            raise ValueError("Resume task selection changed")
+    for row in manifest["tasks"]:
+        name, item = row["task"], items[row["qa_id"]]
+        root = output / name
+        for saved, current in ((root / "author-reference/qa.json", item["qa"]),
+                               (root / "author-reference/qa-input.json",
+                                read(item["generation_input"]) if "generation_input" in item else None)):
+            if saved.is_file() and read(saved) != current:
+                raise ValueError("Resume saved QA or generation input changed: " + name)
+        if (root / "frozen.json").is_file():
+            receipt = read(root / "frozen.json")
+            if (receipt.get("qa_id") != item["qa"]["id"]
+                    or ("qa_sha256" in receipt and receipt["qa_sha256"] != qa_fingerprint(item["qa"]))
+                    or not unchanged(receipt, root / "frozen", baseline)):
+                raise ValueError("Resume frozen inputs changed: " + name)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("simulator-path", "source-run", "qa-run", "env-file", "output"):
@@ -900,6 +976,8 @@ def main(argv=None):
                         help="Reuse one completed construction-NN author; requalify and rerun preflight in a new output")
     parser.add_argument("--preparation-feedback", type=Path,
                         help="Repair reused tests from saved review feedback before rerunning preflight")
+    parser.add_argument("--resume", action="store_true",
+                        help="Continue an existing task output, preserving completed task records")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
@@ -922,7 +1000,11 @@ def main(argv=None):
         parser.error("--preparation-feedback requires --reuse-preparation")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    if (output / "manifest.json").exists() or (output / "baseline").exists():
+    existing_manifest = (read(output / "manifest.json")
+                         if args.resume and (output / "manifest.json").is_file() else None)
+    if args.resume and existing_manifest is None:
+        parser.error("--resume requires an existing task manifest")
+    if not args.resume and ((output / "manifest.json").exists() or (output / "baseline").exists()):
         parser.error("Use a new output directory; previous experiments are retained")
     items = qa_inputs(args.qa_run)
     if not items:
@@ -936,14 +1018,18 @@ def main(argv=None):
                        **({"control_config": args.control_config} if args.control_config else {}))
     preflight_openhands_runtime(args.simulator_path)
     config["model_request_chars"] = args.model_request_chars
-    baseline = args.baseline.resolve() if args.baseline else output / "baseline"
-    if args.baseline:
+    baseline = (Path(existing_manifest["baseline"]).resolve() if args.resume
+                else args.baseline.resolve() if args.baseline else output / "baseline")
+    if args.resume:
+        version = baseline_version(baseline)
+    elif args.baseline:
         version = baseline_version(baseline)
     else:
         copy_tree(args.source_run / "workspace/candidate", baseline)
         version = pin_baseline(baseline)
-    save(output / "baseline.json", dict(version,
-         source=str(baseline if args.baseline else (args.source_run / "workspace/candidate").resolve())))
+    if not args.resume:
+        save(output / "baseline.json", dict(version,
+             source=str(baseline if args.baseline else (args.source_run / "workspace/candidate").resolve())))
     # Prefer distinct evidence targets, using only pre-evaluation metadata.
     selected, seen = [], set()
     for item in items:
@@ -957,7 +1043,10 @@ def main(argv=None):
     for item in items:
         if len(selected) < task_budget and item not in selected:
             selected.append(item)
-    manifest = {"source_run": str(args.source_run.resolve()), "qa_run": str(args.qa_run.resolve()),
+    config_sha256 = qa_fingerprint(config)
+    selected_inputs_sha256 = [selected_input_hash(item) for item in selected]
+    expected_manifest = {"source_run": str(args.source_run.resolve()), "qa_run": str(args.qa_run.resolve()),
+                "baseline": str(baseline),
                 "baseline_sha256": fingerprint(baseline), "config": config,
                 "evaluator_version": source_version(Path(__file__).resolve().parents[2], "dialogue_benchmark"),
                 "simulator_version": source_version(args.simulator_path, "simulator"),
@@ -970,12 +1059,66 @@ def main(argv=None):
                 "baseline_version": version, "baseline": str(baseline),
                 "target": args.count, "task_budget": task_budget,
                 "selection_only": args.selection_only,
-                "selected_qa_ids": [i["qa"]["id"] for i in selected], "tasks": []}
-    save(output / "manifest.json", manifest)
+                "selected_qa_ids": [i["qa"]["id"] for i in selected],
+                "config_sha256": config_sha256, "selected_inputs_sha256": selected_inputs_sha256}
+    if args.resume:
+        manifest = existing_manifest
+        validate_resume(manifest, expected_manifest, selected, output, baseline)
+        manifest.setdefault("resume_history", []).append({"source": "manifest", "config_sha256": config_sha256})
+    else:
+        manifest = dict(expected_manifest, tasks=[])
+        save(output / "manifest.json", manifest)
     agent_options = {"max_requests": args.agent_requests, "max_tokens": args.agent_tokens}
 
+    # A construction directory is an append-only attempt.  Keep its record
+    # and give an unfinished construction a fresh task directory on resume;
+    # frozen tasks can still resume their missing scored arm in place.
+    root_by_index = {index: "task-%02d" % (index + 1) for index in range(len(selected))}
+    if args.resume:
+        used = [int(row["task"].split("-")[-1]) for row in manifest["tasks"]
+                if row.get("task", "").startswith("task-") and row["task"].split("-")[-1].isdigit()]
+        next_number = max(used or [0]) + 1
+        for index, item in enumerate(selected):
+            rows = [row for row in manifest["tasks"] if row.get("qa_id") == item["qa"]["id"]]
+            prior = rows[-1] if rows else None
+            if prior and prior.get("status") in {"evaluated", "qualified"}:
+                root_by_index[index] = prior["task"]
+            elif prior and (output / prior["task"] / "frozen.json").is_file():
+                root_by_index[index] = prior["task"]
+            elif prior:
+                replacement = "task-%02d" % next_number
+                next_number += 1
+                prior["status"] = "interrupted"
+                prior["resume_replaced_by"] = replacement
+                root_by_index[index] = replacement
+                manifest["tasks"].append({"task": replacement, "status": "pending",
+                                           "qa_id": item["qa"]["id"], "type": item["qa"]["type"]})
+        save(output / "manifest.json", manifest)
+
     def run(index, item):
-        root = output / ("task-%02d" % (index + 1))
+        root = output / root_by_index[index]
+        prior = next((row for row in manifest["tasks"] if row.get("task") == root.name), None)
+        if args.resume and prior and prior.get("status") in {"evaluated", "qualified"}:
+            complete = (prior.get("status") == "qualified" or
+                        set(prior.get("comparison", {})) == {"without_memory", "with_memory"})
+            if complete:
+                return prior
+            prior = dict(prior, status="interrupted", interruption_reason="incomplete_terminal_record")
+        if args.resume and prior and (root / "frozen.json").is_file() and not args.selection_only:
+            try:
+                receipt = read(root / "frozen.json")
+                comparison = evaluate(item, root, baseline, receipt, config, agent_options, index, resume=True)
+                interrupted = any(trial.get("execution_status") == "interrupted"
+                                  for trial in comparison.values())
+                return {"task": root.name, "status": "interrupted" if interrupted else "evaluated",
+                        "qa_id": item["qa"]["id"], "type": item["qa"]["type"],
+                        "comparison": comparison, "paired_differences": compare_trials(comparison)}
+            except Exception as error:
+                return {**prior, "status": "interrupted", "error_type": type(error).__name__, "detail": str(error)}
+        if args.resume and prior and prior.get("status") in {"running", "error", "interrupted", "not_admitted"}:
+            record = dict(prior, status="interrupted", interruption_reason="construction_not_frozen")
+            save(root / "interrupted.json", record)
+            return record
         try:
             receipt = construct(item, root, baseline, config, args.revisions, agent_options,
                                 **({"design_probe": True} if args.design_probe else {}),
@@ -1002,7 +1145,8 @@ def main(argv=None):
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         next_index = 0
         while next_index < len(selected):
-            completed = sum(task["status"] == ("qualified" if args.selection_only else "evaluated") for task in manifest["tasks"])
+            completed = sum(task["status"] in (("qualified", "evaluated") if args.selection_only else ("evaluated",))
+                            for task in manifest["tasks"])
             if completed >= args.count:
                 break
             size = min(args.workers, args.count - completed, len(selected) - next_index)
@@ -1010,7 +1154,10 @@ def main(argv=None):
                        for index in range(next_index, next_index + size)]
             next_index += size
             for future in as_completed(futures):
-                manifest["tasks"].append(future.result())
+                row = future.result()
+                manifest["tasks"] = [existing for existing in manifest["tasks"]
+                                     if existing.get("task") != row.get("task")]
+                manifest["tasks"].append(row)
                 manifest["tasks"].sort(key=lambda item: item["task"])
                 save(output / "manifest.json", manifest)
                 write_report(output, manifest)
