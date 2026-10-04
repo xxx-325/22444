@@ -941,19 +941,17 @@ def validate_resume(manifest, expected, selected, output, baseline):
     if "config_sha256" in manifest and manifest["config_sha256"] != expected["config_sha256"]:
         raise ValueError("Resume configuration hash changed")
     items = {item["qa"]["id"]: item for item in selected}
-    # An interrupted worker can fail before the selected QA is written to its
-    # manifest row (for example while creating author-reference).  Keep that
-    # diagnostic row, but do not treat its missing identity as a changed
-    # selection; the resume pass will allocate a fresh directory below.
-    unknown = {row.get("qa_id") for row in manifest["tasks"]
-               if row.get("qa_id") is not None} - set(items)
-    if unknown:
-        raise ValueError("Resume task selection changed")
+    identities = {}
     for row in manifest["tasks"]:
-        if row.get("qa_id") not in items:
-            raise ValueError("Resume task selection changed")
-    for row in manifest["tasks"]:
-        name, item = row["task"], items[row["qa_id"]]
+        name, identity = row["task"], row.get("qa_id")
+        if identity is None and row.get("status") == "error":
+            saved_qa = output / name / "author-reference/qa.json"
+            if saved_qa.is_file():
+                identity = read(saved_qa).get("id")
+        if identity not in items:
+            raise ValueError("Resume task selection changed: " + name)
+        identities[name] = identity
+        item = items[identity]
         root = output / name
         for saved, current in ((root / "author-reference/qa.json", item["qa"]),
                                (root / "author-reference/qa-input.json",
@@ -966,6 +964,7 @@ def validate_resume(manifest, expected, selected, output, baseline):
                     or ("qa_sha256" in receipt and receipt["qa_sha256"] != qa_fingerprint(item["qa"]))
                     or not unchanged(receipt, root / "frozen", baseline)):
                 raise ValueError("Resume frozen inputs changed: " + name)
+    return identities
 
 
 def main(argv=None):
@@ -1069,7 +1068,10 @@ def main(argv=None):
                 "config_sha256": config_sha256, "selected_inputs_sha256": selected_inputs_sha256}
     if args.resume:
         manifest = existing_manifest
-        validate_resume(manifest, expected_manifest, selected, output, baseline)
+        identities = validate_resume(manifest, expected_manifest, selected, output, baseline)
+        for row in manifest["tasks"]:
+            if row.get("qa_id") is None:
+                row["qa_id"] = identities[row["task"]]
         manifest.setdefault("resume_history", []).append({"source": "manifest", "config_sha256": config_sha256})
     else:
         manifest = dict(expected_manifest, tasks=[])
@@ -1081,24 +1083,22 @@ def main(argv=None):
     # frozen tasks can still resume their missing scored arm in place.
     root_by_index = {index: "task-%02d" % (index + 1) for index in range(len(selected))}
     if args.resume:
-        used = [int(row["task"].split("-")[-1]) for row in manifest["tasks"]
-                if row.get("task", "").startswith("task-") and row["task"].split("-")[-1].isdigit()]
-        next_number = max(used or [0]) + 1
-        orphan_tasks = {row.get("task") for row in manifest["tasks"]
-                        if row.get("qa_id") is None and row.get("task")}
+        used = [int(path.name.split("-")[-1]) for path in output.glob("task-*")
+                if path.name.split("-")[-1].isdigit()]
+        used.extend(int(row["task"].split("-")[-1]) for row in manifest["tasks"]
+                    if row.get("task", "").startswith("task-") and row["task"].split("-")[-1].isdigit())
+        next_number = max([len(selected), *used]) + 1
         for index, item in enumerate(selected):
             rows = [row for row in manifest["tasks"] if row.get("qa_id") == item["qa"]["id"]]
             prior = rows[-1] if rows else None
-            default_root = root_by_index[index]
-            if prior is None and default_root in orphan_tasks:
+            if prior is None and (output / root_by_index[index]).exists():
                 replacement = "task-%02d" % next_number
                 next_number += 1
                 root_by_index[index] = replacement
                 manifest["tasks"].append({"task": replacement, "status": "pending",
-                                           "qa_id": item["qa"]["id"], "type": item["qa"]["type"],
-                                           "resume_replaces": default_root})
+                                           "qa_id": item["qa"]["id"], "type": item["qa"]["type"]})
                 continue
-            if prior and prior.get("status") in {"evaluated", "qualified"}:
+            if prior and prior.get("status") in {"evaluated", "qualified", "not_admitted"}:
                 root_by_index[index] = prior["task"]
             elif prior and (output / prior["task"] / "frozen.json").is_file():
                 root_by_index[index] = prior["task"]
@@ -1115,8 +1115,8 @@ def main(argv=None):
     def run(index, item):
         root = output / root_by_index[index]
         prior = next((row for row in manifest["tasks"] if row.get("task") == root.name), None)
-        if args.resume and prior and prior.get("status") in {"evaluated", "qualified"}:
-            complete = (prior.get("status") == "qualified" or
+        if args.resume and prior and prior.get("status") in {"evaluated", "qualified", "not_admitted"}:
+            complete = (prior.get("status") in {"qualified", "not_admitted"} or
                         set(prior.get("comparison", {})) == {"without_memory", "with_memory"})
             if complete:
                 return prior
@@ -1154,7 +1154,8 @@ def main(argv=None):
                     "type": item["qa"]["type"],
                     "comparison": comparison, "paired_differences": compare_trials(comparison)}
         except Exception as error:
-            failure = {"task": root.name, "status": "error", "error_type": type(error).__name__,
+            failure = {"task": root.name, "qa_id": item["qa"]["id"], "type": item["qa"]["type"],
+                       "status": "error", "error_type": type(error).__name__,
                        "detail": str(error)}
             save(root / "failure.json", failure)
             return failure

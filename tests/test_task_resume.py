@@ -126,6 +126,69 @@ class TaskResumeTests(unittest.TestCase):
             self.assertEqual([row["task"] for row in resumed["tasks"]], ["task-01", "task-02"])
             self.assertEqual(resumed["tasks"][0]["status"], "interrupted")
 
+    def test_resume_recovers_error_identity_and_avoids_all_existing_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            (baseline / "a.py").write_text("value = 1\n")
+            pin_baseline(baseline)
+            output = root / "output"
+            common = ["--simulator-path", str(root), "--source-run", str(root / "source"),
+                      "--qa-run", str(root), "--env-file", str(root / ".env"),
+                      "--baseline", str(baseline), "--output", str(output), "--count", "3",
+                      "--workers", "1"]
+            items = [{"qa": {"id": f"q{i}", "type": "constraint_followthrough"}} for i in range(3)]
+            roots = []
+
+            def construct(item, task_root, *args, **kwargs):
+                task_root = Path(task_root)
+                self.assertFalse(task_root.exists())
+                roots.append(task_root.name)
+                save(task_root / "author-reference/qa.json", item["qa"])
+                raise RuntimeError("provider unavailable")
+
+            with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=items), \
+                 patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \
+                 patch("dialogue_benchmark.task_eval.run.preflight_openhands_runtime"), \
+                 patch("dialogue_benchmark.task_eval.run.construct", side_effect=construct):
+                main(common)
+                manifest = read(output / "manifest.json")
+                self.assertEqual([row["qa_id"] for row in manifest["tasks"]], ["q0", "q1", "q2"])
+                manifest["tasks"][0]["status"] = "pending"
+                del manifest["tasks"][1]["qa_id"]
+                manifest["tasks"].pop()
+                save(output / "manifest.json", manifest)
+                (output / "task-04").mkdir()
+                roots.clear()
+                main(common + ["--resume"])
+            self.assertEqual(roots, ["task-05", "task-06", "task-07"])
+            resumed = read(output / "manifest.json")
+            self.assertEqual(resumed["tasks"][1]["qa_id"], "q1")
+            self.assertTrue((output / "task-03/author-reference/qa.json").exists())
+
+    def test_resume_does_not_repeat_rejected_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            pin_baseline(baseline)
+            output = root / "output"
+            common = ["--simulator-path", str(root), "--source-run", str(root / "source"),
+                      "--qa-run", str(root), "--env-file", str(root / ".env"),
+                      "--baseline", str(baseline), "--output", str(output), "--count", "1"]
+            item = {"qa": {"id": "q1", "type": "constraint_followthrough"}}
+            with patch("dialogue_benchmark.task_eval.run.qa_inputs", return_value=[item]), \
+                 patch("dialogue_benchmark.task_eval.run.configure", return_value={}), \
+                 patch("dialogue_benchmark.task_eval.run.preflight_openhands_runtime"), \
+                 patch("dialogue_benchmark.task_eval.run.construct", return_value=None) as construct:
+                main(common)
+                before = read(output / "manifest.json")
+                construct.reset_mock()
+                main(common + ["--resume"])
+                construct.assert_not_called()
+            self.assertEqual(read(output / "manifest.json")["tasks"], before["tasks"])
+
 
 if __name__ == "__main__":
     unittest.main()
