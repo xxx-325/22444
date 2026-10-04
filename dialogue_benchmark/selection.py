@@ -199,8 +199,29 @@ def _near_duplicate_candidate(left, right):
     """Broadly nominate a pair for review; never use this to delete it."""
     if left.get("qa_mode", "code") != right.get("qa_mode", "code"):
         return False
-    if not (_answer_sources(left) & _answer_sources(right)):
-        return False
+    shared_sources = _answer_sources(left) & _answer_sources(right)
+    shared_object = False
+    if not shared_sources:
+        # External-memory candidates can cite different public messages while
+        # asking about the same historical object. Let the bounded reviewer
+        # decide whether those are truly duplicate retrieval targets.
+        if left.get("qa_mode") != "memory":
+            return False
+        left_objects = {
+            token.casefold() for token in _SEMANTIC_TOKEN.findall(
+                "\n".join([left.get("question", ""), *_point_texts(left)]))
+            if token.casefold() not in _GENERIC_BLOCK_TOKENS
+            and re.search(r"\d", token)
+        }
+        right_objects = {
+            token.casefold() for token in _SEMANTIC_TOKEN.findall(
+                "\n".join([right.get("question", ""), *_point_texts(right)]))
+            if token.casefold() not in _GENERIC_BLOCK_TOKENS
+            and re.search(r"\d", token)
+        }
+        shared_object = bool(left_objects & right_objects)
+        if not shared_object:
+            return False
     left_time, left_phase = _time_scope(left)
     right_time, right_phase = _time_scope(right)
     if left_time and right_time and left_time.isdisjoint(right_time):
@@ -217,7 +238,8 @@ def _near_duplicate_candidate(left, right):
         left.get("question", ""), right.get("question", ""), threshold=.55)
     return bool((left_target and right_target
                  and _text_contains(left_target, right_target, threshold=.55))
-                or point_overlap or question_overlap)
+                or point_overlap or question_overlap
+                or (not shared_sources and shared_object))
 
 
 def _semantic_block_keys(question):
@@ -304,10 +326,12 @@ def near_duplicate_clusters(questions, max_size=4):
     for key, indexes in blocks.items():
         if len(indexes) <= max_size:
             small_blocks.append(indexes)
-        elif key[0] == "source":
-            # Candidate comparison requires shared answer evidence, so an
-            # oversized object block cannot add a valid pair that its source
-            # block does not already cover.
+        elif key[0] == "source" or (
+                key[0] == "object" and re.search(r"\d", key[1])):
+            # Source blocks and specific object blocks are reviewed through
+            # bounded windows. The latter matters for external-memory
+            # candidates whose public source IDs differ but whose retrieval
+            # target is the same.
             large_blocks.append((key, indexes))
     for indexes in small_blocks:
         for offset, left in enumerate(indexes):

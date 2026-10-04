@@ -165,6 +165,20 @@ class SelectionTests(unittest.TestCase):
         # candidate count instead of expanding to every source-sharing pair.
         self.assertLessEqual(len(reviewed_pairs), len(questions) * 4 * 4)
 
+    def test_memory_object_cluster_is_reviewed_even_with_distinct_sources(self):
+        left = question(
+            "left", "CG-04A cg-2200 HOLD 的记录原因",
+            "cg-2200 在 CG-04A 为 HOLD，原因是临时关闭。",
+            source="e200", mode="memory")
+        right = question(
+            "right", "CG-04A 复核时 cg-2200 应沿用的处置",
+            "cg-2200 在 CG-04A 仍为 HOLD，原因是临时关闭。",
+            source="e303", mode="memory")
+        clusters = near_duplicate_clusters([left, right])
+        self.assertEqual(
+            {item["id"] for cluster in clusters for item in cluster},
+            {"left", "right"})
+
     def test_failed_cluster_review_retains_every_candidate(self):
         left = question("left", "确认 Agent 时限", "Agent 最长 60 分钟")
         right = question("right", "确认 Agent 超时", "Agent 最长 60 分钟")
