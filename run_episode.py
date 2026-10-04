@@ -18,6 +18,9 @@ from dialogue_benchmark.episode_input import load_episode_manifest
 from dialogue_benchmark.collection import episode_usage
 
 
+MAX_QA_REQUEST_TIMEOUT = 600
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("simulator-path", "env-file", "output"):
@@ -137,7 +140,10 @@ def main(argv=None):
             "--model-request-chars", str(args.model_request_chars),
             "--allow-network",
             "--endpoint", endpoint, "--model", model["model"], "--key-env", model["key_env"],
-            "--request-timeout", str(model.get("request_timeout", DEFAULT_REQUEST_TIMEOUT)),
+            "--request-timeout", str(min(
+                model.get("request_timeout", DEFAULT_REQUEST_TIMEOUT),
+                MAX_QA_REQUEST_TIMEOUT,
+            )),
         ]
         if args.reuse_facts:
             qa_args += ["--reuse-facts", str(args.reuse_facts)]

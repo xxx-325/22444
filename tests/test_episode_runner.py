@@ -112,7 +112,7 @@ class EpisodeRunnerTests(unittest.TestCase):
             task_args = tasks.call_args.args[0]
             self.assertEqual(task_args[task_args.index("--model-request-chars") + 1], "96000")
             self.assertEqual(read(root / "run/pipeline.json")["parameters"]["model_request_chars"], 96000)
-            self.assertEqual(args[args.index("--request-timeout") + 1], "1800")
+            self.assertEqual(args[args.index("--request-timeout") + 1], "600")
             self.assertEqual(args[args.index("--reasoning-effort") + 1], "max")
             self.assertNotIn("--qa-mode", args)
             self.assertNotIn("--general-count", args)
