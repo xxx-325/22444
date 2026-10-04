@@ -2,6 +2,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,34 @@ from dialogue_benchmark.task_eval.runtime import ask_model, bounded_model_config
 
 
 class RequestTimeoutTests(unittest.TestCase):
+    def test_transport_closes_a_response_that_keeps_the_socket_alive(self):
+        class BlockingResponse:
+            def __init__(self):
+                self.closed = threading.Event()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, _limit):
+                self.closed.wait(1)
+                if self.closed.is_set():
+                    raise ConnectionError("closed by watchdog")
+                return b""
+
+            def close(self):
+                self.closed.set()
+
+        response = BlockingResponse()
+        with patch.dict("os.environ", {"BENCHMARK_API_KEY": "test-only"}), \
+                patch("dialogue_benchmark.llm.urllib.request.build_opener") as opener:
+            opener.return_value.open.return_value = response
+            with self.assertRaisesRegex(llm.ModelStageError, "timeout"):
+                llm.ChatClient("https://example.invalid", "test", timeout=0.01).ask("test", {})
+        self.assertTrue(response.closed.is_set())
+
     def test_transport_uses_configured_seconds_without_output_cap_or_retry(self):
         for kwargs, expected in (({}, 90), ({"timeout": 1800}, 1800), ({"timeout": 0.5}, 0.5)):
             with self.subTest(expected=expected), \

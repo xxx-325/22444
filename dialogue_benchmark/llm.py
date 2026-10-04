@@ -7,6 +7,7 @@ from copy import deepcopy
 import os
 import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -1895,9 +1896,26 @@ class ChatClient:
             receipt["reasoning_effort"] = self.reasoning_effort
         self.usage.append(receipt)
         started = time.monotonic()
+        timed_out = threading.Event()
         try:
             with urllib.request.build_opener(NoRedirect()).open(request, timeout=self.timeout) as response:
-                raw = response.read(4_000_001)
+                def close_response():
+                    timed_out.set()
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+
+                watchdog = threading.Timer(self.timeout, close_response)
+                watchdog.daemon = True
+                watchdog.start()
+                try:
+                    raw = response.read(4_000_001)
+                finally:
+                    watchdog.cancel()
+                if timed_out.is_set():
+                    receipt["status"] = "timeout"
+                    raise ModelStageError("timeout") from None
                 if len(raw) > 4_000_000:
                     raise ModelStageError("response_size_limit")
         except urllib.error.HTTPError as error:
@@ -1911,8 +1929,8 @@ class ChatClient:
             receipt["status"] = code
             raise ModelStageError(code) from None
         except (http.client.IncompleteRead, ConnectionError):
-            receipt["status"] = "connection_error"
-            raise ModelStageError("connection_error") from None
+            receipt["status"] = "timeout" if timed_out.is_set() else "connection_error"
+            raise ModelStageError(receipt["status"]) from None
         finally:
             receipt["elapsed_seconds"] = round(time.monotonic() - started, 3)
         try:
