@@ -673,6 +673,43 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertFalse(records[0]["accepted"])
         self.assertTrue(records[1]["accepted"])
 
+    def test_incomplete_reference_carries_candidate_into_next_repair(self):
+        results = [
+            dict(status="failed", cases=[dict(id="test_acceptance::test_feature",
+                                              status="failed", detail="first attempt")]),
+            dict(status="failed", cases=[dict(id="test_acceptance::test_feature",
+                                              status="failed", detail="first attempt")]),
+            dict(status="failed", cases=[dict(id="test_acceptance::test_feature",
+                                              status="failed", detail="baseline remains unmet")]),
+            dict(status="passed", cases=[dict(id="test_acceptance::test_feature",
+                                              status="passed", detail="")]),
+            dict(status="failed", cases=[dict(id="test_acceptance::test_feature",
+                                              status="failed", detail="baseline remains unmet")]),
+            dict(status="passed", cases=[dict(id="test_acceptance::test_feature",
+                                              status="passed", detail="")]),
+        ]
+        seen = []
+
+        def agent(root, *args, **kwargs):
+            if root.name == "reference-solver":
+                if root.parent.name == "construction-01":
+                    seen.append((root.parent.name, (root / "workspace/candidate/a.py").read_text()))
+                (root / "workspace/candidate/a.py").write_text("value = 2\n")
+                if root.parent.name == "construction-00":
+                    return self.fake_agent(root, *args, **kwargs) | {
+                        "status": "error", "error_code": "token_budget_exhausted"}
+            return self.fake_agent(root, *args, **kwargs)
+
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.repair_tests",
+                   return_value={"status": "ConversationExecutionStatus.FINISHED"}), \
+             patch("dialogue_benchmark.task_eval.run.review_task", return_value={"status": "clean"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=results):
+            receipt = construct(self.item, self.root, self.baseline,
+                                {"execution_image": "image"}, 1, {})
+        self.assertIsNotNone(receipt, read(self.root / "construction.json"))
+        self.assertEqual(seen, [("construction-01", "value = 2\n")])
+
     def test_failed_reference_at_revision_limit_never_runs_validator(self):
         receipt, checks = self.execute([{"status": "failed"}, {"status": "error"}])
         self.assertIsNone(receipt)

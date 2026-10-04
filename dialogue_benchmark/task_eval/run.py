@@ -601,7 +601,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                            solver_input((spec / "task.md").read_text(), reference_answer)
                            + reference_feedback, **agent_options)
         candidate = implementation / "workspace/candidate"
-        if agent_finished(solved):
+        # A solver can exhaust its request/token/runtime budget after saving a
+        # useful partial implementation.  Keep that workspace as the starting
+        # point for the next repair attempt; completion is still required for
+        # admission below, so this does not weaken the acceptance gate.
+        if candidate.is_dir():
             previous_reference = candidate
         record["reference_version"] = export_change(baseline, candidate, implementation)
         reference_checks = run_checks(candidate, spec, run / "reference-checks", config["execution_image"],
