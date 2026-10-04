@@ -7,7 +7,7 @@ import subprocess
 
 from ..llm import ModelStageError
 from .artifacts import read, save
-from .runtime import ask_model
+from .runtime import ask_model, bounded_model_config
 from .history import freeze_targets, write_contract_from_targets
 
 
@@ -55,7 +55,7 @@ class SelectionBudget:
         self.remaining()
         error = None
         try:
-            return ask_model(prompt, payload, config, output)
+            return ask_model(prompt, payload, bounded_model_config(config, self.agent_seconds), output)
         except Exception as exc:
             error = exc
             raise

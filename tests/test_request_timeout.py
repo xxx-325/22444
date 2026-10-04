@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from dialogue_benchmark import cli, llm
 from dialogue_benchmark.repository_probe import probe_candidate
-from dialogue_benchmark.task_eval.runtime import ask_model, configure
+from dialogue_benchmark.task_eval.runtime import ask_model, bounded_model_config, configure
 
 
 class RequestTimeoutTests(unittest.TestCase):
@@ -120,6 +120,14 @@ class RequestTimeoutTests(unittest.TestCase):
                 }).encode())
                 ask_model("test", {}, config, directory)
                 self.assertEqual(opener.return_value.open.call_args.kwargs, {"timeout": expected})
+
+    def test_bounded_model_config_keeps_original_config(self):
+        config = {"judge": {"request_timeout": 1800, "model": "judge"},
+                  "code": {"request_timeout": 1800}}
+        bounded = bounded_model_config(config, 1200)
+        self.assertEqual(bounded["judge"]["request_timeout"], 1200)
+        self.assertEqual(config["judge"]["request_timeout"], 1800)
+        self.assertIs(bounded["code"], config["code"])
 
     def configured(self, original, control):
         with patch.dict("sys.modules", {"simulator.episode": SimpleNamespace(load_environment=lambda _: None)}), \

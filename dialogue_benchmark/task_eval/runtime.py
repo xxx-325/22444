@@ -117,6 +117,27 @@ def ask_model(prompt, payload, config, output):
         save(output / "response-text.json", client.responses)
 
 
+def bounded_model_config(config, max_seconds):
+    """Return a config whose judge request cannot exceed a stage budget.
+
+    Provider transports commonly implement their timeout as socket inactivity;
+    a response that stays open can therefore outlive the host stage.  Keep the
+    caller's config immutable and lower only an overlong judge timeout.
+    """
+    if not isinstance(config, dict) or not isinstance(config.get("judge"), dict):
+        return config
+    judge = config["judge"]
+    configured = validate_request_timeout(judge.get("request_timeout", DEFAULT_REQUEST_TIMEOUT))
+    ceiling = validate_request_timeout(max_seconds)
+    bounded = min(configured, ceiling)
+    if bounded >= configured:
+        return config
+    bounded_config = dict(config)
+    bounded_config["judge"] = dict(judge)
+    bounded_config["judge"]["request_timeout"] = bounded
+    return bounded_config
+
+
 def review_checks(spec, baseline, candidate, changed_files, checks, config, output, budget):
     """Review saved tests and source changes without exploratory execution."""
     from .prompts import CHECKS_REVIEW
