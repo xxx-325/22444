@@ -333,17 +333,32 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
             }, client.usage if client is not None else []
 
     results = []
+    blocked = False
+    pending = {}
+    next_index = 0
     with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-        for start in range(0, len(tasks), workers):
-            batch = [future.result() for future in as_completed(
-                [pool.submit(run, task) for task in tasks[start:start + workers]])]
-            results.extend(batch)
-            if globally_blocked([error for row in batch for error in row[3].get("stage_errors", [])]):
-                for index, track, scope in tasks[start + workers:]:
-                    results.append((index, track, scope, {
-                        "facts": [], "stage_errors": [{"stage": "facts", "error_code": "global_blocker"}],
-                        "stage_status": {"facts": "not_submitted"}}, []))
+        # Keep the worker bound without waiting for a whole batch before
+        # refilling it.  This removes tail latency when one chunk is slower
+        # than the others while retaining fail-closed auth handling.
+        while pending or (next_index < len(tasks) and not blocked):
+            while not blocked and next_index < len(tasks) and len(pending) < workers:
+                task = tasks[next_index]
+                pending[pool.submit(run, task)] = task
+                next_index += 1
+            if not pending:
                 break
+            done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+            for future in done:
+                task = pending.pop(future)
+                row = future.result()
+                results.append(row)
+                if globally_blocked(row[3].get("stage_errors", [])):
+                    blocked = True
+        if blocked:
+            for index, track, scope in tasks[next_index:]:
+                results.append((index, track, scope, {
+                    "facts": [], "stage_errors": [{"stage": "facts", "error_code": "global_blocker"}],
+                    "stage_status": {"facts": "not_submitted"}}, []))
     merged = {"facts": [], "questions": [], "rejected": [], "usage": [],
               "stage_errors": [], "stage_status": [],
               "scopes": {track: [] for _, track, _ in tasks}}
