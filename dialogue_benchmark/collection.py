@@ -83,6 +83,23 @@ def _identifier(value):
     return value
 
 
+def _aggregate_status(statuses, empty="no_scenarios"):
+    """Collapse child outcomes without treating an empty set as success."""
+    statuses = list(statuses)
+    if not statuses:
+        return empty
+    if all(status == "completed" for status in statuses):
+        return "completed"
+    if any(status in {"failed", "stopped", "interrupted", "project_rejected",
+                      "scenario_rejected", "requirements_rejected",
+                      "dialogue_incomplete", "evaluation_failed", "partial_failure"}
+           for status in statuses):
+        return "partial_failure"
+    if any(status == "below_target" for status in statuses):
+        return "below_target"
+    return "partial_failure"
+
+
 def validate_plan(plan):
     if not plan.get("projects") or not plan.get("runtime_config"):
         raise ValueError("A runtime_config and fixed projects list are required")
@@ -400,15 +417,16 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     else outcomes[0] if len(outcomes) == 1
                     else "partial_failure" if "evaluation_failed" in outcomes
                     else "completed")
-            entry["status"] = ("completed" if all(
-                scenario.get("status") == "completed" for scenario in entry["scenarios"])
-                else "below_target" if any(
-                    scenario.get("status") == "below_target" for scenario in entry["scenarios"])
-                else "completed")
+            if entry["scenarios"]:
+                entry["status"] = _aggregate_status(
+                    scenario.get("status") for scenario in entry["scenarios"])
+            elif entry["status"] == "running":
+                entry["status"] = "no_scenarios"
         persist()
         if not state["usage"]["complete"]:
             raise RuntimeError("usage_incomplete")
-        state["status"] = "completed"
+        state["status"] = _aggregate_status(
+            project.get("status") for project in state["projects"])
     except BaseException as error:
         state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "stopped",
                      stop_reason=str(error), error_type=type(error).__name__)

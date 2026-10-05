@@ -3,12 +3,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, episode_usage,
-                                            run_collection, validate_plan)
+from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_status,
+                                            episode_usage, run_collection, validate_plan)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_empty_child_statuses_are_not_success(self):
+        self.assertEqual(_aggregate_status([]), "no_scenarios")
+        self.assertEqual(_aggregate_status(["project_rejected"]), "partial_failure")
+        self.assertEqual(_aggregate_status(["completed", "below_target"]), "below_target")
+        self.assertEqual(_aggregate_status(["completed", "evaluation_failed"]), "partial_failure")
+
     def test_default_task_workers_allow_independent_tasks_to_run_in_parallel(self):
         self.assertEqual(EVALUATION_DEFAULTS["parallel_workers"], 6)
         self.assertEqual(EVALUATION_DEFAULTS["task_workers"], 2)
