@@ -88,7 +88,9 @@ def _aggregate_status(statuses, empty="no_scenarios"):
     statuses = list(statuses)
     if not statuses:
         return empty
-    if all(status == "completed" for status in statuses):
+    # ``qa_only`` is a successful terminal route: it deliberately skips
+    # repository tasks and paired execution while still producing QA.
+    if all(status in {"completed", "qa_only"} for status in statuses):
         return "completed"
     if any(status in {"failed", "stopped", "interrupted", "project_rejected",
                       "scenario_rejected", "requirements_rejected",

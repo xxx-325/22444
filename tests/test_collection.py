@@ -14,6 +14,8 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(_aggregate_status(["project_rejected"]), "partial_failure")
         self.assertEqual(_aggregate_status(["completed", "below_target"]), "below_target")
         self.assertEqual(_aggregate_status(["completed", "evaluation_failed"]), "partial_failure")
+        self.assertEqual(_aggregate_status(["qa_only"]), "completed")
+        self.assertEqual(_aggregate_status(["qa_only", "completed"]), "completed")
 
     def test_default_task_workers_allow_independent_tasks_to_run_in_parallel(self):
         self.assertEqual(EVALUATION_DEFAULTS["parallel_workers"], 6)
