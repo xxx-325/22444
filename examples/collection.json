@@ -14,7 +14,8 @@
           "id": "customer-workflow",
           "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work. Across the six increments, create about twenty distinct public external facts, each tied to a real action, result, or correction.",
           "external_fact_target": 20,
-          "memory_kinds": ["M1", "M2", "M3", "M6"]
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "运行在固定的 Python 3.12 标准库环境中；只有公开工具结果实际显示的运行差异、失败或修正才作为历史信息。"
         }
       ]
     }
