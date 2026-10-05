@@ -20,6 +20,13 @@ from .history import (prepare_history, freeze_contract, historical_context, read
                       write_contract_from_targets, review_sources, qualified_oracle_complete)
 from .selection import SelectionBudget, select_task, write_draft, write_private_draft
 
+_FROZEN_ACCEPTANCE_FIELDS = ("id", "requirement", "basis", "check")
+
+
+def acceptance_signature(rows):
+    return [{key: row[key] for key in _FROZEN_ACCEPTANCE_FIELDS} for row in rows]
+
+
 def solver_input(task, answer=None):
     message = prompts.SOLVER + "\n\n" + task
     if answer is not None:
@@ -248,8 +255,7 @@ def load_preparation(attempt, item, baseline, public_history):
            for name in protected):
         raise ValueError("Prepared task changed after qualification")
     def requirements(directory):
-        return [{key: row[key] for key in ("id", "requirement", "basis")}
-                for row in acceptance_items(directory, history)]
+        return acceptance_signature(acceptance_items(directory, history))
     if requirements(spec) != requirements(attempt / "qualified-draft"):
         raise ValueError("Prepared acceptance requirements changed")
     return read(task / "selection/result.json"), authored, spec
@@ -380,7 +386,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                              + (("oracle-answer.json",) if item.get("qa_source") == "external" else ())}
                 reviewed_task, reviewed_answer = protected["task.md"], answer_text(item["qa"])
                 if fixed_qualification is not None:
-                    requirements = [{k: r[k] for k in ("id", "requirement", "basis")} for r in draft_items]
+                    requirements = acceptance_signature(draft_items)
                     if (protected != fixed_qualification["protected"]
                             or requirements != fixed_qualification["requirements"]):
                         raise ValueError("qualified_draft_changed")
@@ -433,7 +439,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                     decision = dict(decision, status="uncertain", issue="historical_answer_not_verified")
                     save(run / "task-review/result.json", decision)
                 gate_state.update(review=decision, protected=protected, history=draft_history, answer=reviewed_answer,
-                                  requirements=[{k: r[k] for k in ("id", "requirement", "basis")} for r in draft_items])
+                                  requirements=acceptance_signature(draft_items))
                 copy_tree(spec, run / "qualified-draft")
                 return decision
             except (ValueError, KeyError, OSError) as error:
@@ -580,7 +586,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             break
         try:
             items = acceptance_items(spec, history)
-            if [{k: r[k] for k in ("id", "requirement", "basis")} for r in items] != gate_state["requirements"]:
+            if acceptance_signature(items) != gate_state["requirements"]:
                 raise ValueError("Qualified acceptance requirements changed during test construction")
             save(spec / "acceptance.json", items)
         except ValueError as error:
@@ -991,6 +997,36 @@ def validate_resume(manifest, expected, selected, output, baseline):
     return identities
 
 
+def recover_orphan_tasks(manifest, selected, output):
+    """Register task directories written before their manifest row was saved."""
+    output = Path(output)
+    known = {row.get("task") for row in manifest.get("tasks", [])}
+    known_qa = {row.get("qa_id") for row in manifest.get("tasks", [])}
+    selected_by_id = {item["qa"]["id"]: item for item in selected}
+    for root in sorted(output.glob("task-*")):
+        if root.name in known:
+            continue
+        saved = root / "author-reference/qa.json"
+        if not saved.is_file():
+            continue
+        try:
+            qa_id = read(saved).get("id")
+        except (OSError, ValueError, TypeError):
+            continue
+        if qa_id not in selected_by_id or qa_id in known_qa:
+            continue
+        item = selected_by_id[qa_id]
+        manifest.setdefault("tasks", []).append({
+            "task": root.name,
+            "status": "pending",
+            "qa_id": qa_id,
+            "type": item["qa"].get("type"),
+            "recovered_orphan": True,
+        })
+        known.add(root.name)
+        known_qa.add(qa_id)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("simulator-path", "source-run", "qa-run", "env-file", "output"):
@@ -1097,6 +1133,7 @@ def main(argv=None):
                 "config_sha256": config_sha256, "selected_inputs_sha256": selected_inputs_sha256}
     if args.resume:
         manifest = existing_manifest
+        recover_orphan_tasks(manifest, selected, output)
         identities = validate_resume(manifest, expected_manifest, selected, output, baseline)
         for row in manifest["tasks"]:
             if row.get("qa_id") is None:

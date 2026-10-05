@@ -4,11 +4,28 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark.task_eval.artifacts import fingerprint, read, save
-from dialogue_benchmark.task_eval.run import evaluate, main, validate_resume
+from dialogue_benchmark.task_eval.run import evaluate, main, recover_orphan_tasks, validate_resume
 from dialogue_benchmark.task_eval.versions import pin_baseline
 
 
 class TaskResumeTests(unittest.TestCase):
+    def test_resume_registers_orphan_with_saved_qa_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            orphan = output / "task-04/author-reference"
+            orphan.mkdir(parents=True)
+            save(orphan / "qa.json", {"id": "q1", "type": "M6"})
+            manifest = {"tasks": []}
+            selected = [{"qa": {"id": "q1", "type": "M6"}}]
+            recover_orphan_tasks(manifest, selected, output)
+            self.assertEqual(manifest["tasks"], [{
+                "task": "task-04",
+                "status": "pending",
+                "qa_id": "q1",
+                "type": "M6",
+                "recovered_orphan": True,
+            }])
+
     def test_resume_rejects_changed_config_before_writing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
