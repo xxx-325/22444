@@ -77,6 +77,15 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(budget.requests, 2)
         self.assertEqual(budget.remaining()["max_tokens"], 1500000 - 24)
 
+    def test_query_then_candidate_accepts_chinese_source_separators(self):
+        result, budget = self.run_selection([
+            self.query(op="read", target="repo", path="api.py"),
+            dict(decision="candidate", reason="New feature uses historical rule",
+                 sources="qa、query1")])
+        self.assertEqual(result["status"], "candidate")
+        self.assertEqual(result["query_count"], 1)
+        self.assertEqual(budget.requests, 2)
+
     def test_qa_workflow_is_direction_not_a_new_source_of_history(self):
         direction = "增加批量交付恢复：确认状态 → 恢复交付 → 汇总结果"
         payloads = []
@@ -235,6 +244,18 @@ class SelectionTests(unittest.TestCase):
             "inspect: output contains `id=a1 \\| status=ready` |\n")
         items = acceptance_items(spec)
         self.assertEqual(items[0]["check"], "inspect: output contains `id=a1 | status=ready")
+
+    def test_acceptance_preserves_an_unescaped_pipe_in_requirement(self):
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        spec = self.root / "unescaped-requirement-pipe"
+        spec.mkdir()
+        (spec / "acceptance.md").write_text(
+            "| ID | Requirement | Basis | Check |\n"
+            "|---|---|---|---|\n"
+            "| a1 | Return type is str | None | task | "
+            "inspect: read the returned value and confirm it is usable |\n")
+        items = acceptance_items(spec)
+        self.assertEqual(items[0]["requirement"], "Return type is str | None")
 
     def test_external_private_author_can_decline_without_changing_public_task(self):
         selection = dict(qa_source="external", historical_answer="Historical answer", public={})

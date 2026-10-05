@@ -11,6 +11,7 @@ import time
 from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs, read, save, write_diff
 from .checks import (run_checks, acceptance_items, acceptance_has_inspect,
+                     _acceptance_row_cells,
                      assess_acceptance, check_history_mutations, _inspect_command_cases)
 from .metrics import compare_trials
 from .runtime import (bounded_model_config, configure, preflight_openhands_runtime,
@@ -203,8 +204,7 @@ def validated_spec(spec, validator_checks, output, *, allow_new_tests=True):
     acceptance = Path(output) / "acceptance.md"
     if acceptance.is_file():
         for line in acceptance.read_text(encoding="utf-8").splitlines():
-            cells = [cell.strip().strip("`")
-                     for cell in line.strip().strip("|").split("|")]
+            cells = _acceptance_row_cells(line)
             if (len(cells) == 4 and cells[0].lower().startswith("a")
                     and acceptance_has_inspect(cells[3].strip())):
                 inspect_ids.append(cells[0].lower())

@@ -107,7 +107,29 @@ def _acceptance_row_cells(line):
         if char != "\\":
             escaped = False
     cells.append("".join(current).strip())
-    return [cell.replace("\\|", "|").strip("`").strip() for cell in cells]
+    cells = [cell.replace("\\|", "|").strip("`").strip() for cell in cells]
+    # A model may forget to escape a pipe in the requirement text (for example
+    # ``str | None``).  The table still has an unambiguous first two columns
+    # and final Check column, so fold the extra middle cells back into
+    # Requirement instead of rejecting an otherwise usable acceptance row.
+    if (len(cells) > 4 and cells
+            and re.fullmatch(r"a\d+", cells[0], re.IGNORECASE)):
+        basis_index = next(
+            (index for index in range(2, len(cells) - 1)
+             if re.fullmatch(r"(?:task|answer|h\d+)(?:\s*,\s*(?:answer|h\d+))*",
+                             cells[index], re.IGNORECASE)),
+            None,
+        )
+        if basis_index is not None and basis_index > 2:
+            cells = [
+                cells[0],
+                " | ".join(cells[1:basis_index]),
+                cells[basis_index],
+                cells[-1],
+            ]
+        elif basis_index is None:
+            cells = cells[:2] + [" | ".join(cells[2:-1])] + [cells[-1]]
+    return cells
 
 
 def acceptance_items(spec, history=None):

@@ -15,6 +15,14 @@ from .metrics import cache_usage
 MAX_SELECTION_REQUEST_SECONDS = 600
 
 
+def _source_tokens(value):
+    """Parse the small source list used by selector decisions."""
+    if value is None:
+        return []
+    return [item.strip() for item in re.split(r"[,，、]", str(value))
+            if item.strip() and item.strip().casefold() != "none"]
+
+
 class SelectionBudget:
     """Share request/token limits; each agent retains its execution timeout."""
 
@@ -383,7 +391,7 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
             action, reason = decision.get("decision"), decision.get("reason")
             if action not in {"stop", "candidate", "need_evidence", "pending"} or not isinstance(reason, str) or not reason.strip():
                 raise ValueError("Invalid selection decision")
-            refs = [s.strip() for s in str(decision.get("sources", "none")).split(",") if s.strip() != "none"]
+            refs = _source_tokens(decision.get("sources", "none"))
             request_value = decision.get("request", "none")
             if action in {"candidate", "pending"} and request_value != "none":
                 # A useful candidate with one unresolved read is not a format
