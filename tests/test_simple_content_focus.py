@@ -370,6 +370,25 @@ class AdministrativeMetadataGateTests(unittest.TestCase):
         )
         self.assertIsNone(administrative_metadata_only_reason(candidate))
 
+    def test_parameter_or_patch_receipt_without_behavior_is_rejected(self):
+        for question, answers in (
+            (
+                "新增的 capacity_units 相对于 required_tags 位于什么位置？",
+                ["capacity_units 位于 required_tags 之后。"],
+            ),
+            (
+                "那次补丁调用替换了什么，返回状态是什么？",
+                ["str_replace 插入了 check_zone 函数。",
+                 "返回记录为 File updated successfully。"],
+            ),
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(
+                    administrative_metadata_only_reason(
+                        self.candidate(question, answers)),
+                    "administrative_metadata_only",
+                )
+
     def test_static_gate_does_not_assign_an_unresolved_type(self):
         scope = {"cutoff": 1, "dialogue": [{
             "id": "e1", "kind": "message", "role": "user", "text": "记录"
