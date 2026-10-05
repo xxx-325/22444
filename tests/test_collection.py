@@ -226,6 +226,9 @@ class CollectionTests(unittest.TestCase):
             self.assertTrue(result["qa_only"])
             self.assertEqual([s["evaluations"]["external"]["published_qa"]
                               for s in result["projects"][0]["scenarios"]], [1, 1])
+            self.assertEqual(result["projects"][0]["status"], "completed")
+            self.assertEqual([s["status"] for s in result["projects"][0]["scenarios"]],
+                             ["qa_only", "qa_only"])
             self.assertFalse(any((root / "run").glob("planner/*/evaluation/tasks")))
             report = (root / "run/collection.md").read_text()
             self.assertIn("Not scheduled", report)
@@ -314,6 +317,8 @@ class CollectionTests(unittest.TestCase):
                 self.assertEqual(scene["status"], "partial_failure")
                 self.assertEqual(scene["evaluations"]["external"]["status"], "evaluation_failed")
                 self.assertEqual(scene["evaluations"]["graph"]["status"], "qa_only")
+            self.assertEqual(result["projects"][0]["status"], "partial_failure")
+            self.assertEqual(result["status"], "partial_failure")
 
     def test_invalid_route_selection_is_rejected_before_execution(self):
         with tempfile.TemporaryDirectory() as directory:
