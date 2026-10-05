@@ -20,16 +20,21 @@ def write_report(output, manifest):
              "|---|---|---|---|---|---|---|---|---|"]
     if manifest.get("selection_only"):
         lines = ["# Controlled task selection", "", "No OpenHands agents or paired trials were started.", "",
-                 "| Task | QA | Outcome | Queries | Requests | Tokens |", "|---|---|---|---|---|---|"]
+                 "| Task | QA | Outcome | Queries | Requests | Tokens | Cache hit / rate |",
+                 "|---|---|---|---|---|---|---|"]
         for task in tasks:
             root = output / task["task"]
             def saved(name):
                 path = root / name
                 return json.loads(path.read_text()) if path.exists() else {}
             budget, selection = saved("selection-budget.json"), saved("selection/result.json")
-            lines.append("| %s | %s | %s | %s | %s | %s |" % (
+            cache = (str(budget.get("cache_hit_tokens")) + " / " +
+                     ("%.1f%%" % (100 * budget["cache_hit_rate"])
+                      if budget.get("cache_usage_complete") and budget.get("cache_hit_rate") is not None
+                      else "unavailable"))
+            lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
                 task["task"], task.get("qa_id", ""), task["status"], selection.get("query_count", "—"),
-                budget.get("requests", "—"), budget.get("total_tokens", "—")))
+                budget.get("requests", "—"), budget.get("total_tokens", "—"), cache))
             lines += ["", "- %s: %s" % (task["task"], selection.get("reason", "Not saved")),
                       "- [Saved decisions and queries](%s/selection/result.json)" % task["task"], ""]
         (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
