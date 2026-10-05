@@ -48,6 +48,55 @@ _FLOW_ACTION_POINT = re.compile(
     r"设置|插入|展开|捕获|抛出|返回|导致|使|=timeout_seconds", re.I)
 _SIGNATURE_REQUEST = re.compile(r"签名|形参|参数定义|默认值|声明", re.I)
 
+# These details can be useful as supporting evidence, but an isolated question
+# about them is not a useful memory target.  Keep this gate deliberately narrow:
+# it rejects a candidate only when every public point is administrative metadata
+# and the question does not describe a historical behavior, correction, or
+# implementation consequence.
+_ADMINISTRATIVE_METADATA = (
+    re.compile(r"(?:文件|目录|根目录).*(?:清单|列表|包含)|(?:清单|列表).*(?:文件|目录)|"
+               r"(?:字节|文件大小|目录大小)|\.pyc|缓存文件", re.I),
+    re.compile(r"(?:测试|pytest|unittest).*(?:通过数|数量|passed|计数)|"
+               r"(?:通过数|passed|测试数量)", re.I),
+    re.compile(r"(?:退出码|返回码|exit\s*code|标准输出|命令.*(?:输出|退出))", re.I),
+    re.compile(r"(?:导入区|导入语句|import).*(?:顺序|之后|之前)|"
+               r"(?:顺序|之后|之前).*(?:import|导入)", re.I),
+    re.compile(r"(?:str_replace|补丁记录|替换.*内容|内容.*替换).*(?:一致|成功|状态)|"
+               r"(?:返回记录|执行状态).*(?:成功|updated)", re.I),
+    re.compile(r"(?:参数|形参).*(?:位置|位于|之后|之前)|"
+               r"(?:位置|位于).*(?:参数|形参)", re.I),
+)
+_HISTORICAL_CONSEQUENCE = re.compile(
+    r"(?:之前|后来|随后|调整|修改|变更|修复|纠正|失败|报错|异常|约定|兼容|"
+    r"保留|行为|规则|条件|原因|影响|应当|不应|为什么|导致|解决|验证.*(?:行为|结果))",
+    re.I,
+)
+
+
+def administrative_metadata_only_reason(question):
+    """Return a static rejection reason for isolated operational metadata.
+
+    This is intentionally a post-generation quality filter, not a semantic
+    classifier.  Mixed questions and questions tied to a historical consequence
+    remain eligible for the normal review path.
+    """
+    if not isinstance(question, dict):
+        return None
+    points = list(question.get("answer_points") or []) + list(
+        question.get("forbidden_points") or [])
+    texts = [question.get("question", "")]
+    texts.extend(point.get("text", "") for point in points
+                 if isinstance(point, dict))
+    texts = [text for text in texts if isinstance(text, str) and text.strip()]
+    if not points or not texts:
+        return None
+    if not all(any(pattern.search(text) for pattern in _ADMINISTRATIVE_METADATA)
+               for text in texts[1:]):
+        return None
+    if _HISTORICAL_CONSEQUENCE.search(texts[0]):
+        return None
+    return "administrative_metadata_only"
+
 
 def _has_unsupported_temporal_reference(text):
     return bool(isinstance(text, str) and _UNSUPPORTED_TEMPORAL_REFERENCE.search(

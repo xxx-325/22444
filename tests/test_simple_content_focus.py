@@ -11,7 +11,10 @@ from dialogue_benchmark.llm import (
     generate_from_facts,
     parse_text_response,
 )
-from dialogue_benchmark.quality import validate_simple_candidates
+from dialogue_benchmark.quality import (
+    administrative_metadata_only_reason,
+    validate_simple_candidates,
+)
 
 
 class ScriptedClient:
@@ -336,6 +339,50 @@ class SimpleTemporalReferenceTests(unittest.TestCase):
         self.assertIn("同一个对象从旧值改为新值是一条", prompt)
         self.assertIn("一个条件导致一个结果是一条", prompt)
         self.assertIn("A relation never proves cause", prompt)
+
+
+class AdministrativeMetadataGateTests(unittest.TestCase):
+    @staticmethod
+    def candidate(question, answers):
+        return {
+            "question": question,
+            "answer_points": [
+                {"text": answer, "sources": ["e1"]} for answer in answers
+            ],
+            "forbidden_points": [],
+        }
+
+    def test_isolated_operational_metadata_is_rejected(self):
+        candidate = self.candidate(
+            "两次结果的测试通过数、文件大小和目录清单是否一致？",
+            ["两次结果均为 83 passed。", "dispatch.py 均为 13040 字节。",
+             "根目录清单包含 dispatch.py 和 tests。"],
+        )
+        self.assertEqual(
+            administrative_metadata_only_reason(candidate),
+            "administrative_metadata_only",
+        )
+
+    def test_causal_history_with_an_operational_detail_is_kept(self):
+        candidate = self.candidate(
+            "修复不可行线路的错误汇总后，报告行为应如何变化？",
+            ["每条不可行线路只保留首个错误。"],
+        )
+        self.assertIsNone(administrative_metadata_only_reason(candidate))
+
+    def test_static_gate_does_not_assign_an_unresolved_type(self):
+        scope = {"cutoff": 1, "dialogue": [{
+            "id": "e1", "kind": "message", "role": "user", "text": "记录"
+        }]}
+        facts = [{"id": "f1", "sources": ["e1"]}]
+        candidate = self.candidate(
+            "代码中发生了什么历史行为？", ["记录了一个行为。"])
+        accepted, rejected = validate_simple_candidates(
+            {"questions": [dict(candidate, id="q1")]}, facts, scope,
+            qa_mode="general")
+        self.assertEqual(len(accepted), 1)
+        self.assertFalse(rejected)
+        self.assertNotIn("type", accepted[0])
 
 
 if __name__ == "__main__":

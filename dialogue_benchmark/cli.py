@@ -26,7 +26,8 @@ from .llm import (ChatClient, DEFAULT_REQUEST_TIMEOUT, validate_request_timeout,
                   stage_error)
 from .normalize import load_dialogue
 from .protocol import MISSING_KINDS, MEMORY_TYPES
-from .quality import CODE_QA_TYPES, GENERAL_QA_TYPES
+from .quality import (CODE_QA_TYPES, GENERAL_QA_TYPES,
+                      administrative_metadata_only_reason)
 from .security import credential_detected
 from .storage import save_projection
 from .subgraph import adaptive_subgraphs
@@ -740,7 +741,15 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         question["evidence_group_id"] = group.get(
                             "id", "%s-group-%d" % (track, index))
                         check = checks.get(chosen) if chosen else None
-                        if target_type is not None and (chosen is None or (
+                        metadata_reason = administrative_metadata_only_reason(question)
+                        if metadata_reason:
+                            static_post_rejected.append({
+                                "question": dict(question, status="rejected"),
+                                "reason": metadata_reason,
+                                "failed_checks": ["useful_historical_target"],
+                                "stage": "static_quality",
+                            })
+                        elif target_type is not None and (chosen is None or (
                                 check is not None and check.get("status") == "insufficient")):
                             static_post_rejected.append({
                                 "question": dict(question, status="rejected"),
@@ -781,7 +790,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         return ((projected_group or active_group)["scope"],
                                 guard_audit)
                     already_reviewed = False
-                    if not type_questions:
+                    if not type_questions and validation_rejected:
                         repaired = repair_simple_validation_rejection(
                             active_group["scope"], active_group["facts"],
                             validation_rejected, client, qa_mode=track,
@@ -799,6 +808,23 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                                 reviewed_questions = list(
                                     revised.get("questions", []))
                                 type_questions = list(reviewed_questions)
+                                filtered_questions = []
+                                for revised_question in type_questions:
+                                    metadata_reason = administrative_metadata_only_reason(
+                                        revised_question)
+                                    if metadata_reason:
+                                        type_rejected.append({
+                                            "question": dict(revised_question,
+                                                             status="rejected"),
+                                            "reason": metadata_reason,
+                                            "failed_checks": [
+                                                "useful_historical_target"],
+                                            "stage": "static_quality",
+                                        })
+                                    else:
+                                        filtered_questions.append(revised_question)
+                                reviewed_questions = filtered_questions
+                                type_questions = filtered_questions
                                 type_rejected.extend(
                                     dict(item, stage="semantic_review")
                                     for item in revised.get("rejected", []))

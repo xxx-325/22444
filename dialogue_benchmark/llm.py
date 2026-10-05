@@ -1252,12 +1252,17 @@ MISSING_OBJECT: 原文中精确的路径或符号，不是资料编号
 
 SIMPLE_UNTYPED_DEFINITION = """从选定证据中选择一个清晰、可由这些材料单独回答的历史目标。
 优先选择涉及具体对象、版本、修改、失败、测试、纠正、验证或它们之间关系的信息；不要只问文件清单、当前签名或泛泛主题。
+不要把测试数量、字节数、目录清单、退出码、导入顺序、补丁成功回执或参数相对位置单独作为目标；只有它们直接解释一个历史行为、失败修正或后续实现选择时才保留。
 如果材料同时支持多个方向，只选择其中一个最清楚、最有实际用途的方向。不要输出题型、难度或分类。"""
 
 SIMPLE_CODE_QA_RULES = """
 Use recorded history to answer one concrete question about an implementation decision,
 diagnosis, validation result, or historical behavior. A current-code fact, signature,
 directory inventory, or ordinary language semantics alone is not a memory question.
+Do not ask only for test counts, byte sizes, directory listings, exit codes, import order,
+patch-success receipts, or relative argument positions. Keep such details only when they
+are necessary to explain a failure, correction, runtime behavior, compatibility rule,
+or a concrete future implementation choice.
 Keep actual code and test conditions.
 Do not turn a document rule into an executed code behavior.
 """
