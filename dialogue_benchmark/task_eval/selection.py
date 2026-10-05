@@ -9,6 +9,7 @@ from ..llm import ModelStageError
 from .artifacts import read, save
 from .runtime import ask_model, bounded_model_config
 from .history import freeze_targets, write_contract_from_targets
+from .metrics import cache_usage
 
 
 MAX_SELECTION_REQUEST_SECONDS = 600
@@ -24,6 +25,7 @@ class SelectionBudget:
         self.agent_seconds = options.get("max_seconds", 1200)
         self.requests = self.prompt_tokens = self.completion_tokens = 0
         self.usage_complete = True
+        self._cache_rows = []
 
     def remaining(self):
         if not self.usage_complete:
@@ -50,9 +52,12 @@ class SelectionBudget:
             self.usage_complete &= "prompt_tokens" in row and "completion_tokens" in row
             self.prompt_tokens += row.get("prompt_tokens", 0)
             self.completion_tokens += row.get("completion_tokens", 0)
+            if row.get("request_count", 1) != 0 or "prompt_tokens" in row or "completion_tokens" in row:
+                self._cache_rows.append(row)
+        cache = cache_usage(self._cache_rows)
         save(self.root / "selection-budget.json", dict(requests=self.requests,
              prompt_tokens=self.prompt_tokens, completion_tokens=self.completion_tokens,
-             total_tokens=self.tokens, usage_complete=self.usage_complete))
+             total_tokens=self.tokens, usage_complete=self.usage_complete, **cache))
 
     def call(self, prompt, payload, config, output):
         self.remaining()
@@ -300,16 +305,25 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
     sources = [{"source": e.get("source", e["id"]), "role": e.get("role"),
                 "answer_source": e["id"] in cited}
                for e in focus]
-    state = {"qa": {k: qa[k] for k in ("question", "answer_points", "type") if k in qa},
-             "history_sources": sources, "queries": [],
-             "repository_overview": repository_overview(baseline),
-             "repository_exploration": exploration or "",
-             "repository_entries": sorted(p.name + ("/" if p.is_dir() else "")
-                                          for p in Path(baseline).iterdir() if not p.name.startswith("."))}
-    if workflow:
-        state["development_workflow"] = workflow
-    if feedback:
-        state["rejected_draft"] = feedback
+    # Keep the stable part of this state before the per-turn query history.
+    # DeepSeek's prefix cache matches from token zero; putting the growing
+    # query log (and turn-specific choices) first would invalidate the useful
+    # prefix on every evidence request.
+    state = {
+        "qa": {k: qa[k] for k in ("question", "answer_points", "type") if k in qa},
+        "history_sources": sources,
+        "repository_overview": repository_overview(baseline),
+        "repository_exploration": exploration or "",
+        "repository_entries": sorted(
+            p.name + ("/" if p.is_dir() else "")
+            for p in Path(baseline).iterdir()
+            if not p.name.startswith(".")
+        ),
+        "development_workflow": workflow or "",
+        "rejected_draft": feedback or "",
+        "queries": [],
+        "turn_context": {},
+    }
     seen = set()
     known = {"qa"}
     if state["repository_exploration"]:
@@ -323,12 +337,24 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
         while True:
             step = output / ("step-%03d" % len(state["queries"]))
             allowed = "need_evidence, stop, pending" if not state["queries"] else "need_evidence, candidate, stop, pending"
-            duplicate_note = ("\n上一轮查询已经执行并保存在 queries 中；不要重复相同的查询，"
-                              "零匹配也不要重复原文字查找。\n" if state["queries"] else "")
-            response = budget.call(SELECT_TASK + duplicate_note + "\n本轮可选 decision 只有：" + allowed +
-                                   "。若仓库还没读过，请先查入口或说明文档。\n"
-                                   "已提供内容、可支持最终结论的 SOURCES：" + ",".join(sorted(known)) +
-                                   "。索引中其余来源只可请求读取，不能引用其内容。", state, config, step)
+            state["turn_context"] = {
+                "allowed_decisions": allowed.split(", "),
+                "repository_read_hint": "若仓库还没读过，请先查入口或说明文档。",
+                "duplicate_query_rule": (
+                    "上一轮查询已经执行并保存在 queries 中；不要重复相同的查询，"
+                    "零匹配也不要重复原文字查找。"
+                    if state["queries"] else ""
+                ),
+                "available_sources": sorted(known),
+            }
+            response = budget.call(
+                SELECT_TASK
+                + "\n本轮决定、查询去重规则和可引用来源见 DATA.turn_context；"
+                  "只按其中约束作答，不要输出 JSON。\n",
+                state,
+                config,
+                step,
+            )
             rows = response.get("reviews", [])
             if len(rows) != 1:
                 raise ValueError("Expected one selection decision")

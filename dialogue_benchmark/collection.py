@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from .task_eval.artifacts import read, save
+from .task_eval.metrics import cache_usage
 
 EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=2, task_workers=1, revisions=3,
@@ -18,6 +19,7 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
 
 
 def sum_usage(rows):
+    rows = list(rows)
     result = dict(requests=0, prompt_tokens=0, completion_tokens=0,
                   transient_failures=0, complete=True)
     for row in rows:
@@ -31,6 +33,7 @@ def sum_usage(rows):
         result["complete"] &= not bool(row.get("usage_missing") or row.get("pending"))
         result["complete"] &= row.get("complete", row.get("usage_complete", True))
     result["total_tokens"] = result["prompt_tokens"] + result["completion_tokens"]
+    result.update(cache_usage(rows))
     return result
 
 

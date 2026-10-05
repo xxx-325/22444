@@ -170,15 +170,28 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
                           "cases": [{"id": case["id"], "status": case["status"]}
                                     for case in result.get("cases", [])]}
                     for role, result in checks.items()}
-        payload = {"criteria_and_tests": files, "changed_sources": sources, "executed_checks": outcomes}
-        payload["business_inputs"] = {path.relative_to(baseline).as_posix(): path.read_text()
-                                      for path in _repository_files(baseline, BUSINESS_DATA_SUFFIXES)}
+        business_inputs = {
+            path.relative_to(baseline).as_posix(): path.read_text()
+            for path in _repository_files(baseline, BUSINESS_DATA_SUFFIXES)
+        }
+        execution_context = ""
         if frozen_regression:
-            payload["execution_context"] = (
+            execution_context = (
                 "Before check execution, the host replaces /workspace/candidate/tests in a disposable "
                 "candidate copy with frozen regression/tests, so commands targeting that directory "
                 "(such as existing_suite.sh) execute the frozen tests and candidate changes under "
-                "tests/ are not part of the scored suite.")
+                "tests/ are not part of the scored suite."
+            )
+        # The repository/business context is stable across repair attempts;
+        # criteria, diffs, and outcomes are the changing suffix.  This keeps
+        # the large common prefix eligible for provider KV-cache reuse.
+        payload = {
+            "business_inputs": business_inputs,
+            "execution_context": execution_context,
+            "criteria_and_tests": files,
+            "changed_sources": sources,
+            "executed_checks": outcomes,
+        }
         response = budget.call(CHECKS_REVIEW, payload, config, output)
         rows = response.get("reviews", [])
         expected = {row["id"] for row in criteria} | {"tests"}
@@ -344,15 +357,18 @@ def repair_tests(spec, baseline, config, output, budget, feedback, private_memor
 
 def file_generation_result(output, result):
     """Keep direct file-generation usage separate from OpenHands trajectories."""
+    from .metrics import cache_usage
     output = Path(output)
     usage = read(output / "usage.json") if (output / "usage.json").exists() else []
     prompt_tokens = sum(row.get("prompt_tokens", 0) for row in usage)
     completion_tokens = sum(row.get("completion_tokens", 0) for row in usage)
-    result.update(method="model_file_generation", metrics={
+    metrics = {
         "attempted_requests": sum(row.get("request_count", 1) for row in usage),
         "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
-        "usage_complete": bool(usage) and all("prompt_tokens" in row and "completion_tokens" in row for row in usage)})
+        "usage_complete": bool(usage) and all("prompt_tokens" in row and "completion_tokens" in row for row in usage)}
+    metrics.update(cache_usage(usage))
+    result.update(method="model_file_generation", metrics=metrics)
     save(output / "result.json", result)
     return result
 

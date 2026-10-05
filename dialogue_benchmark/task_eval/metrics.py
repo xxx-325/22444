@@ -6,6 +6,59 @@ import json
 import re
 
 
+def cache_usage(rows):
+    """Summarize provider-reported prompt cache usage without guessing missing fields."""
+    rows = list(rows or [])
+    if not rows:
+        return {"cache_hit_tokens": None, "cache_miss_tokens": None,
+                "cache_observed_prompt_tokens": None, "cache_usage_complete": False,
+                "cache_hit_rate": None}
+    hit = miss = observed = 0
+    complete = True
+    for row in rows:
+        usage = row.get("usage", row) if isinstance(row, dict) else {}
+        # Stage ledgers may already contain a cache summary rather than raw
+        # provider usage. Reuse it without counting it as a second request.
+        if usage.get("cache_usage_complete") is True:
+            summary_hit = usage.get("cache_hit_tokens")
+            summary_miss = usage.get("cache_miss_tokens")
+            if isinstance(summary_hit, int) and isinstance(summary_miss, int):
+                hit += summary_hit
+                miss += summary_miss
+                observed += summary_hit + summary_miss
+                continue
+        elif usage.get("cache_usage_complete") is False:
+            complete = False
+            continue
+        deep_hit = usage.get("prompt_cache_hit_tokens")
+        deep_miss = usage.get("prompt_cache_miss_tokens")
+        details = usage.get("prompt_tokens_details") or {}
+        open_hit = details.get("cached_tokens")
+        prompt = usage.get("prompt_tokens")
+        if deep_hit is not None or deep_miss is not None:
+            if deep_hit is None or deep_miss is None:
+                complete = False
+                continue
+            row_hit, row_miss = deep_hit, deep_miss
+        elif open_hit is not None and prompt is not None:
+            row_hit, row_miss = open_hit, prompt - open_hit
+        else:
+            complete = False
+            continue
+        hit += row_hit
+        miss += row_miss
+        observed += row_hit + row_miss
+    if not complete:
+        return {"cache_hit_tokens": hit if observed else None,
+                "cache_miss_tokens": miss if observed else None,
+                "cache_observed_prompt_tokens": observed if observed else None,
+                "cache_usage_complete": False, "cache_hit_rate": None}
+    return {"cache_hit_tokens": hit, "cache_miss_tokens": miss,
+            "cache_observed_prompt_tokens": observed,
+            "cache_usage_complete": True,
+            "cache_hit_rate": hit / observed if observed else None}
+
+
 def text_content(content):
     if isinstance(content, str):
         return content
@@ -62,6 +115,7 @@ def measure(events, provider_path):
               "usage_complete": bool(responses) and all(
                   "prompt_tokens" in r.get("usage", {}) and "completion_tokens" in r.get("usage", {})
                   for r in responses)}
+    result.update(cache_usage(responses))
     result["total_tokens"] = result["prompt_tokens"] + result["completion_tokens"]
     try:
         import tiktoken
