@@ -209,6 +209,9 @@ def validated_spec(spec, validator_checks, output, *, allow_new_tests=True):
     missing = [identity for identity in inspect_ids
                if not (target_commands / ("inspect-" + identity + ".sh")).is_file()]
     if missing:
+        (Path(output) / "missing-inspect-commands.txt").write_text(
+            "Missing deterministic inspect commands: " + ", ".join(missing) + "\n",
+            encoding="utf-8")
         return None
     return Path(output)
 
@@ -766,7 +769,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                          candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
             record.update(final_baseline_checks=baseline_checks, final_reference_checks=reference_checks)
         else:
-            record["reason"] = "missing_coverage_checks"
+            missing = run / "validated-spec/missing-inspect-commands.txt"
+            record["reason"] = ("missing_inspect_commands"
+                                if missing.is_file() else "missing_coverage_checks")
+            if missing.is_file():
+                feedback += "\n" + missing.read_text(encoding="utf-8")
 
         if memory_check and final_spec is not None and oracle_complete:
             def inspect_mutant(mutant, criteria, checks, output):
@@ -828,7 +835,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         if not agent_finished(validated):
             record["reason"] = "validator_incomplete"
         elif final_spec is None:
-            record["reason"] = "missing_coverage_checks"
+            record["reason"] = ("missing_inspect_commands"
+                                if (run / "validated-spec/missing-inspect-commands.txt").is_file()
+                                else "missing_coverage_checks")
         elif memory_check and record.get("history_mutations", {}).get("status") != "caught":
             record["reason"] = "historical_mutation_not_verified"
         record["validation_accepted"] = (agent_finished(solved) and agent_finished(validated)
