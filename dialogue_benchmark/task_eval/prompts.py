@@ -268,7 +268,13 @@ AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你�
    测试需要临时输入、输出或 CLI 文件时，使用 pytest 提供的 tmp_path/tmpdir fixture（或 /tmp 下的临时目录），
    并把路径显式传给被测入口；不要把临时文件写到 candidate_root、/workspace/candidate 或其子目录。
 3. 将 acceptance.md 的 Check 列替换成对应测试位置，ID、Requirement、Basis 保持原样。
+   只允许修改 Check 单元；逐字保留每一行的 ID、Requirement、Basis，不要改写或缩短前三列。
    一项要求部分依赖人工检查时，整行 Check 用 inspect:，明确复用已通过测试并检查剩余内容。
+   一个 Check 单元只能使用一种模式：整行只能是 inspect:，或只包含 test:/command:。
+   不要把 inspect: 与 test:/command: 混在同一行，也不要使用 |、中文分号或自然语言拼接多个检查。
+   多个自动检查用 ASCII 分号分隔，例如 `test: test_acceptance::test_one; test: test_acceptance::test_two`。
+   正确：`inspect: 读取 report.txt，确认缺失项按约定标记`。
+   错误：`test: test_acceptance::test_one; inspect: 读取 report.txt`。
    仅在 TESTS_UNAVAILABLE.md 写人工步骤不会触发验收；不得把未测试的部分藏在 test: 行中。
    例如 test: test_acceptance::test_feature；多个测试用逗号分隔。
    非 pytest 检查可用 command: check_name，保存 commands/check_name.sh，

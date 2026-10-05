@@ -859,7 +859,7 @@ specified by the user prompt; do not return JSON or Markdown fences.
 """
 
 
-def _parse_file_response(content):
+def _parse_file_response(content, *, allow_unclosed_file=False):
     if not isinstance(content, str):
         raise ValueError("LLM content must be text")
     if content.lstrip().startswith(("FILE ", "FILE:")):
@@ -884,7 +884,14 @@ def _parse_file_response(content):
             else:
                 body.append(line)
         if name is not None:
-            raise ValueError("Unclosed FILE block")
+            # Some otherwise complete provider responses stop after the file
+            # body and omit the closing marker.  Recover only the narrow,
+            # unambiguous case: one non-empty file and no earlier file block.
+            # Callers that require the wire protocol can leave this disabled.
+            if allow_unclosed_file and not files and any(line.strip() for line in body):
+                files.append({"name": name, "content": "\n".join(body) + "\n"})
+            else:
+                raise ValueError("Unclosed FILE block")
         return {"files": files}
 
 
@@ -913,12 +920,12 @@ def _strip_protocol_label(value, label):
     return value[len(prefix):].strip() if value.startswith(prefix) else value
 
 
-def parse_text_response(content):
+def parse_text_response(content, *, allow_unclosed_file=False):
     """Parse a small line-tagged protocol, avoiding model-generated JSON."""
     if not isinstance(content, str):
         raise ValueError("LLM content must be text")
     if content.lstrip().startswith(("FILE ", "FILE:")):
-        return _parse_file_response(content)
+        return _parse_file_response(content, allow_unclosed_file=allow_unclosed_file)
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if lines and lines[0].startswith("PROBE:"):
         required = {"PROBE", "REASON", "QUERY", "EVIDENCE"}
@@ -1952,7 +1959,16 @@ class ChatClient:
         outbound_guard(answer, self.key)
         self.responses.append(answer)
         try:
-            parsed = parse_text_response(answer)
+            try:
+                parsed = parse_text_response(answer)
+            except ValueError as error:
+                # A stopped provider response can contain a complete single
+                # FILE body while omitting only its closing marker.  Use the
+                # narrow EOF recovery after strict parsing fails; all other
+                # protocol errors remain fail-closed.
+                if str(error) != "Unclosed FILE block":
+                    raise
+                parsed = parse_text_response(answer, allow_unclosed_file=True)
             receipt["status"] = "completed"
             return parsed
         except ValueError:

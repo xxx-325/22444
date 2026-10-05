@@ -1,4 +1,5 @@
 import copy
+import http.client
 import io
 import json
 import urllib.error
@@ -297,11 +298,23 @@ END_REVIEW"""
         self.assertEqual(saved["facts-response.json"], {"content": "ordinary prose"})
         self.assertNotIn("private reasoning", json.dumps(saved))
 
+    def test_stopped_single_file_without_end_marker_is_recovered(self):
+        response = {"usage": {"total_tokens": 123}, "choices": [{"finish_reason": "stop",
+                    "message": {"content": "FILE task.md\ncomplete body"}}]}
+        with patch.dict("os.environ", {"BENCHMARK_API_KEY": "test-placeholder-key"}), \
+                patch("dialogue_benchmark.llm.urllib.request.build_opener") as opener:
+            opener.return_value.open.return_value = io.BytesIO(json.dumps(response).encode())
+            client = ChatClient("https://example.invalid/chat/completions", "test")
+            self.assertEqual(client.ask("test", {}),
+                             {"files": [{"name": "task.md", "content": "complete body\n"}]})
+        self.assertEqual(client.usage[0]["status"], "completed")
+
     def test_transport_errors_are_distinct_and_do_not_log_bodies(self):
         cases = [
             (urllib.error.HTTPError("private-url", 401, "private-body", {}, None), "http_error"),
             (urllib.error.URLError("private-network-detail"), "connection_error"),
             (TimeoutError("private-timeout"), "timeout"),
+            (ConnectionResetError("private-reset"), "connection_error"),
         ]
         for error, expected in cases:
             with self.subTest(expected=expected), \
@@ -314,6 +327,26 @@ END_REVIEW"""
                 diagnostic = stage_error("facts", caught.exception)
                 self.assertEqual(diagnostic["error_code"], expected)
                 self.assertNotIn("private", json.dumps(diagnostic))
+                self.assertEqual(client.usage[0]["status"], expected)
+
+    def test_truncated_response_is_not_parsed_or_retried(self):
+        class TruncatedResponse(io.BytesIO):
+            def read(self, size=-1):
+                raise http.client.IncompleteRead(b"private-partial-provider-body", 100)
+
+        with patch.dict("os.environ", {"BENCHMARK_API_KEY": "test-placeholder-key"}), \
+                patch("dialogue_benchmark.llm.urllib.request.build_opener") as opener:
+            opener.return_value.open.return_value = TruncatedResponse()
+            client = ChatClient("https://example.invalid/chat/completions", "test")
+            with self.assertRaises(ModelStageError) as caught:
+                client.ask("test", {"dialogue": []})
+        self.assertEqual(stage_error("facts", caught.exception), {
+            "stage": "facts", "error_type": "ModelStageError", "error_code": "connection_error"})
+        self.assertEqual(opener.return_value.open.call_count, 1)
+        self.assertEqual(client.responses, [])
+        self.assertEqual(client.usage[0]["status"], "connection_error")
+        self.assertNotIn("total_tokens", client.usage[0])
+        self.assertIn("elapsed_seconds", client.usage[0])
 
     def test_transport_budget_matches_sent_serialization(self):
         data = {"dialogue": [{"text": "quoted \\\" value", "id": "e1"}],

@@ -292,6 +292,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     previous_tests = None
     reference_feedback = ""
     previous_reference = None
+    reuse_reference = False
+    reselection_used = False
+    repeated_format_errors = set()
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
     if reused and (Path(reuse_preparation) / "reference-solver/result.json").is_file():
@@ -454,7 +457,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 save(root / "construction.json", attempts)
                 if (item.get("qa_source") == "external" and fixed_draft is None
                         and not selection_only and attempt < revisions
-                        and task_review.get("status") == "ineligible"):
+                        and task_review.get("status") == "ineligible"
+                        and not reselection_used):
+                    reselection_used = True
                     selection = select_task(item["qa"], public_history, baseline, config,
                         run / "reselection", budget, exploration=exploration_text,
                         workflow=item.get("development_workflow"),
@@ -580,6 +585,12 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             save(spec / "acceptance.json", items)
         except ValueError as error:
             record.update(accepted=False, reason="invalid_acceptance", detail=str(error))
+            signature = str(error).strip()
+            if signature in repeated_format_errors:
+                record["terminal_reason"] = "repeated_invalid_acceptance"
+                save(root / "construction.json", attempts)
+                break
+            repeated_format_errors.add(signature)
             feedback = "\n验收表需要修正：" + str(error)
             save(root / "construction.json", attempts)
             continue
@@ -596,11 +607,18 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             continue
         implementation = run / "reference-solver"
         prepare(implementation, previous_reference or baseline)
-        print(root.name, "reference implementation", attempt, flush=True)
-        reference_answer = reference_solver_answer(item, history)
-        solved = run_agent(implementation, config, "code",
-                           solver_input((spec / "task.md").read_text(), reference_answer)
-                           + reference_feedback, **agent_options)
+        if reuse_reference and previous_reference is not None:
+            solved = {"status": "finished",
+                      "metrics": {"attempted_requests": 0,
+                                  "usage_complete": True},
+                      "reused_reference": True}
+            reuse_reference = False
+        else:
+            print(root.name, "reference implementation", attempt, flush=True)
+            reference_answer = reference_solver_answer(item, history)
+            solved = run_agent(implementation, config, "code",
+                               solver_input((spec / "task.md").read_text(), reference_answer)
+                               + reference_feedback, **agent_options)
         candidate = implementation / "workspace/candidate"
         # A solver can exhaust its request/token/runtime budget after saving a
         # useful partial implementation.  Keep that workspace as the starting
@@ -655,6 +673,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 previous_tests = reference / ("previous-%02d" % attempt)
                 copy_tree(spec, previous_tests)
                 feedback = "\n上一轮测试审核发现具体问题，请保留目标并修正：\n" + str(coverage_review)
+                reuse_reference = previous_reference is not None
                 continue
         validation_reference = run / "validator-reference"
         copy_tree(spec, validation_reference / "spec")

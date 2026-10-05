@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from dialogue_benchmark.llm import ModelStageError, stage_error
 from dialogue_benchmark.task_eval.artifacts import read, save
+from dialogue_benchmark.task_eval.prompts import TASK_ONLY_DRAFT
 from dialogue_benchmark.task_eval.selection import (SelectionBudget, extract_history_targets,
                                                      query_evidence, repository_overview,
                                                      select_task, write_draft, write_private_draft,
@@ -147,6 +148,8 @@ class SelectionTests(unittest.TestCase):
     def test_external_draft_separates_public_goal_from_answer_based_acceptance(self):
         from dialogue_benchmark.task_eval.checks import acceptance_items
         answer = "Maple confirmed that only a null note is omitted."
+        self.assertIn("仓库未记录客户约定的具体取值，不代表该约定未经确认", TASK_ONLY_DRAFT)
+        self.assertIn("不要猜写其取值，也不要因仓库缺记录而禁止它产生的结果", TASK_ONLY_DRAFT)
         selection = dict(qa_source="external", historical_answer=answer,
                          public={"public_goal": "Deliver Maple's new export", "agreement_scope": answer})
         table = ("| a1 | Export every order | task | inspect: Run the export and count orders |\n"
@@ -255,6 +258,21 @@ class SelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ModelStageError, "selection_budget_exhausted"):
                 budget.call("review", {}, {}, self.root / "review")
         ask.assert_not_called()
+
+    def test_selection_caps_overlong_provider_timeout_to_stage_budget(self):
+        seen = []
+
+        def ask(prompt, payload, config, output):
+            seen.append(config)
+            save(output / "usage.json", [{"prompt_tokens": 1, "completion_tokens": 1}])
+            return {"reviews": []}
+
+        config = {"judge": {"request_timeout": 1800, "model": "judge"}}
+        budget = SelectionBudget(self.root, {"max_seconds": 1200})
+        with patch("dialogue_benchmark.task_eval.selection.ask_model", side_effect=ask):
+            budget.call("review", {}, config, self.root / "bounded-timeout")
+        self.assertEqual(seen[0]["judge"]["request_timeout"], 600)
+        self.assertEqual(config["judge"]["request_timeout"], 1800)
 
     def test_missing_usage_and_request_errors_preserve_pending(self):
         for error in (TimeoutError("timeout"), None):
@@ -562,6 +580,14 @@ class SelectionTests(unittest.TestCase):
                          ["memory-use.md", "history-contract.txt", "acceptance.md"])
         with self.assertRaises(ValueError):
             parse_text_response("FILE task.md\nincomplete")
+        self.assertEqual(parse_text_response(
+            "FILE task.md\ncomplete body", allow_unclosed_file=True),
+            {"files": [{"name": "task.md", "content": "complete body\n"}]})
+        with self.assertRaises(ValueError):
+            parse_text_response("FILE task.md\n", allow_unclosed_file=True)
+        with self.assertRaises(ValueError):
+            parse_text_response("FILE first.txt\nfirst\nFILE second.txt\nsecond",
+                                allow_unclosed_file=True)
 
     def test_history_qualify_uses_short_rows(self):
         from dialogue_benchmark.llm import parse_text_response
