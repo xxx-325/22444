@@ -704,6 +704,18 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 record.update(accepted=False, reason="checks_" + coverage_review["status"])
                 save(root / "construction.json", attempts)
                 if coverage_review["status"] == "uncertain":
+                    transient_review_error = coverage_review.get("error_type") in {
+                        "connection_error", "timeout", "http_error", "protocol_error"}
+                    if transient_review_error and attempt < revisions:
+                        # The reference code and executable checks are already
+                        # saved. Retry only the failed coverage call; do not
+                        # regenerate the task or discard the working reference.
+                        reuse_reference = previous_reference is not None
+                        feedback = ("\n验收覆盖审核暂时无法连接（%s）。"
+                                    "保留同一需求、测试和参考实现，重试覆盖审核；"
+                                    "不要新增要求或改写公开需求。" %
+                                    coverage_review.get("error_type"))
+                        continue
                     break
                 previous_tests = reference / ("previous-%02d" % attempt)
                 copy_tree(spec, previous_tests)
