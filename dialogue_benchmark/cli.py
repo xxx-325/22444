@@ -8,6 +8,7 @@ import os
 import re
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
+from threading import Lock
 
 from .chunking import split_scope
 from .fact_index import (build_evidence_groups, build_evidence_index,
@@ -1138,19 +1139,50 @@ def _limit_questions(result, limits):
 
 
 def _publication_view(questions, limits, workspaces=(), duplicate_decisions=(),
-                      recoverability_check=None, strict_external=False):
+                      recoverability_check=None, strict_external=False,
+                      recoverability_workers=1):
     # Project separately so approved-first deduplication also works after redaction.
     safe, rejected = [], []
     recoverability_selection = []
     totals = {"total": 0, "path_redacted": 0, "credential_detected": 0,
               "by_track": {}, "track_details": {}}
-    for q in questions:
-        if recoverability_check is not None and isinstance(q, dict) and not _question_has_credential(q):
-            # Probe the same public wording that can be published.  Keep the
-            # private candidate id only for local result association.
-            probe_input, _ = _project_public_question(q, workspaces)
-            probe_input["id"] = q.get("id")
-            probe = recoverability_check(probe_input)
+    probe_results = {}
+    if recoverability_check is not None:
+        def run_probe(probe_input):
+            try:
+                return recoverability_check(probe_input)
+            except Exception as error:
+                return {"status": "uncertain",
+                        "reason": "recoverability_check_error:%s" % type(error).__name__}
+
+        probe_inputs = []
+        probe_aliases = {}
+        seen_probe_keys = set()
+        for index, q in enumerate(questions):
+            if isinstance(q, dict) and not _question_has_credential(q):
+                # Probe the same public wording that can be published.  Keep the
+                # private candidate id only for local result association.
+                probe_input, _ = _project_public_question(q, workspaces)
+                probe_input["id"] = q.get("id")
+                key = q.get("id") or ("index", index)
+                probe_aliases[index] = key
+                if key not in seen_probe_keys:
+                    seen_probe_keys.add(key)
+                    probe_inputs.append((key, probe_input))
+        worker_count = max(1, int(recoverability_workers or 1))
+        if worker_count > 1 and len(probe_inputs) > 1:
+            with ThreadPoolExecutor(max_workers=min(worker_count, len(probe_inputs))) as pool:
+                futures = [(key, pool.submit(run_probe, probe_input))
+                           for key, probe_input in probe_inputs]
+                for key, future in futures:
+                    probe_results[key] = future.result()
+        else:
+            for key, probe_input in probe_inputs:
+                probe_results[key] = run_probe(probe_input)
+    for index, q in enumerate(questions):
+        key = probe_aliases.get(index) if recoverability_check is not None else None
+        if key in probe_results:
+            probe = probe_results[key]
             probe_status = probe.get("status") if isinstance(probe, dict) else None
             if probe_status == "recoverable" or (strict_external and probe_status == "uncertain"):
                 reason = ("repository_recoverable" if probe_status == "recoverable"
@@ -1776,6 +1808,7 @@ def main(argv=None):
                 workspaces = [r["workspace"] for r in records if r.get("workspace")]
                 duplicate_state = {"reviewed_pairs": set(), "decisions": []}
                 recoverability_state = {"results": {}, "usage": [], "errors": []}
+                recoverability_lock = Lock()
 
                 def check_repository_recoverability(question):
                     """Probe only approved candidates before they consume quotas."""
@@ -1786,8 +1819,10 @@ def main(argv=None):
                     candidate_id = question.get("id")
                     if not candidate_id:
                         return {"status": "uncertain", "reason": "candidate_id_missing"}
-                    if candidate_id in recoverability_state["results"]:
-                        return recoverability_state["results"][candidate_id]
+                    with recoverability_lock:
+                        cached = recoverability_state["results"].get(candidate_id)
+                    if cached is not None:
+                        return cached
                     from .repository_probe import probe_candidate
                     try:
                         safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(candidate_id))[:120]
@@ -1798,10 +1833,12 @@ def main(argv=None):
                     except Exception as error:
                         probe = {"status": "uncertain",
                                  "reason": "probe_error:%s" % type(error).__name__}
-                        recoverability_state["errors"].append({
-                            "candidate_id": candidate_id, "error": probe["reason"]})
-                    recoverability_state["results"][candidate_id] = probe
-                    recoverability_state["usage"].extend(probe.get("usage", []))
+                        with recoverability_lock:
+                            recoverability_state["errors"].append({
+                                "candidate_id": candidate_id, "error": probe["reason"]})
+                    with recoverability_lock:
+                        recoverability_state["results"][candidate_id] = probe
+                        recoverability_state["usage"].extend(probe.get("usage", []))
                     return probe
 
                 def adjudicate_duplicates(merged, batch_result, batch_number):
@@ -1854,7 +1891,8 @@ def main(argv=None):
                     lambda questions, caps: _publication_view(
                         questions, caps, workspaces, duplicate_state["decisions"],
                         recoverability_check=check_repository_recoverability,
-                        strict_external=external_mode),
+                        strict_external=external_mode,
+                        recoverability_workers=args.parallel_workers),
                     checkpoint=batch_checkpoint, initial_errors=result["stage_errors"],
                     initial_request_count=sum(u.get("request_count", 1) for u in result["usage"]),
                     after_batch=adjudicate_duplicates)
