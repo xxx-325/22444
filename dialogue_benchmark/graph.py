@@ -83,7 +83,14 @@ def build_graph(records):
                     elif operation == "update":
                         if old is None or old["status"] != "known":
                             raise ValueError("Missing complete base")
-                        content = apply_diff(old["content"], change["unified_diff"])
+                        if "old_str" in change:
+                            before, after = change["old_str"], change["new_str"]
+                            if (not isinstance(before, str) or not before or not isinstance(after, str)
+                                    or old["content"].count(before) != 1):
+                                raise ValueError("Editor replacement context mismatch")
+                            content = old["content"].replace(before, after, 1)
+                        else:
+                            content = apply_diff(old["content"], change["unified_diff"])
                     else:
                         raise ValueError("Unsupported patch operation")
                     if destination != path and destination in state:

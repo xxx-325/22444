@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 from dialogue_benchmark import cli
 from dialogue_benchmark.llm import parse_text_response
-from dialogue_benchmark.repository_probe import PROBE_PROMPT, _repository_entries, probe_candidate, repository_anchors
+from dialogue_benchmark.repository_probe import (PROBE_PROMPT, _complete_repository_snapshot,
+                                                _repository_entries, probe_candidate, repository_anchors)
 
 
 class FakeProbeClient:
@@ -31,6 +32,64 @@ class RepositoryProbeTests(unittest.TestCase):
             (root / "src/api.py").write_text("value = 1\n")
             (root / "README.md").write_text("Demo\n")
             self.assertEqual(_repository_entries(root), ["README.md", "src/api.py"])
+
+    def test_small_repository_snapshot_can_ground_a_terminal_decision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            (root / "src").mkdir(parents=True)
+            (root / "src/api.py").write_text("def finish(job): return job\n")
+            (root / "job.json").write_text('{"customer": "Clearwater", "completed": false}\n')
+            (root / ".private").write_text("PRIVATE_HISTORY_MUST_NOT_BE_READ")
+            output = Path(directory) / "probe"
+            FakeProbeClient.responses = [
+                "PROBE: history_required\nREASON: completion does not encode the customer's authorization period\n"
+                "QUERY: none\nEVIDENCE: snapshot"]
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate({"question": "Which customer authorization period applies?"},
+                    root, "https://example.invalid", "m", "KEY", output)
+            self.assertEqual(result["status"], "history_required")
+            self.assertEqual(result["evidence"], ["snapshot"])
+            self.assertEqual(result["query_count"], 0)
+            self.assertEqual(len(result["usage"]), 1)
+            self.assertTrue(result["repository_snapshot"]["complete"])
+            self.assertEqual(result["repository_snapshot"]["files"], [
+                {"path": name, "text": (root / name).read_text()}
+                for name in ("job.json", "src/api.py")])
+            self.assertNotIn("PRIVATE_HISTORY", str(result))
+            self.assertEqual(json.loads((output / "step-001/input.json").read_text())["payload"]
+                             ["repository_snapshot"], result["repository_snapshot"])
+
+    def test_partial_snapshot_is_not_supplied_or_citable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            (root / "a.py").write_text("value = 1\n")
+            (root / "large.py").write_text("value = 2\n" * 2000)
+            output = Path(directory) / "probe"
+            FakeProbeClient.responses = [
+                "PROBE: history_required\nREASON: supposedly checked everything\nQUERY: none\nEVIDENCE: snapshot"]
+            with patch("dialogue_benchmark.repository_probe.ChatClient", FakeProbeClient):
+                result = probe_candidate({"question": "Which external rule applies?"}, root,
+                    "https://example.invalid", "m", "KEY", output, model_request_chars=10000)
+            self.assertEqual(result["status"], "uncertain")
+            self.assertEqual(result["reason"], "unknown_probe_evidence")
+            self.assertNotIn("repository_snapshot", result)
+            self.assertNotIn("repository_snapshot", json.loads((output / "step-001/input.json").read_text())["payload"])
+            self.assertIsNone(_complete_repository_snapshot(root, 10000))
+
+    def test_complete_snapshot_never_decodes_binary_or_follows_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.py").write_text("value = 1\n")
+            binary = root / "image.bin"
+            binary.write_bytes(b"\xff\x00\x80")
+            self.assertIsNone(_complete_repository_snapshot(root, 10000))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src/a.py").write_text("value = 1\n")
+            (root / "linked").symlink_to(root / "src", target_is_directory=True)
+            self.assertIsNone(_complete_repository_snapshot(root, 10000))
 
     def test_protocol_is_small_and_rejects_answer_style_fields(self):
         self.assertIn("observations 中 id 为 query1 的结果支持判断时，输出 EVIDENCE: query1", PROBE_PROMPT)

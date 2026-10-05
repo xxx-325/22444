@@ -41,6 +41,46 @@ class PublicEpisodeTests(unittest.TestCase):
         self.assertEqual(scope["dialogue"][-1]["source_kind"], "tool")
         self.assertEqual(resolve_source_events(records, ["result"]), {"e3"})
 
+    def test_delivered_create_and_replace_recover_versions_without_private_metadata(self):
+        events = [
+            {"id": "c1", "kind": "tool_call", "call_id": "c1", "tool_name": "file_editor",
+             "action": {"command": "create", "path": "/workspace/candidate/a.py", "file_text": "v = 1\n"}},
+            {"id": "r1", "kind": "tool_result", "call_id": "c1", "tool_name": "file_editor",
+             "text": "File updated successfully"},
+            {"id": "c2", "kind": "tool_call", "call_id": "c2", "tool_name": "file_editor",
+             "action": {"command": "str_replace", "path": "/workspace/candidate/a.py",
+                        "old_str": "v = 1", "new_str": "v = 2"}},
+            {"id": "r2", "kind": "tool_result", "call_id": "c2", "tool_name": "file_editor",
+             "text": "File updated successfully", "observation": {"new_content": "PRIVATE"}},
+        ]
+        rows = [(i, dict(row, schema="model-visible-dialogue-v1", sequence=i))
+                for i, row in enumerate(events, 1)]
+        records = normalize_openhands(rows)
+        graph = build_graph(records)
+        self.assertEqual([v["content"] for v in graph["versions"]], ["v = 1\n", "v = 2\n"])
+        self.assertEqual(graph["versions"][1]["previous"], graph["versions"][0]["id"])
+        self.assertNotIn("PRIVATE", json.dumps(records))
+        self.assertEqual(records[-1]["original_id"], "r2")
+        self.assertEqual(resolve_source_events(records, ["r2"]), {"e5", "e6"})
+
+    def test_public_edit_without_a_complete_base_stays_unknown(self):
+        rows = public_rows()
+        rows[1][1]["action"].update(old_str="v = 1", new_str="v = 2")
+        records = normalize_openhands(rows)
+        graph = build_graph(records)
+        self.assertEqual(len(graph["versions"]), 1)
+        self.assertEqual(graph["versions"][0]["status"], "unknown")
+        self.assertIsNone(graph["versions"][0]["content"])
+        self.assertEqual(graph["diagnostics"][0]["reason"], "Missing complete base")
+
+    def test_failed_or_ambiguous_public_edit_does_not_establish_a_patch(self):
+        for change in ({"is_error": True}, {"text": "Error: File updated successfully"},
+                       {"text": "The model says File updated successfully"}):
+            rows = public_rows()
+            rows[1][1]["action"].update(old_str="v = 1", new_str="v = 2")
+            rows[2][1].update(change)
+            self.assertEqual(build_graph(normalize_openhands(rows))["versions"], [])
+
     def test_identity_sequence_and_call_boundary(self):
         for field, value in (("sequence", 7), ("id", "user"), ("call_id", "unknown")):
             rows = public_rows()

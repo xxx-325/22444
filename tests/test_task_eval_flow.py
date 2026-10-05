@@ -14,7 +14,8 @@ from types import SimpleNamespace
 from dialogue_benchmark.llm import parse_text_response
 from dialogue_benchmark.task_eval.artifacts import copy_tree, read, save, fingerprint, qa_fingerprint
 from dialogue_benchmark.task_eval.checks import acceptance_items, assess_acceptance, check_history_mutations, run_checks
-from dialogue_benchmark.task_eval.run import construct, evaluate, freeze, inspect_acceptance, prepare_test_reference
+from dialogue_benchmark.task_eval.run import (acceptance_signature, construct, evaluate, freeze,
+                                               inspect_acceptance, prepare_test_reference)
 from dialogue_benchmark.task_eval.runtime import review_checks, review_task, write_history_mutation
 from dialogue_benchmark.task_eval.versions import export_change, pin_baseline
 
@@ -72,6 +73,14 @@ class TaskPreflightTests(unittest.TestCase):
                            ("memory-use.md", "A historical constraint changes the output."),
                            ("acceptance.md", "| a1 | Pending data remains readable | task | test: test_acceptance::test_feature |")):
             (spec / name).write_text(text)
+
+    def test_acceptance_signature_freezes_requirements_not_check_mode(self):
+        original = [{"id": "a1", "requirement": "Keep output stable",
+                     "basis": ["task"], "check": "inspect: Read output"}]
+        converted = [dict(original[0], check="test: test_acceptance::test_output")]
+        self.assertEqual(acceptance_signature(original), acceptance_signature(converted))
+        changed = [dict(original[0], requirement="Change output")]
+        self.assertNotEqual(acceptance_signature(original), acceptance_signature(changed))
 
     def fake_agent(self, root, config, role, message, **kwargs):
         if root.name == "author":

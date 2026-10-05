@@ -1250,14 +1250,15 @@ MISSING_OBJECT: 原文中精确的路径或符号，不是资料编号
 这五种缺口依次指旧状态、新状态、原因、实际结果、跨代码位置的依赖。
 """
 
-SIMPLE_UNTYPED_DEFINITION = """从选定证据中选择一个最有后续开发用途、且可以由这些材料单独回答的记忆目标。
-优先选择会改变未来实现、故障定位、兼容性或验证决定的历史信息；不要只问文件清单、当前签名或泛泛主题。
+SIMPLE_UNTYPED_DEFINITION = """从选定证据中选择一个清晰、可由这些材料单独回答的历史目标。
+优先选择涉及具体对象、版本、修改、失败、测试、纠正、验证或它们之间关系的信息；不要只问文件清单、当前签名或泛泛主题。
 如果材料同时支持多个方向，只选择其中一个最清楚、最有实际用途的方向。不要输出题型、难度或分类。"""
 
 SIMPLE_CODE_QA_RULES = """
-Use recorded history to answer one future implementation, diagnosis, or validation
-decision. A current-code fact, signature, directory inventory, or ordinary language
-semantics alone is not a memory question. Keep actual code and test conditions.
+Use recorded history to answer one concrete question about an implementation decision,
+diagnosis, validation result, or historical behavior. A current-code fact, signature,
+directory inventory, or ordinary language semantics alone is not a memory question.
+Keep actual code and test conditions.
 Do not turn a document rule into an executed code behavior.
 """
 
@@ -1833,6 +1834,59 @@ def outbound_guard(text, key):
         raise ModelStageError("credential_guard")
 
 
+def _response_socket(response):
+    """Return the underlying socket when urllib exposes one."""
+    fileobj = getattr(response, "fp", None)
+    raw = getattr(fileobj, "raw", None)
+    sock = getattr(raw, "_sock", None) or getattr(fileobj, "_sock", None)
+    return sock if hasattr(sock, "settimeout") else None
+
+
+def _read_response_with_deadline(response, timeout, limit):
+    """Read a response in bounded chunks with an absolute wall-clock deadline.
+
+    urllib's socket timeout is an inactivity timeout.  A provider that sends a
+    byte periodically can therefore keep one ``read`` alive forever.  The
+    ``read1`` path returns available bytes without waiting for the whole body,
+    allowing this loop to enforce the total deadline.
+    """
+    deadline = time.monotonic() + timeout
+    reader = getattr(response, "read1", None)
+    if not callable(reader) or hasattr(response, "getbuffer"):
+        # Lightweight fakes and non-buffered responses may only expose read().
+        # The caller keeps the legacy watchdog for this fallback.
+        return response.read(limit + 1)
+    chunks = []
+    total = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        sock = _response_socket(response)
+        if sock is not None:
+            try:
+                sock.settimeout(remaining)
+            except (OSError, ValueError):
+                pass
+        try:
+            chunk = reader(min(64 * 1024, limit + 1 - total))
+        except (TimeoutError, socket.timeout):
+            raise TimeoutError from None
+        except ValueError as error:
+            # BufferedReader cannot be reused after its underlying socket has
+            # timed out; normalize that implementation detail.
+            if "timed out" in str(error).lower():
+                raise TimeoutError from None
+            raise
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > limit:
+            break
+    return b"".join(chunks)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ModelStageError("redirect_blocked")
@@ -1913,13 +1967,20 @@ class ChatClient:
                     except Exception:
                         pass
 
-                watchdog = threading.Timer(self.timeout, close_response)
-                watchdog.daemon = True
-                watchdog.start()
+                # Real HTTPResponse objects use read1(), whose loop enforces
+                # the absolute deadline.  Keep the watchdog only for small
+                # response fakes/non-buffered implementations that expose
+                # read() alone.
+                watchdog = None
+                if not callable(getattr(response, "read1", None)):
+                    watchdog = threading.Timer(self.timeout, close_response)
+                    watchdog.daemon = True
+                    watchdog.start()
                 try:
-                    raw = response.read(4_000_001)
+                    raw = _read_response_with_deadline(response, self.timeout, 4_000_000)
                 finally:
-                    watchdog.cancel()
+                    if watchdog is not None:
+                        watchdog.cancel()
                 if timed_out.is_set():
                     receipt["status"] = "timeout"
                     raise ModelStageError("timeout") from None

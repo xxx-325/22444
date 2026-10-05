@@ -8,7 +8,9 @@ from unittest.mock import patch
 from dialogue_benchmark import cli
 from dialogue_benchmark.llm import (
     ModelStageError,
+    _drop_repair_material_bodies,
     parse_text_response,
+    request_size,
     repair_simple_candidate,
     review_candidates,
 )
@@ -420,6 +422,26 @@ END_QA"""])
             for item in result.get("rejected", []) if isinstance(item, dict)))
         self.assertEqual([receipt["stage"] for receipt in client.usage],
                          ["review_relevance", "review_atomicity"])
+
+    def test_target_repair_can_drop_large_bodies_without_dropping_fact_summary(self):
+        payload = {
+            "facts": [{"text": "目标 focus 仍然是同一个历史决定。",
+                       "materials": ["资料1"]}],
+            "materials": [
+                {"reference": "资料1", "original_records": [
+                    {"text": "x" * 18000}]},
+                {"reference": "资料2", "original_records": [
+                    {"text": "y" * 18000}]},
+            ],
+            "focus": {"text": "同一个历史决定", "sources": ["资料1"]},
+        }
+        prompt = "repair instruction"
+        compact = _drop_repair_material_bodies(payload, prompt, 5000)
+        self.assertLessEqual(request_size(prompt, compact), 5000)
+        self.assertEqual(compact["facts"], payload["facts"])
+        self.assertEqual(compact["focus"], payload["focus"])
+        self.assertTrue(all("original_records" not in item
+                            for item in compact["materials"]))
 
     def test_cli_validation_repair_still_runs_code_static_postcheck(self):
         """A public-text repair cannot bypass the final code evidence gate."""

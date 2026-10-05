@@ -140,7 +140,7 @@ class EpisodeRunnerTests(unittest.TestCase):
                 self.assertNotIn("--repository", args)
                 self.assertNotIn("--external-events", args)
                 self.assertIn("--adaptive-subgraphs", args)
-                self.assertEqual(args[args.index("--review-mode") + 1], "single")
+                self.assertEqual(args[args.index("--review-mode") + 1], "simple")
                 output = Path(args[args.index("--output") + 1])
                 save(output / "manifest.json", {
                     "input_sha256": hashlib.sha256(Path(args[0]).read_bytes()).hexdigest()})

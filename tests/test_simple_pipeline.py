@@ -85,7 +85,7 @@ class SimplePipelineTests(unittest.TestCase):
         self.assertEqual(result["stage_status"]["qa"], "completed")
         self.assertNotIn("type", result["questions"][0])
         self.assertNotIn("category", result["questions"][0])
-        self.assertIn("最有后续开发用途", client.prompts[0])
+        self.assertIn("具体对象、版本、修改、失败、测试、纠正、验证", client.prompts[0])
         self.assertNotIn("TARGET_DEFINITION", client.prompts[0])
         self.assertNotIn("constraint_followthrough:", client.prompts[0])
         self.assertNotIn("correction_update:", client.prompts[0])

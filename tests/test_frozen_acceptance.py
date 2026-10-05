@@ -39,6 +39,16 @@ class FrozenAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["rows"][0]["status"], "passed")
 
+    def test_malformed_inspect_review_is_reported(self):
+        items = [dict(self.items[0], tests=[])]
+        review = self.root / "review.txt"
+        review.write_text("not a review block")
+        result = assess_acceptance(items, {"status": "passed", "cases": []}, review)
+        self.assertEqual(result["status"], "uncertain")
+        self.assertIn("review_parse_error", result)
+        self.assertIn("No tagged model blocks", result["review_parse_error"])
+        self.assertIn("review_parse_error:", result["rows"][0]["evidence"])
+
     def test_missing_duplicate_skipped_results_are_not_proof(self):
         for cases in ([], self.checks()["cases"] * 2, self.checks("skipped")["cases"]):
             self.assertEqual(assess_acceptance(self.items, {"status": "passed", "cases": cases})["status"], "uncertain")

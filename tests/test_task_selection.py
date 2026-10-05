@@ -197,6 +197,45 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Inspect check needs an action"):
             acceptance_items(spec)
 
+    def test_acceptance_rejects_tests_and_inspection_in_one_row(self):
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        spec = self.root / "mixed-checks"
+        spec.mkdir()
+        for separator in (";", "；"):
+            with self.subTest(separator=separator):
+                (spec / "acceptance.md").write_text(
+                    "| ID | Requirement | Basis | Check |\n"
+                    "|---|---|---|---|\n"
+                    "| a1 | Preserve the validation detail | task | "
+                    f"test: test_acceptance::test_validation{separator}"
+                    f"test: test_acceptance::test_blank_id{separator}"
+                    "inspect: Read the generated actions and confirm the source row is named |\n")
+                with self.assertRaisesRegex(ValueError, "mixed_acceptance_check: a1"):
+                    acceptance_items(spec)
+
+    def test_acceptance_does_not_silently_drop_a_row_with_pipe_in_check(self):
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        spec = self.root / "malformed-row"
+        spec.mkdir()
+        (spec / "acceptance.md").write_text(
+            "| ID | Requirement | Basis | Check |\n"
+            "|---|---|---|---|\n"
+            "| a1 | Export works | task | command: existing_suite | inspect: read the report |\n")
+        with self.assertRaisesRegex(ValueError, "Invalid acceptance table row: a1"):
+            acceptance_items(spec)
+
+    def test_acceptance_preserves_an_escaped_pipe_in_check(self):
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        spec = self.root / "escaped-pipe"
+        spec.mkdir()
+        (spec / "acceptance.md").write_text(
+            "| ID | Requirement | Basis | Check |\n"
+            "|---|---|---|---|\n"
+            "| a1 | Export works | task | "
+            "inspect: output contains `id=a1 \\| status=ready` |\n")
+        items = acceptance_items(spec)
+        self.assertEqual(items[0]["check"], "inspect: output contains `id=a1 | status=ready")
+
     def test_external_private_author_can_decline_without_changing_public_task(self):
         selection = dict(qa_source="external", historical_answer="Historical answer", public={})
         budget = SelectionBudget(self.root, {})

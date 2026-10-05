@@ -44,6 +44,51 @@ class ParallelRecoverabilityTests(unittest.TestCase):
             recoverability_workers=2)
         self.assertEqual(calls, ["same"])
 
+    def test_probe_results_usage_and_errors_follow_candidate_order(self):
+        questions = [
+            {"id": candidate_id, "qa_mode": "code", "status": "approved",
+             "question": candidate_id, "answer_points": [], "forbidden_points": []}
+            for candidate_id in ("q1", "q2", "q3", "q1")
+        ]
+        state = {"results": {}, "errors": []}
+        q3_finished = threading.Event()
+        q2_finished = threading.Event()
+        lock = threading.Lock()
+
+        def probe(item):
+            candidate_id = item["id"]
+            if candidate_id == "q1":
+                self.assertTrue(q2_finished.wait(5))
+            elif candidate_id == "q2":
+                self.assertTrue(q3_finished.wait(5))
+            result = {
+                "status": "uncertain", "reason": candidate_id,
+                "usage": [{"candidate_id": candidate_id, "step": step}
+                          for step in range(2 if candidate_id == "q1" else 1)],
+            }
+            with lock:
+                state["results"][candidate_id] = result
+                if candidate_id != "q1":
+                    state["errors"].append({"candidate_id": candidate_id, "error": candidate_id})
+            if candidate_id == "q3":
+                q3_finished.set()
+            elif candidate_id == "q2":
+                q2_finished.set()
+            return result
+
+        cli._publication_view(
+            questions, {"code": 3}, recoverability_check=probe,
+            recoverability_workers=3)
+        self.assertEqual(list(state["results"]), ["q3", "q2", "q1"])
+        ordered = cli._ordered_recoverability_state(state, questions)
+        self.assertEqual(list(ordered["results"]), ["q1", "q2", "q3"])
+        self.assertEqual(ordered["usage"], [
+            {"candidate_id": "q1", "step": 0}, {"candidate_id": "q1", "step": 1},
+            {"candidate_id": "q2", "step": 0}, {"candidate_id": "q3", "step": 0},
+        ])
+        self.assertEqual([error["candidate_id"] for error in ordered["errors"]], ["q2", "q3"])
+        self.assertEqual(list(state["results"]), ["q3", "q2", "q1"])
+
 
 if __name__ == "__main__":
     unittest.main()

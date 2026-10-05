@@ -1138,6 +1138,20 @@ def _limit_questions(result, limits):
     return result
 
 
+def _ordered_recoverability_state(state, questions):
+    results = {}
+    for question in questions:
+        candidate_id = question.get("id")
+        if candidate_id in state["results"] and candidate_id not in results:
+            results[candidate_id] = state["results"][candidate_id]
+    positions = {candidate_id: index for index, candidate_id in enumerate(results)}
+    return {
+        "results": results,
+        "usage": [usage for probe in results.values() for usage in probe.get("usage", [])],
+        "errors": sorted(state["errors"], key=lambda error: positions[error["candidate_id"]]),
+    }
+
+
 def _publication_view(questions, limits, workspaces=(), duplicate_decisions=(),
                       recoverability_check=None, strict_external=False,
                       recoverability_workers=1):
@@ -1807,7 +1821,7 @@ def main(argv=None):
                 budgets = {t: options[t + "_group_budget"] for t in limits}
                 workspaces = [r["workspace"] for r in records if r.get("workspace")]
                 duplicate_state = {"reviewed_pairs": set(), "decisions": []}
-                recoverability_state = {"results": {}, "usage": [], "errors": []}
+                recoverability_state = {"results": {}, "errors": []}
                 recoverability_lock = Lock()
 
                 def check_repository_recoverability(question):
@@ -1838,7 +1852,6 @@ def main(argv=None):
                                 "candidate_id": candidate_id, "error": probe["reason"]})
                     with recoverability_lock:
                         recoverability_state["results"][candidate_id] = probe
-                        recoverability_state["usage"].extend(probe.get("usage", []))
                     return probe
 
                 def adjudicate_duplicates(merged, batch_result, batch_number):
@@ -1896,6 +1909,8 @@ def main(argv=None):
                     checkpoint=batch_checkpoint, initial_errors=result["stage_errors"],
                     initial_request_count=sum(u.get("request_count", 1) for u in result["usage"]),
                     after_batch=adjudicate_duplicates)
+                recoverability_state = _ordered_recoverability_state(
+                    recoverability_state, qa_result["all_questions"])
                 for key in ("rejected", "usage", "stage_errors", "review_warnings", "stage_status"):
                     result.setdefault(key, []).extend(qa_result.get(key, []))
                 result["usage"].extend(recoverability_state["usage"])

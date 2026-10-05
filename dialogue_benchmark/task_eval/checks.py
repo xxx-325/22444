@@ -73,6 +73,43 @@ def _test_identity(value):
     return ".".join([module, *parts[1:-1]]) + "::" + parts[-1]
 
 
+def acceptance_check_parts(check):
+    """Return the individual executable or inspection checks in one cell.
+
+    A row may combine automated tests with an inspection instruction.  This is
+    useful when tests cover the observable behavior while a reviewer still
+    needs to inspect a detail that cannot be asserted deterministically.
+    """
+    parts = [part.strip() for part in re.split(r"[;；]|,\s*(?=(?:test|command|inspect):)", check)
+             if part.strip()]
+    return parts
+
+
+def acceptance_has_inspect(check):
+    return any(part.startswith("inspect:") for part in acceptance_check_parts(check))
+
+
+def _acceptance_row_cells(line):
+    """Split a Markdown row while preserving escaped pipes in a cell."""
+    text = line.strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|") and not text.endswith("\\|"):
+        text = text[:-1]
+    cells, current, escaped = [], [], False
+    for char in text:
+        if char == "|" and not escaped:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+        escaped = char == "\\" and not escaped
+        if char != "\\":
+            escaped = False
+    cells.append("".join(current).strip())
+    return [cell.replace("\\|", "|").strip("`").strip() for cell in cells]
+
+
 def acceptance_items(spec, history=None):
     """Read the frozen human-readable table, using exact test names for linkage."""
     rows = []
@@ -84,7 +121,9 @@ def acceptance_items(spec, history=None):
             raise ValueError("Missing private historical answer")
         contracts.add("answer")
     for line in (Path(spec) / "acceptance.md").read_text().splitlines():
-        cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
+        cells = _acceptance_row_cells(line)
+        if len(cells) != 4 and cells and re.fullmatch(r"a\d+", cells[0], re.IGNORECASE):
+            raise ValueError("Invalid acceptance table row: " + cells[0].lower())
         # Models occasionally capitalize the otherwise stable a1/a2 labels.
         # The identity is still unambiguous, so accept case without changing
         # the four-column contract.
@@ -103,14 +142,21 @@ def acceptance_items(spec, history=None):
                 or any(row["id"] == identity for row in rows)):
             raise ValueError("Invalid acceptance item: " + identity)
         tests = []
-        if check.startswith("inspect:"):
-            if not check[8:].strip():
+        parts = acceptance_check_parts(check)
+        if not parts:
+            raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
+        has_inspect = any(part.startswith("inspect:") for part in parts)
+        has_automated = any(part.startswith(("test:", "command:")) for part in parts)
+        if has_inspect and has_automated:
+            raise ValueError("mixed_acceptance_check: " + identity +
+                             " (use only inspect: or only test:/command:)")
+        if has_inspect:
+            if not check.startswith("inspect:") or not check[8:].strip():
                 raise ValueError("Inspect check needs an action and expected result: " + identity)
         else:
-            for part in re.split(r";|,\s*(?=(?:test|command):)", check):
-                part = part.strip()
+            for part in parts:
                 if part.startswith("test:"):
-                    tests.extend(t.strip().strip("`") for t in part[5:].split(","))
+                    tests.extend(t.strip().strip("`") for t in part[5:].split(",") if t.strip())
                 elif part.startswith("command:"):
                     name = part[8:].strip()
                     if not re.fullmatch(r"[a-zA-Z0-9_-]+", name) or not (Path(spec) / "commands" / (name + ".sh")).is_file():
@@ -118,7 +164,7 @@ def acceptance_items(spec, history=None):
                     tests.append("command::" + name)
                 else:
                     raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
-        if not tests and not check.startswith("inspect:"):
+        if not tests and not acceptance_has_inspect(check):
             raise ValueError("Acceptance check must be test:, command:, or inspect: " + identity)
         if tests and any(not re.fullmatch(r"[\w./-]+(?:::[\w.-]+)*::[\w\[\].-]+", t) for t in tests):
             raise ValueError("Use an exact pytest node or JUnit classname::name: " + identity)
@@ -180,11 +226,15 @@ def assess_acceptance(items, checks, review_path=None, roots=None):
     """One result per mandatory item, plus execution failures in frozen regressions."""
     from ..llm import parse_text_response
     reviews = []
+    review_parse_error = None
     if review_path and Path(review_path).is_file():
         try:
             reviews = parse_text_response(Path(review_path).read_text()).get("reviews", [])
-        except ValueError:
-            pass
+        except ValueError as error:
+            # Do not turn a malformed Judge response into an indistinguishable
+            # missing-evidence result.  The caller needs a concrete repair
+            # reason, while the overall status remains conservative.
+            review_parse_error = "%s: %s" % (type(error).__name__, error)
     cases = {}
     for case in checks.get("cases", []):
         cases.setdefault(_test_identity(case["id"]), []).append(case)
@@ -200,17 +250,29 @@ def assess_acceptance(items, checks, review_path=None, roots=None):
                 status = "passed"
             evidence = ", ".join(item["tests"])
         else:
-            matches = [r for r in reviews if r.get("id") == item["id"]]
-            if len(matches) == 1:
-                review = matches[0]
-                if (review.get("status") in {"passed", "failed"}
-                        and _artifact_evidence(review.get("evidence", ""), roots or {})):
-                    status, evidence = review["status"], review["evidence"]
+            command = _inspect_command_cases([item], checks).get(item["id"])
+            if command is not None:
+                if command.get("status") in {"passed", "failed"}:
+                    status, evidence = command["status"], command["id"]
+                else:
+                    status, evidence = "uncertain", command.get("detail", command["id"])
+            else:
+                matches = [r for r in reviews if r.get("id") == item["id"]]
+                if len(matches) == 1:
+                    review = matches[0]
+                    if (review.get("status") in {"passed", "failed"}
+                            and _artifact_evidence(review.get("evidence", ""), roots or {})):
+                        status, evidence = review["status"], review["evidence"]
+                elif review_parse_error:
+                    evidence = "review_parse_error: " + review_parse_error
         rows.append(dict(item, status=status, evidence=evidence))
     status = ("failed" if checks["status"] == "failed" or any(r["status"] == "failed" for r in rows)
               else "passed" if rows and checks["status"] != "error" and all(r["status"] == "passed" for r in rows)
               else "uncertain")
-    return {"status": status, "rows": rows}
+    result = {"status": status, "rows": rows}
+    if review_parse_error:
+        result["review_parse_error"] = review_parse_error
+    return result
 
 
 def pytest_result(exit_code, xml_path, *, required_modules=()):
@@ -427,5 +489,20 @@ def check_history_mutations(candidate, spec, validator_checks, output, image, *,
         results.append(receipt)
         save(root / "result.json", receipt)
     result = {"status": "caught" if results and all(r.get("caught") for r in results) else "unverified", "variants": results}
+    if result["status"] == "unverified":
+        issues = []
+        for variant in results:
+            if not variant.get("patch_applied"):
+                issues.append("%s: patch did not apply" % variant["id"])
+                continue
+            rows = variant.get("acceptance", {}).get("rows", [])
+            uncertain = [row["id"] for row in rows
+                         if "task" in row["basis"] and row["status"] != "passed"]
+            if uncertain:
+                issues.append("%s: public requirements not verified: %s" %
+                              (variant["id"], ", ".join(uncertain)))
+            elif not variant.get("caught"):
+                issues.append("%s: historical requirement was not rejected" % variant["id"])
+        result["detail"] = "; ".join(issues) if issues else "No valid historical mutation was saved"
     save(output / "result.json", result)
     return result

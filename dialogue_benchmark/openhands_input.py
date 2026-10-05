@@ -2,6 +2,7 @@
 
 import difflib
 import json
+import re
 
 
 def _tool_text(value):
@@ -13,6 +14,30 @@ def _tool_text(value):
     if isinstance(value, list):
         return "\n".join(_tool_text(v) for v in value)
     return json.dumps(value, ensure_ascii=False)
+
+
+def _public_editor_change(action, result):
+    """Recover only edits established by public arguments and a success reply."""
+    from .normalize import is_truncated
+
+    path, command = action.get("path"), action.get("command")
+    if (not isinstance(path, str) or not path or result.get("is_error") is True
+            or not re.fullmatch(r"File updated successfully\.?|File created successfully at: .+",
+                                result.get("text", "").strip())):
+        return None
+    if command == "create":
+        content = action.get("file_text")
+        if isinstance(content, str) and not is_truncated(content):
+            return {path: {"type": "add", "content": content}}
+    elif command == "str_replace":
+        before, after = action.get("old_str"), action.get("new_str", "")
+        if (isinstance(before, str) and before and isinstance(after, str)
+                and not is_truncated(before) and not is_truncated(after)):
+            return {path: {"type": "update", "old_str": before, "new_str": after}}
+    elif command in {"insert", "undo_edit"}:
+        # Success establishes a changed file, but not its complete new content.
+        return {path: {"type": "update", "editor_command": command}}
+    return None
 
 
 def normalize_openhands(rows):
@@ -66,6 +91,11 @@ def normalize_openhands(rows):
                 if isinstance(row.get("is_error"), bool):
                     item["is_error"] = row["is_error"]
                 emit(item, row, line)
+                if row["tool_name"] == "file_editor":
+                    changes = _public_editor_change(call.get("action") or {}, row)
+                    if changes:
+                        emit({"kind": "patch", "call_id": row["call_id"],
+                              "success": True, "changes": changes}, row, line)
                 continue
             observation = row.get("observation") or {}
             emit({"kind": "result", "call_id": row.get("call_id"),

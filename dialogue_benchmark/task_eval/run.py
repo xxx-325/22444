@@ -6,11 +6,12 @@ from copy import deepcopy
 from pathlib import Path
 from pathlib import PurePosixPath
 import shutil
+import time
 
 from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs, read, save, write_diff
-from .checks import (run_checks, acceptance_items, assess_acceptance,
-                     check_history_mutations, _inspect_command_cases)
+from .checks import (run_checks, acceptance_items, acceptance_has_inspect,
+                     assess_acceptance, check_history_mutations, _inspect_command_cases)
 from .metrics import compare_trials
 from .runtime import (bounded_model_config, configure, preflight_openhands_runtime,
                       review_task, review_checks, repair_tests, write_tests,
@@ -21,7 +22,10 @@ from .history import (prepare_history, freeze_contract, historical_context, read
                       write_contract_from_targets, review_sources, qualified_oracle_complete)
 from .selection import SelectionBudget, select_task, write_draft, write_private_draft
 
-_FROZEN_ACCEPTANCE_FIELDS = ("id", "requirement", "basis", "check")
+# The task and historical obligations are frozen after qualification.  The
+# test author is explicitly allowed to replace only the Check column with an
+# executable test or command, so it must not participate in this signature.
+_FROZEN_ACCEPTANCE_FIELDS = ("id", "requirement", "basis")
 
 
 def acceptance_signature(rows):
@@ -62,6 +66,13 @@ def answer_text(question):
     points = question.get("answer_points", [])
     return "\n".join("- " + (p if isinstance(p, str) else p.get("text", p.get("claim", "")))
                      for p in points)
+
+
+def save_task_progress(root, stage, **details):
+    """Write a small live marker while a task is between final receipts."""
+    payload = {"stage": stage, "updated_at": round(time.time(), 3)}
+    payload.update(details)
+    save(Path(root) / "progress.json", payload)
 
 
 def reference_solver_answer(item, history=None):
@@ -195,7 +206,7 @@ def validated_spec(spec, validator_checks, output, *, allow_new_tests=True):
             cells = [cell.strip().strip("`")
                      for cell in line.strip().strip("|").split("|")]
             if (len(cells) == 4 and cells[0].lower().startswith("a")
-                    and cells[3].strip().startswith("inspect:")):
+                    and acceptance_has_inspect(cells[3].strip())):
                 inspect_ids.append(cells[0].lower())
     source_commands = Path(validator_checks) / "commands"
     target_commands = Path(output) / "commands"
@@ -349,6 +360,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         feedback = "\n以下是已保存测试的审阅问题。保持需求与历史规则不变，修正测试后结束：\n" + Path(preparation_feedback).read_text()
         (reference / "test-repair-feedback.md").write_text(feedback, encoding="utf-8")
     exploration_text = ""
+    save_task_progress(root, "selection")
     # Malformed/offline selection fixtures may not contain a question.  There
     # is nothing meaningful for a repository explorer to anchor on, and
     # selection-only mode explicitly promises not to start OpenHands.
@@ -385,6 +397,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         run = root / ("construction-%02d" % attempt)
         author = run / "author"
         print(root.name, "author", attempt, flush=True)
+        save_task_progress(root, "author", attempt=attempt)
         spec = author / "workspace/checks"
         gate_state = {}
         draft_selection = dict(selection)
@@ -547,8 +560,23 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                            if metrics.get("usage_complete") else {}))])
             budget.record([])
         except Exception as error:
-            attempts.append(dict(attempt=attempt, accepted=False, status="pending", reason=str(error)))
+            code = getattr(error, "code", None)
+            record = {"attempt": attempt, "accepted": False, "status": "pending",
+                      "reason": code or str(error)}
+            attempts.append(record)
+            save(root / "construction.json", attempts)
+            # A provider protocol/transport failure does not say that the QA
+            # or task is invalid.  Spend the explicitly allowed next round on
+            # a clean model request, while keeping the failed response visible.
+            retryable = {"protocol_error", "response_envelope", "timeout",
+                         "connection_error", "http_error"}
+            if code in retryable and attempt < revisions:
+                feedback = ("\n上一轮模型响应未能按约定格式完成（%s）。"
+                            "保持同一题面和历史答案，重新输出所需文件；"
+                            "不要新增要求或改写公开需求。" % code)
+                continue
             break
+        save_task_progress(root, "acceptance", attempt=attempt)
         record = {"attempt": attempt, "author_status": authored["status"],
                   "author_metrics": authored.get("metrics", {}),
                   "construction_budget": read(root / "selection-budget.json")}
@@ -630,7 +658,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             save(root / "construction.json", attempts)
             continue
         baseline_checks = run_checks(baseline, spec, run / "baseline-checks", config["execution_image"],
-                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+                                     candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+        save_task_progress(root, "baseline_checks", attempt=attempt)
         if baseline_checks["status"] == "error":
             record.update(accepted=False, reason="baseline_check_error", baseline_checks=baseline_checks)
             previous_tests = reference / ("previous-%02d" % attempt)
@@ -650,6 +679,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             reuse_reference = False
         else:
             print(root.name, "reference implementation", attempt, flush=True)
+            save_task_progress(root, "reference_solver", attempt=attempt)
             reference_answer = reference_solver_answer(item, history)
             solved = run_agent(implementation, config, "code",
                                solver_input((spec / "task.md").read_text(), reference_answer)
@@ -695,6 +725,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 break
         coverage_review = None
         if memory_check:
+            save_task_progress(root, "checks_review", attempt=attempt)
             coverage_review = review_checks(spec, baseline, candidate,
                 record["reference_version"]["changed_files"],
                 {"baseline": baseline_checks, "reference": reference_checks},
@@ -703,20 +734,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             if coverage_review["status"] != "complete":
                 record.update(accepted=False, reason="checks_" + coverage_review["status"])
                 save(root / "construction.json", attempts)
-                if coverage_review["status"] == "uncertain":
-                    transient_review_error = coverage_review.get("error_type") in {
-                        "connection_error", "timeout", "http_error", "protocol_error"}
-                    if transient_review_error and attempt < revisions:
-                        # The reference code and executable checks are already
-                        # saved. Retry only the failed coverage call; do not
-                        # regenerate the task or discard the working reference.
-                        reuse_reference = previous_reference is not None
-                        feedback = ("\n验收覆盖审核暂时无法连接（%s）。"
-                                    "保留同一需求、测试和参考实现，重试覆盖审核；"
-                                    "不要新增要求或改写公开需求。" %
-                                    coverage_review.get("error_type"))
-                        continue
-                    break
+                # A failed coverage request is an evaluation-stage failure,
+                # not evidence that the task or reference implementation is
+                # wrong.  Keep the receipt and stop this task; do not loop
+                # back into AUTHOR and accidentally rewrite the task.
+                break
                 previous_tests = reference / ("previous-%02d" % attempt)
                 copy_tree(spec, previous_tests)
                 feedback = "\n上一轮测试审核发现具体问题，请保留目标并修正：\n" + str(coverage_review)
@@ -730,7 +752,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         save(validation_reference / "checks.json", record)
         validator = run / "validator"
         print(root.name, "preflight validation", attempt, flush=True)
-        if memory_check and not any(item["check"].startswith("inspect:") for item in items):
+        save_task_progress(root, "preflight_validation", attempt=attempt)
+        if memory_check and not any(acceptance_has_inspect(item["check"]) for item in items):
             validated = write_history_mutation(spec, candidate, record["reference_version"]["changed_files"],
                                                 config, validator, preflight_budget)
         else:

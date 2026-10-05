@@ -21,3 +21,6 @@ include = ["dialogue_benchmark*"]
 
 [tool.setuptools.package-data]
 dialogue_benchmark = ["viewer/*.html", "viewer/*.css", "viewer/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

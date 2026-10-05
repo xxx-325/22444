@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -40,6 +41,33 @@ class RequestTimeoutTests(unittest.TestCase):
             with self.assertRaisesRegex(llm.ModelStageError, "timeout"):
                 llm.ChatClient("https://example.invalid", "test", timeout=0.01).ask("test", {})
         self.assertTrue(response.closed.is_set())
+
+    def test_transport_enforces_total_deadline_for_repeated_response_chunks(self):
+        class KeepAliveResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read1(self, _limit):
+                # Simulate a provider that keeps the socket active with tiny
+                # chunks.  close() is intentionally unable to interrupt this
+                # response; the transport must use its absolute deadline.
+                time.sleep(0.005)
+                return b"x"
+
+            def close(self):
+                pass
+
+        response = KeepAliveResponse()
+        with patch.dict("os.environ", {"BENCHMARK_API_KEY": "test-only"}), \
+                patch("dialogue_benchmark.llm.urllib.request.build_opener") as opener:
+            opener.return_value.open.return_value = response
+            with self.assertRaisesRegex(llm.ModelStageError, "timeout"):
+                client = llm.ChatClient("https://example.invalid", "test", timeout=0.03)
+                client.ask("test", {})
+        self.assertEqual(client.usage[0]["status"], "timeout")
 
     def test_transport_uses_configured_seconds_without_output_cap_or_retry(self):
         for kwargs, expected in (({}, 90), ({"timeout": 1800}, 1800), ({"timeout": 0.5}, 0.5)):

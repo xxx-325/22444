@@ -14,7 +14,7 @@ from dialogue_benchmark.task_eval.history import (
 from dialogue_benchmark.task_eval.runtime import run_agent, configure, repair_tests, write_tests, review_checks, write_history_mutation
 from dialogue_benchmark.task_eval.run import evaluate, freeze
 from dialogue_benchmark.task_eval.versions import pin_baseline
-import test_task_eval_flow
+from tests import test_task_eval_flow
 
 
 CONTRACT = """REVIEW h1
