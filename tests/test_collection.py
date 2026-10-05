@@ -3,11 +3,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from dialogue_benchmark.collection import episode_usage, run_collection, validate_plan
+from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, episode_usage,
+                                            run_collection, validate_plan)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_default_task_workers_allow_independent_tasks_to_run_in_parallel(self):
+        self.assertEqual(EVALUATION_DEFAULTS["task_workers"], 2)
+
     def test_costs_include_failed_calls_without_counting_aggregate_ledgers_twice(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

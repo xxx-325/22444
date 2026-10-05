@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 from .chunking import split_scope
@@ -976,18 +976,36 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
             return failed
 
     results = []
-    # The generation pool finishes (and saves its candidates) before any
-    # review starts. The second pool consumes saved in-memory attempts; it
-    # never regenerates an already attempted group.
+    generated_results = []
+    # Keep a bounded number of model calls in flight, but do not introduce a
+    # full-batch barrier between generation and review.  A finished group can
+    # be reviewed while other groups are still generating.  Each group keeps
+    # its own ChatClient and prepared state, so no conversation is shared
+    # across groups.
+    pending = {}
+    blocked = False
     with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-        generated_results = [future.result() for future in as_completed(
-            [pool.submit(run, task, "generate") for task in tasks])]
-    if any(globally_blocked(row[2].get("stage_errors", [])) for row in generated_results):
+        for task in tasks:
+            future = pool.submit(run, task, "generate")
+            pending[future] = ("generate", task)
+        while pending:
+            done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+            for future in done:
+                phase, task = pending.pop(future)
+                row = future.result()
+                if phase == "generate":
+                    generated_results.append(row)
+                    if globally_blocked(row[2].get("stage_errors", [])):
+                        blocked = True
+                    elif not blocked:
+                        review = pool.submit(run, task, "review")
+                        pending[review] = ("review", task)
+                else:
+                    results.append(row)
+    # Preserve the old fail-closed behavior for authentication/global
+    # blockers: generated artifacts remain visible, but no review is counted.
+    if blocked:
         results = generated_results
-    else:
-        with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-            for future in as_completed([pool.submit(run, task, "review") for task in tasks]):
-                results.append(future.result())
     merged = {"questions": [], "rejected": [], "usage": [],
               "stage_errors": [], "stage_status": [], "all_candidates": [],
               "reviewed_questions": [], "revisions": [],

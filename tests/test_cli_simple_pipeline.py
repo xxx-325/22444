@@ -15,7 +15,7 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "dialogue.json"
 
 
 class SimpleCliPipelineTests(unittest.TestCase):
-    def test_all_groups_generate_and_save_before_review_without_reclassification_gate(self):
+    def test_generation_and_review_are_bounded_without_reclassification_gate(self):
         scope = {"cutoff": 1, "dialogue": [{"id": "e1", "order": 1,
                  "kind": "message", "role": "user", "text": "保留 yaml"}],
                  "events": [], "versions": [], "model_request_chars": 32000}
@@ -46,8 +46,10 @@ class SimpleCliPipelineTests(unittest.TestCase):
                     "generation_attempt_count": 1, "generation_request_count": 1}
 
         def review(scope, facts, candidates, *args, **kwargs):
-            self.assertEqual(finished, {"g0", "g1"})
-            self.assertEqual(len(list(checkpoints.glob("*generated-candidates.json"))), 2)
+            # Review may start as soon as this group's generation finishes;
+            # another group is allowed to remain in flight.
+            self.assertTrue(finished)
+            self.assertGreaterEqual(len(list(checkpoints.glob("*generated-candidates.json"))), 1)
             calls.append("review")
             return {"questions": [dict(candidates[0], status="approved")],
                     "review_warnings": [{"reason": "annotation_unavailable"}]}
@@ -61,7 +63,8 @@ class SimpleCliPipelineTests(unittest.TestCase):
                 result = cli._run_qa_tasks(tasks, "https://example.invalid", "model", "KEY", 2,
                     checkpoint_dir=checkpoints, review_mode="simple",
                     evidence_indexes={"general": index})
-        self.assertEqual(calls, ["generate", "generate", "review", "review"])
+        self.assertEqual(calls.count("generate"), 2)
+        self.assertEqual(calls.count("review"), 2)
         self.assertEqual(len(result["questions"]), 2)
         self.assertEqual(len(result["review_warnings"]), 2)
         self.assertFalse(result["rejected"])

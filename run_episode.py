@@ -158,7 +158,12 @@ def main(argv=None):
         else:
             qa_args += ["--qa-mode", "both", "--general-count", str(args.general_count or 40),
                         "--code-count", str(args.code_count or 40), "--questions-per-group", "3",
-                        "--adaptive-subgraphs", "--expansion-budget", "3"]
+                        "--adaptive-subgraphs", "--expansion-budget", "3",
+                        # Graph QA already has deterministic source, type, and
+                        # duplicate checks. Keep its model review to one
+                        # combined pass; external-memory QA retains its
+                        # stricter default review.
+                        "--review-mode", "single"]
         for event_id in args.source_event:
             qa_args += ["--source-event", event_id]
         for name in args.source_object:
