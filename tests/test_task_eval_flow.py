@@ -401,6 +401,9 @@ class TaskPreflightTests(unittest.TestCase):
                 stages.append("validator")
                 folder = root / "workspace/checks"
                 folder.mkdir()
+                (folder / "commands").mkdir()
+                (folder / "commands/inspect-a1.sh").write_text(
+                    "#!/bin/sh\nexit 0\n")
                 self.assertIn("验收项 ID（如 a6，不是 Markdown 行号）", message)
                 (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: %s\nEND_REVIEW" % acceptance_id)
                 (folder / "m1.patch").write_text(
@@ -501,6 +504,9 @@ class TaskPreflightTests(unittest.TestCase):
             elif root.name == "validator":
                 folder = root / "workspace/checks"
                 folder.mkdir()
+                (folder / "commands").mkdir()
+                (folder / "commands/inspect-a1.sh").write_text(
+                    "#!/bin/sh\nexit 0\n")
                 (folder / "mutations.txt").write_text("REVIEW m1\nacceptance: a2\nEND_REVIEW")
                 (folder / "m1.patch").write_text(
                     "--- a/report.txt\n+++ b/report.txt\n@@ -1,2 +1,2 @@\n"

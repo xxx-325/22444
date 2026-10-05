@@ -322,6 +322,26 @@ class TaskEvaluationTests(unittest.TestCase):
             self.assertEqual((combined / "test_acceptance.py").read_text(), "Original tests")
             self.assertEqual((combined / "test_interactions.py").read_text(), "Combination regression")
 
+    def test_validator_requires_and_freezes_one_command_per_inspect_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec, checks = root / "spec", root / "checks"
+            spec.mkdir()
+            checks.mkdir()
+            (spec / "acceptance.md").write_text(
+                "| ID | Requirement | Basis | Check |\n"
+                "|---|---|---|---|\n"
+                "| a1 | Export meaning | task | inspect: run export and verify output |\n")
+            (checks / "coverage.md").write_text("a1: complete\n")
+            self.assertIsNone(validated_spec(spec, checks, root / "missing-command"))
+            commands = checks / "commands"
+            commands.mkdir()
+            (commands / "inspect-a1.sh").write_text("#!/bin/sh\nexit 0\n")
+            frozen = validated_spec(spec, checks, root / "frozen")
+            self.assertIsNotNone(frozen)
+            self.assertEqual((frozen / "commands/inspect-a1.sh").read_text(),
+                             "#!/bin/sh\nexit 0\n")
+
     def test_timeout_and_invalid_junit_are_errors_not_unavailable_tests(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "receipt.xml"

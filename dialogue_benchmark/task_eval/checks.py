@@ -154,6 +154,28 @@ def _artifact_evidence(value, roots):
     return False
 
 
+def _inspect_command_id(identity):
+    """Return the frozen command identity for an inspect acceptance row."""
+    return "command::inspect-" + identity
+
+
+def _inspect_command_cases(items, checks):
+    """Return deterministic command results for each inspect row, if present."""
+    cases = {}
+    for case in checks.get("cases", []):
+        identity = case.get("id")
+        if isinstance(identity, str):
+            cases.setdefault(identity, []).append(case)
+    result = {}
+    for item in items:
+        if item["tests"]:
+            continue
+        matches = cases.get(_inspect_command_id(item["id"]), [])
+        if len(matches) == 1:
+            result[item["id"]] = matches[0]
+    return result
+
+
 def assess_acceptance(items, checks, review_path=None, roots=None):
     """One result per mandatory item, plus execution failures in frozen regressions."""
     from ..llm import parse_text_response

@@ -9,7 +9,8 @@ import shutil
 
 from . import prompts
 from .artifacts import copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs, read, save, write_diff
-from .checks import run_checks, acceptance_items, assess_acceptance, check_history_mutations
+from .checks import (run_checks, acceptance_items, assess_acceptance,
+                     check_history_mutations, _inspect_command_cases)
 from .metrics import compare_trials
 from .runtime import (bounded_model_config, configure, preflight_openhands_runtime,
                       review_task, review_checks, repair_tests, write_tests,
@@ -185,6 +186,30 @@ def validated_spec(spec, validator_checks, output, *, allow_new_tests=True):
         source = Path(validator_checks) / name
         if source.is_file():
             shutil.copy2(source, Path(output) / name)
+    # Each remaining inspect row must have one deterministic frozen command.
+    # The same command is run for reference, both formal arms, and history
+    # mutants; independent Judge calls must not reinterpret its call shape.
+    inspect_ids = []
+    acceptance = Path(output) / "acceptance.md"
+    if acceptance.is_file():
+        for line in acceptance.read_text(encoding="utf-8").splitlines():
+            cells = [cell.strip().strip("`")
+                     for cell in line.strip().strip("|").split("|")]
+            if (len(cells) == 4 and cells[0].lower().startswith("a")
+                    and cells[3].strip().startswith("inspect:")):
+                inspect_ids.append(cells[0].lower())
+    source_commands = Path(validator_checks) / "commands"
+    target_commands = Path(output) / "commands"
+    command_files = (sorted(source_commands.glob("inspect-a*.sh"))
+                     if source_commands.is_dir() else ())
+    for path in command_files:
+        if path.is_file():
+            target_commands.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target_commands / path.name)
+    missing = [identity for identity in inspect_ids
+               if not (target_commands / ("inspect-" + identity + ".sh")).is_file()]
+    if missing:
+        return None
     return Path(output)
 
 
@@ -211,7 +236,9 @@ def inspect_acceptance(candidate, spec, items, checks, root, config, agent_optio
              "/workspace/checks": judge / "workspace/checks",
              "/workspace/experiments": judge / "workspace/experiments"}
     judged = {"status": "not_needed"}
-    if any(not row["tests"] for row in items):
+    inspect_rows = [row for row in items if not row["tests"]]
+    deterministic = _inspect_command_cases(inspect_rows, checks)
+    if inspect_rows and len(deterministic) != len(inspect_rows):
         try:
             options = budget.remaining() if budget is not None else agent_options
             judged = run_agent(judge, config, "judge", prompts.JUDGE, reference=reference, **options)

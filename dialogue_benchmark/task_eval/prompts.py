@@ -279,10 +279,14 @@ AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你�
    仅在 TESTS_UNAVAILABLE.md 写人工步骤不会触发验收；不得把未测试的部分藏在 test: 行中。
    例如 test: test_acceptance::test_feature；多个测试用逗号分隔。
    非 pytest 检查可用 command: check_name，保存 commands/check_name.sh，
-   成功返回0、违反要求返回1、执行异常返回2。相关离线回归也保存为命令，供两组一致执行。
+   成功返回0、违反要求返回1、执行异常返回2。每个 inspect:a<ID> 验收项必须另外保存
+   commands/inspect-a<ID>.sh；它接收固定的 /workspace/candidate，执行 acceptance.md
+   中写明的同一输入和调用，满足要求返回0，明确违反返回1，无法执行返回2。
+   脚本只能把临时产物写到 /workspace/experiments，不能改 candidate。相关离线回归也保存为命令，供两组一致执行。
    回归用例从只读基线复制到 checks 下的子目录，命令引用这些冻结副本，
    不对参考实现或作答者可新增、修改的 tests 目录重新发现测试。
-   不能自动测试的项保留 inspect: 具体动作、输入、预期结果，并写 TESTS_UNAVAILABLE.md。
+   不能自动测试的项仍保留 inspect: 具体动作、输入、预期结果，但必须同时写对应的
+   commands/inspect-a<ID>.sh；没有脚本的 inspect 项不会进入冻结任务。
 
 测试只围绕当前验收，不寻找第二个新需求。
 完成后列出写入的文件并结束；实际结果由后续执行产生。""" + TEST_EXECUTION
@@ -316,6 +320,8 @@ candidate_root 是只读基线，只能读取其中的源码、文档和固定�
 不能写入 candidate_root、/workspace/candidate 或其子目录。
 acceptance.md 只替换 Check 列，其他列原样保留。自动测试用 test: test_acceptance::函数名，含义检查用 inspect: 具体检查动作和预期含义；
 原仓库 tests 已由程序冻结，旧接口回归可引用 command: existing_suite。
+每个 inspect 行同时写 commands/inspect-a<ID>.sh，脚本按该行的固定输入和调用执行，
+成功返回0、违反返回1、异常返回2；不要把调用交给两次独立 Judge 自己猜。
 程序会实际运行全部用例，再检查参考实现与错用历史的变体；不要编写或声称执行结果。
 一次性交付直接检查产物。需要调用新能力却没有约定入口，或固定需求有具体矛盾，仅输出 FILE NO_TASK.md、问题说明、END_FILE，不猜函数别名。
 不要输出 JSON、代码围栏或其他解释。
@@ -413,6 +419,8 @@ CHECKS_REVIEW = """审核每项要求的检查覆盖计划，依据已保存的�
 test: 与 command: 核对引用的真实执行结果及断言是否覆盖要求。
 inspect: 核对固定输入、检查动作和预期结果是否具体且覆盖要求；实际检查及证据将在下一阶段完成，不能仅因没有同名测试或 pytest 结果就判 gaps。
 程序只执行 acceptance.md 的 Check 列：test: 行只采用其测试结果，不会执行 TESTS_UNAVAILABLE.md 中的人工步骤。
+每个 inspect 行还必须在 /workspace/checks/commands/inspect-a<ID>.sh 固定执行相同输入和调用，
+成功返回0、明确违反返回1、执行异常返回2；两组正式执行共同使用该脚本，不要让 Judge 临时改写调用形状。
 若一行尚有必要的人工检查但 Check 仍是 test:，判 gaps，要求将整行改为 inspect: 并复用已有测试结果。
 仅写“由 Judge 判断”等泛泛安排，缺少具体检查动作或预期含义，仍判 gaps。
 测试通过不证明测试合理。检查边界、作用范围及公开功能与历史条件的区分。

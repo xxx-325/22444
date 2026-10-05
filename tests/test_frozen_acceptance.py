@@ -79,6 +79,20 @@ class FrozenAcceptanceTests(unittest.TestCase):
                                        {"/workspace/checks": self.root})
             self.assertEqual(result["status"], expected)
 
+    def test_frozen_inspect_command_is_authoritative_and_does_not_need_judge(self):
+        items = [dict(self.items[0], tests=[])]
+        checks = {"status": "passed", "cases": [
+            {"id": "command::inspect-a1", "status": "passed", "detail": "fixed probe"}]}
+        review = self.root / "review.txt"
+        review.write_text("REVIEW a1\nstatus: failed\nevidence: none\nEND_REVIEW")
+        result = assess_acceptance(items, checks, review)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["rows"][0]["evidence"], "command::inspect-a1")
+
+        checks["cases"][0]["status"] = "failed"
+        result = assess_acceptance(items, checks, review)
+        self.assertEqual(result["status"], "failed")
+
     def test_manual_evidence_checks_every_selected_line_in_one_known_file(self):
         items = [dict(self.items[0], tests=[])]
         (self.root / "output.txt").write_text("real output\n" * 16)
