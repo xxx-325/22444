@@ -515,7 +515,7 @@ class HistoryConstructionTests(unittest.TestCase):
         calls.draft.assert_called_once()
         calls.review.assert_called_once()
         self.assertEqual([call.args[0].name for call in calls.agent.call_args_list],
-                         ["author", "reference-solver"] * 3)
+                         ["author", "reference-solver", "author", "author", "reference-solver"])
         self.assertEqual(calls.sources.call_count, 3)
         self.assertEqual(calls.coverage.call_count, 3)
         self.assertEqual(calls.mutations.call_count, 2)
