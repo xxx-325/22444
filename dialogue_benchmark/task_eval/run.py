@@ -962,9 +962,16 @@ def selected_input_hash(item):
 def validate_resume(manifest, expected, selected, output, baseline):
     """Check experiment identity before changing any retained artifact."""
     for key in ("source_run", "qa_run", "baseline", "baseline_sha256", "baseline_version",
-                "config", "execution", "target", "task_budget", "selection_only", "selected_qa_ids"):
-        if manifest.get(key) != expected[key]:
+                "config", "execution", "target", "task_budget", "selection_only",
+                "selected_qa_ids", "evaluator_version", "simulator_version"):
+        # Legacy manifests predate the two source-version receipts.  They may
+        # still be inspected, but a current resume must not silently run the
+        # old artifact under a new evaluator.
+        if key in expected and key in manifest and manifest.get(key) != expected[key]:
             raise ValueError("Resume inputs changed: " + key)
+        if key in expected and key in {"evaluator_version", "simulator_version"}:
+            if key not in manifest:
+                raise ValueError("Resume manifest missing: " + key)
     hashes = expected["selected_inputs_sha256"]
     if "selected_inputs_sha256" in manifest and manifest["selected_inputs_sha256"] != hashes:
         raise ValueError("Resume QA or generation inputs changed")

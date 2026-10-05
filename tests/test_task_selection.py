@@ -172,6 +172,29 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "every active historical rule"):
             acceptance_items(spec)
 
+    def test_acceptance_row_cannot_mix_task_and_history_basis(self):
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        spec = self.root / "mixed-basis"
+        spec.mkdir()
+        (spec / "acceptance.md").write_text(
+            "| ID | Requirement | Basis | Check |\n"
+            "|---|---|---|---|\n"
+            "| a1 | Export works and preserves the agreed rule | task,h1 | "
+            "inspect: run the export and verify the result |\n")
+        with self.assertRaisesRegex(ValueError, "Invalid acceptance item: a1"):
+            acceptance_items(spec, {"contracts": [{"id": "h1", "active": True}]})
+
+    def test_acceptance_rejects_empty_inspect_check(self):
+        from dialogue_benchmark.task_eval.checks import acceptance_items
+        spec = self.root / "empty-inspect"
+        spec.mkdir()
+        (spec / "acceptance.md").write_text(
+            "| ID | Requirement | Basis | Check |\n"
+            "|---|---|---|---|\n"
+            "| a1 | Export works | task | inspect: |\n")
+        with self.assertRaisesRegex(ValueError, "Inspect check needs an action"):
+            acceptance_items(spec)
+
     def test_external_private_author_can_decline_without_changing_public_task(self):
         selection = dict(qa_source="external", historical_answer="Historical answer", public={})
         budget = SelectionBudget(self.root, {})

@@ -198,6 +198,20 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertNotIn("Unrelated output", str(payload))
         self.assertNotIn("After cutoff", str(payload))
 
+    def test_declared_scope_does_not_append_unrelated_future_messages(self):
+        records = [*self.records,
+                   {"id": "future-user", "order": 4, "kind": "message", "role": "user",
+                    "text": "A different task's private operating rule."}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": [dict(
+                id="rule", kind="compatibility_contract", memory_kind="M1",
+                task_id="task-1", scope_policy="declared",
+                source_ids=["e1"], used_by=["e3"])]}))
+            scope, = load_external_scopes(path, records, 4)["scopes"]
+        self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e3"])
+        self.assertNotIn("future-user", json.dumps(scope))
+
     def test_confirmation_and_observation_have_distinct_evidence(self):
         scope = {"dialogue": self.records, "external_source_ids": ["e1", "e2"],
                  "external_usage_ids": ["e2", "e3"]}

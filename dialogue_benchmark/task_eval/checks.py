@@ -93,12 +93,20 @@ def acceptance_items(spec, history=None):
         identity, requirement, basis, check = cells
         identity = identity.lower()
         sources = [s.strip() for s in basis.split(",")]
-        if (not requirement or not check or any(s != "task" and s not in contracts for s in sources)
+        # A row is one atomic acceptance obligation.  Mixing the public task
+        # with a historical contract would make the mutation checker unable
+        # to isolate the historical part of the requirement.
+        if (len(sources) != 1
+                or not requirement or not check
+                or any(s != "task" and s not in contracts for s in sources)
                 or ("answer" in sources and sources != ["answer"])
                 or any(row["id"] == identity for row in rows)):
             raise ValueError("Invalid acceptance item: " + identity)
         tests = []
-        if not check.startswith("inspect:"):
+        if check.startswith("inspect:"):
+            if not check[8:].strip():
+                raise ValueError("Inspect check needs an action and expected result: " + identity)
+        else:
             for part in re.split(r";|,\s*(?=(?:test|command):)", check):
                 part = part.strip()
                 if part.startswith("test:"):

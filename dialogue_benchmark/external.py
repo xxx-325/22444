@@ -155,13 +155,18 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
     selected_ids = set(source_ids) | set(used_by) | set(context_ids)
     selected_orders = [records_by_id[item].get("order", 0) for item in selected_ids]
     first_source_order = min(records_by_id[item].get("order", 0) for item in source_ids)
-    # Cross-task corrections need not have a planned supersedes link. Every
-    # authoring/review stage sees the same later public conversation; unrelated
-    # tool history stays out, and these messages do not become fact seeds.
-    dialogue = [record for record in records if record.get("id") in selected_ids
-                or (record.get("kind") == "message"
-                    and record.get("role") in {"user", "assistant"}
-                    and first_source_order < record.get("order", 0) <= cutoff)]
+    # Current episode exports carry a declared scope.  Do not silently append
+    # every later user/assistant message: that can expose an unrelated future
+    # fact to the QA author and make a question depend on information outside
+    # its source group.  Legacy sidecars without the marker retain the old
+    # correction-context behavior for reproducibility.
+    if event.get("scope_policy") == "declared":
+        dialogue = [record for record in records if record.get("id") in selected_ids]
+    else:
+        dialogue = [record for record in records if record.get("id") in selected_ids
+                    or (record.get("kind") == "message"
+                        and record.get("role") in {"user", "assistant"}
+                        and first_source_order < record.get("order", 0) <= cutoff)]
     group_id = "external-%s" % event["id"]
     target_type = event["memory_kind"]
     return {

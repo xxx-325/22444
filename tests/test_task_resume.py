@@ -49,6 +49,30 @@ class TaskResumeTests(unittest.TestCase):
                 validate_resume(manifest, expected, [], output, baseline)
             self.assertEqual(read(output / "manifest.json"), manifest)
 
+    def test_resume_rejects_changed_evaluator_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            (baseline / "a.py").write_text("value = 1\n")
+            pin_baseline(baseline)
+            expected = {
+                "source_run": "source", "qa_run": "qa", "baseline": str(baseline),
+                "baseline_sha256": fingerprint(baseline), "baseline_version": {"base": 1},
+                "config": {"model": "same"}, "execution": {"agent_requests": 1},
+                "target": 1, "task_budget": 1, "selection_only": False,
+                "selected_qa_ids": ["q1"], "config_sha256": "same-hash",
+                "selected_inputs_sha256": ["input-hash"],
+                "evaluator_version": {"commit": "new"},
+                "simulator_version": {"commit": "same"},
+            }
+            manifest = dict(expected, evaluator_version={"commit": "old"}, tasks=[])
+            output = root / "output"
+            output.mkdir()
+            save(output / "manifest.json", manifest)
+            with self.assertRaisesRegex(ValueError, "Resume inputs changed: evaluator_version"):
+                validate_resume(manifest, expected, [], output, baseline)
+
     def test_resume_marks_started_solver_without_result_as_uncertain(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
