@@ -10,6 +10,7 @@ from dialogue_benchmark.task_eval.artifacts import read, save
 
 class CollectionTests(unittest.TestCase):
     def test_default_task_workers_allow_independent_tasks_to_run_in_parallel(self):
+        self.assertEqual(EVALUATION_DEFAULTS["parallel_workers"], 6)
         self.assertEqual(EVALUATION_DEFAULTS["task_workers"], 2)
 
     def test_costs_include_failed_calls_without_counting_aggregate_ledgers_twice(self):

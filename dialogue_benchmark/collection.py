@@ -13,7 +13,7 @@ from .task_eval.artifacts import read, save
 from .task_eval.metrics import cache_usage
 
 EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
-                           parallel_workers=2, task_workers=2, revisions=3,
+                           parallel_workers=6, task_workers=2, revisions=3,
                            model_request_chars=96000, qa_only=False,
                            general_count=50, code_count=50)
 
