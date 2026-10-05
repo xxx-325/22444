@@ -734,11 +734,12 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             if coverage_review["status"] != "complete":
                 record.update(accepted=False, reason="checks_" + coverage_review["status"])
                 save(root / "construction.json", attempts)
-                # A failed coverage request is an evaluation-stage failure,
-                # not evidence that the task or reference implementation is
-                # wrong.  Keep the receipt and stop this task; do not loop
-                # back into AUTHOR and accidentally rewrite the task.
-                break
+                if coverage_review["status"] == "uncertain":
+                    # A failed coverage request is an evaluation-stage
+                    # failure, not evidence that the task or reference
+                    # implementation is wrong. Keep the receipt and stop this
+                    # task; do not loop back into AUTHOR.
+                    break
                 previous_tests = reference / ("previous-%02d" % attempt)
                 copy_tree(spec, previous_tests)
                 feedback = "\n上一轮测试审核发现具体问题，请保留目标并修正：\n" + str(coverage_review)

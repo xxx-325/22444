@@ -130,6 +130,7 @@ class PublicEpisodeTests(unittest.TestCase):
                 self.assertEqual(fingerprint(Path(args[args.index("--baseline") + 1])), manifest["snapshot"]["sha256"])
                 return 0
             with patch("run_episode.configure", return_value=config) as configure, \
+                 patch("run_episode.preflight_openhands_runtime"), \
                  patch("run_episode.generate_qa", side_effect=qa), \
                  patch("run_episode.run_tasks", side_effect=tasks), patch("run_episode.render"):
                 self.assertEqual(run_episode(["--episode-manifest", str(root / "manifest.json"),
@@ -152,6 +153,7 @@ class PublicEpisodeTests(unittest.TestCase):
             save(root / "manifest.json", manifest)
             self.assertEqual(load_episode_manifest(root / "manifest.json")["external_events"], events.resolve())
             with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.preflight_openhands_runtime"), \
                  patch("run_episode.generate_qa", side_effect=qa) as generate, \
                  patch("run_episode.render"):
                 self.assertEqual(run_episode(["--episode-manifest", str(root / "manifest.json"),
