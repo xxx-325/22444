@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from .llm import ChatClient, DEFAULT_REQUEST_TIMEOUT
+from .llm import ChatClient, DEFAULT_REQUEST_TIMEOUT, request_size
 from .task_eval.selection import _path, _query_from_text, query_evidence
 
 
@@ -36,6 +36,9 @@ read|repo|相对路径|-|0  （按行读取，offset 从 0 开始）
 read 每页最多 80 行，lookup 每页最多 20 项。next_offset 非空表示还有内容，续页将它填入 offset。
 lookup 命中行号从 1 开始，read 的 offset 从 0 开始；可从命中位置附近读取，不必总从文件头开始。
 observations 是已经执行的查询及结果。
+如果给出 repository_snapshot，它包含当前仓库所有可查询文件的完整正文，没有省略页；可用 EVIDENCE: snapshot 引用它。
+完整快照已覆盖相关实现、测试和业务数据时，核对这些内容是否足以确定客户约定；通用的 approved 校验不能恢复客户约定的额外有效期或例外。
+不要仅凭约定名称零命中判断；应对照实际行为和完整内容。没有完整快照时，仍按查询检查相关上下文。
 不要重复相同查询。搜索零命中后，改读相关文件或换一个关键词。
 每次只请求一个具体查询。读到新内容后再作结论。
 remaining_queries 是剩余可读取次数；为 0 时只能依据 observations 给出结论，QUERY 必须为 none。
@@ -89,6 +92,30 @@ def _compact_receipt(receipt):
     return {"id": receipt.get("id"), "query": receipt.get("query"), "result": result}
 
 
+def _complete_repository_snapshot(root, max_chars):
+    """Read the entire non-hidden text surface only when it fits one request."""
+    files, chars = [], 0
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        if path.is_symlink():
+            return None
+        if not path.is_file():
+            continue
+        if path.stat().st_size > 2000000:
+            return None
+        try:
+            text = _path(root, str(relative)).read_text(encoding="utf-8")
+        except (OSError, UnicodeError, ValueError):
+            return None
+        chars += len(text)
+        if chars > max_chars:
+            return None
+        files.append({"path": str(relative), "text": text})
+    return {"id": "snapshot", "complete": True, "files": files} if files else None
+
+
 def _write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,9 +146,20 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
                   "anchors": anchors, "steps": []}
         _write_json(output / "result.json", result)
         return result
-    state = {"question": question_text, "answer_claims": claims,
-             "anchors": anchors, "repository_entries": _repository_entries(root),
-             "observations": []}
+    snapshot = _complete_repository_snapshot(root, model_request_chars)
+    # Put the stable repository view before the question-specific fields.
+    # DeepSeek can then reuse the long prefix across candidates from the same
+    # baseline instead of recomputing the snapshot context for every probe.
+    state = {}
+    if snapshot:
+        state["repository_snapshot"] = snapshot
+    state.update({"question": question_text, "answer_claims": claims,
+                  "anchors": anchors, "repository_entries": _repository_entries(root),
+                  "observations": []})
+    snapshot_input = dict(state, repository_snapshot=snapshot,
+                          model_request_chars=model_request_chars, remaining_queries=max_steps)
+    if snapshot and request_size(PROBE_PROMPT, snapshot_input) <= model_request_chars:
+        state["repository_snapshot"] = snapshot
     seen = set()
     steps = []
     client = ChatClient(endpoint, model, key_env, request_timeout, system=PROBE_SYSTEM,
@@ -164,7 +202,10 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
             break
         refs = [value.strip() for value in str(probe.get("evidence", "none")).split(",")
                 if value.strip() and value.strip().casefold() != "none"]
-        if set(refs) - {item["id"] for item in state["observations"]}:
+        observations = {item["id"]: item for item in state["observations"]}
+        if "repository_snapshot" in state:
+            observations["snapshot"] = {"result": state["repository_snapshot"]}
+        if set(refs) - observations.keys():
             final = {"status": "uncertain", "reason": "unknown_probe_evidence"}
             steps.append({"step": index + 1, "decision": decision, "error": final["reason"]})
             break
@@ -201,13 +242,13 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
             steps.append({"step": index + 1, "error": final["reason"]})
             break
         if decision in {"recoverable", "history_required"}:
-            observations = {item["id"]: item for item in state["observations"]}
             cited_results = [observations[ref]["result"] for ref in refs
                              if ref in observations]
             has_content = any(
                 bool(result.get("lines"))
                 or any(isinstance(match, dict) and "match" in match
                        for match in result.get("matches", []))
+                or any(item.get("text") for item in result.get("files", []))
                 for result in cited_results)
             if not refs or not cited_results or not has_content:
                 final = {"status": "uncertain", "reason": decision + "_without_repository_evidence"}
@@ -225,5 +266,7 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
     result = dict(final, anchors=anchors, query_count=len(state["observations"]),
                   observations=[_compact_receipt(item) for item in state["observations"]],
                   steps=steps, usage=client.usage)
+    if "repository_snapshot" in state:
+        result["repository_snapshot"] = state["repository_snapshot"]
     _write_json(output / "result.json", result)
     return result
