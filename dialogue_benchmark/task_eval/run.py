@@ -339,7 +339,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     reference_feedback = ""
     previous_reference = None
     reuse_reference = False
-    reselection_used = False
     repeated_format_errors = set()
     budget = SelectionBudget(root, agent_options)
     reused = load_preparation(reuse_preparation, item, baseline, public_history) if reuse_preparation else None
@@ -503,21 +502,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                      status="pending" if task_review["status"] == "uncertain" else "stop",
                                      task_review=task_review))
                 save(root / "construction.json", attempts)
-                if (item.get("qa_source") == "external" and fixed_draft is None
-                        and not selection_only and attempt < revisions
-                        and task_review.get("status") == "ineligible"
-                        and not reselection_used):
-                    reselection_used = True
-                    selection = select_task(item["qa"], public_history, baseline, config,
-                        run / "reselection", budget, exploration=exploration_text,
-                        workflow=item.get("development_workflow"),
-                        feedback={"public_task": (spec / "task.md").read_text()
-                                  if (spec / "task.md").exists() else "",
-                                  "review": task_review})
-                    selection["qa_source"] = "external"
-                    if selection["status"] == "candidate":
-                        feedback = ""
-                        continue
                 break
             if fixed_draft is None:
                 fixed_draft = run / "qualified-draft"
