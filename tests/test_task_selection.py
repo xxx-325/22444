@@ -130,7 +130,9 @@ class SelectionTests(unittest.TestCase):
         payload = call.call_args.args[1]
         self.assertEqual(payload["development_workflow"], workflow)
         self.assertEqual(payload["public_goal"], "Prepare the Maple export")
-        self.assertEqual(payload["repository_evidence"], saved["public_repository_evidence"])
+        self.assertEqual(payload["repository_evidence"],
+                         [row["result"] for row in saved["public_repository_evidence"]])
+        self.assertNotIn("id", str(payload["repository_evidence"]))
         self.assertNotIn("omit null note", str(payload))
         for private in ("agreement_object", "agreement_scope", "history_targets",
                         "historical_answer", "evidence"):
@@ -242,6 +244,7 @@ class SelectionTests(unittest.TestCase):
             result = select_task({"question": "Maple rule?"}, self.history,
                                  self.repo, {}, self.root / "on-demand", budget)
         self.assertNotIn("Unrelated rendering correction", str(calls[0]))
+        self.assertNotIn("type", calls[0]["qa"])
         self.assertEqual(calls[0]["history_sources"][0]["source"], "source1")
         self.assertTrue(calls[0]["history_sources"][0]["answer_source"])
         self.assertEqual(calls[1]["queries"][0]["result"]["text"], "Maple rule")
@@ -371,7 +374,9 @@ class SelectionTests(unittest.TestCase):
         self.assertNotIn("agreement_scope", public_payload)
         self.assertNotIn("repository_exploration", public_payload)
         self.assertNotIn("caller_rule_map", str(public_payload))
-        self.assertEqual(public_payload["repository_evidence"], selection["public_repository_evidence"])
+        self.assertEqual(public_payload["repository_evidence"],
+                         [row["result"] for row in selection["public_repository_evidence"]])
+        self.assertNotIn("id", str(public_payload["repository_evidence"]))
         private_payload = calls[1][1]
         self.assertIn("Omit note=null", private_payload["historical_answer"])
         self.assertIn("omit null note", str(private_payload["history_targets"]))

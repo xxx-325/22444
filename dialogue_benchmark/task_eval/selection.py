@@ -297,6 +297,24 @@ def repository_overview(root, limit=80):
             "relevant_paths": relevant_paths}
 
 
+def _model_repository_evidence(rows):
+    """Project host query receipts to observations, not control metadata.
+
+    The task writer needs to know what the repository contained, but it does
+    not need the host's query IDs, request shapes, or cache bookkeeping.
+    Keeping those fields out of the model payload also prevents a public task
+    from accidentally repeating the construction protocol.
+    """
+    projected = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("result", row)
+        if isinstance(value, dict):
+            projected.append(value)
+    return projected
+
+
 def select_task(qa, history, baseline, config, output, budget, *, exploration=None, workflow=None, feedback=None):
     from .prompts import SELECT_TASK
     output = Path(output)
@@ -310,7 +328,10 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
     # query log (and turn-specific choices) first would invalidate the useful
     # prefix on every evidence request.
     state = {
-        "qa": {k: qa[k] for k in ("question", "answer_points", "type") if k in qa},
+        # The QA route and internal type labels are control-side metadata.  The
+        # selector only needs the question and the answer material to decide
+        # whether a real follow-up task exists.
+        "qa": {k: qa[k] for k in ("question", "answer_points") if k in qa},
         "history_sources": sources,
         "repository_overview": repository_overview(baseline),
         "repository_exploration": exploration or "",
@@ -511,7 +532,10 @@ def extract_history_targets(qa, history, public, config, output, budget):
         focused = [focused[index] for index in sorted(keep)]
     initial = [{"source": event.get("source", event["id"]), "role": event.get("role"),
                 "text": event.get("text", "")} for event in focused]
-    payload = {"question": qa.get("question", ""), "type": qa.get("type", ""),
+    # Type labels (including M1--M6) are classification metadata, not facts
+    # needed to freeze a historical rule.  Keeping them out of the prompt
+    # prevents the author from treating the construction label as a clue.
+    payload = {"question": qa.get("question", ""),
                "agreement": public, "history": initial}
     try:
         response = budget.call(HISTORY_TARGETS, payload, config, output)
@@ -539,7 +563,8 @@ def write_public_task(selection, config, output, spec, budget, feedback=""):
     payload = {"public_goal": public["public_goal"],
                "historical_question": selection.get("historical_question", ""),
                "repository_overview": selection.get("repository_overview", {}),
-               "repository_evidence": selection.get("public_repository_evidence", []),
+               "repository_evidence": _model_repository_evidence(
+                   selection.get("public_repository_evidence", [])),
                "feedback": feedback}
     workflow = selection.get("evidence", {}).get("development_workflow")
     if workflow:
@@ -571,7 +596,8 @@ def write_private_draft(selection, config, output, spec, budget, feedback="", hi
                                     "role": event.get("role")} for event in history.get("events", [])
                                    if event["id"] in {source for target in targets for source in target["sources"]}],
                "historical_answer": selection.get("historical_answer", ""),
-               "repository_evidence": selection.get("public_repository_evidence", []),
+               "repository_evidence": _model_repository_evidence(
+                   selection.get("public_repository_evidence", [])),
                "feedback": feedback}
     response = budget.call(PRIVATE_DRAFT_SIMPLE, payload, config, output)
     if not isinstance(response.get("use"), str) or not response["use"].strip():
@@ -616,7 +642,8 @@ def write_draft(selection, config, output, spec, budget, feedback=""):
         payload = {"selection": {"public_goal": public.get("public_goal", "")},
                    "repository_overview": selection.get("repository_overview", {}),
                    "repository_exploration": selection.get("repository_exploration", ""),
-                   "evidence": selection.get("public_repository_evidence", []),
+                   "evidence": _model_repository_evidence(
+                       selection.get("public_repository_evidence", [])),
                    "feedback": feedback}
         response = budget.call(TASK_ONLY_DRAFT, payload, config, Path(output) / "public")
         files = _parse_files(response, {"task.md"}, {"task.md"})

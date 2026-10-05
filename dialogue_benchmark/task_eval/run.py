@@ -117,7 +117,6 @@ def explore_repository(root, baseline, item, config, options, public_history=Non
     qa = item.get("qa", {})
     lines = [REPOSITORY_EXPLORER, "\nQA 定位问题:",
              "QUESTION: " + str(qa.get("question", "")),
-             "TYPE: " + str(qa.get("type", "")),
              "不要读取或猜测答案；只用问题中的对象定位当前代码。"]
     remaining = dict(max_requests=min(40, options.get("max_requests", 80)),
                      max_tokens=min(300000, options.get("max_tokens", 1500000)),
