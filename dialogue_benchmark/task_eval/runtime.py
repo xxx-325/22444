@@ -174,7 +174,7 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
             path.relative_to(baseline).as_posix(): path.read_text()
             for path in _repository_files(baseline, BUSINESS_DATA_SUFFIXES)
         }
-        execution_context = ""
+        execution_context = None
         if frozen_regression:
             execution_context = (
                 "Before check execution, the host replaces /workspace/candidate/tests in a disposable "
@@ -185,13 +185,11 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
         # The repository/business context is stable across repair attempts;
         # criteria, diffs, and outcomes are the changing suffix.  This keeps
         # the large common prefix eligible for provider KV-cache reuse.
-        payload = {
-            "business_inputs": business_inputs,
-            "execution_context": execution_context,
-            "criteria_and_tests": files,
-            "changed_sources": sources,
-            "executed_checks": outcomes,
-        }
+        payload = {"business_inputs": business_inputs}
+        if execution_context is not None:
+            payload["execution_context"] = execution_context
+        payload.update(criteria_and_tests=files, changed_sources=sources,
+                       executed_checks=outcomes)
         response = budget.call(CHECKS_REVIEW, payload, config, output)
         rows = response.get("reviews", [])
         expected = {row["id"] for row in criteria} | {"tests"}
