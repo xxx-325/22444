@@ -120,9 +120,23 @@ def qa_inputs(qa_run):
                     "original_candidate": original,
                     "reviewed_candidate": reviewed.get(question["id"], original),
                     "qa_source": run_manifest.get("qa_source", "graph")}
-            workflow = (read(path).get("payload", {}).get("workflow", {})
-                        if item["qa_source"] == "external" else {})
-            if isinstance(workflow, dict) and isinstance(workflow.get("text"), str):
+            payload = read(path).get("payload", {}) if item["qa_source"] == "external" else {}
+            workflow = payload.get("workflow", {})
+            focus = payload.get("focus", {})
+            workflow_sources = {
+                str(source) for source in (workflow.get("sources", []) if isinstance(workflow, dict) else [])
+                if str(source).strip()
+            }
+            focus_sources = {
+                str(source) for source in (focus.get("sources", []) if isinstance(focus, dict) else [])
+                if str(source).strip()
+            }
+            # Workflow and focus are generated in separate calls.  A workflow
+            # from a disjoint evidence group is background for another QA,
+            # not a valid task seed for this one.
+            if (isinstance(workflow, dict) and isinstance(workflow.get("text"), str)
+                    and (not workflow_sources or not focus_sources
+                         or workflow_sources & focus_sources)):
                 item["development_workflow"] = workflow["text"]
             if public_records is not None:
                 item["public_records"] = public_records

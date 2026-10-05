@@ -308,6 +308,21 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertEqual(item["original_candidate"]["answer_points"][0]["sources"], ["e1"])
         self.assertEqual(item["reviewed_candidate"]["answer_points"][0]["sources"], ["e3"])
 
+    def test_task_input_drops_workflow_from_a_disjoint_focus(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            question = dict(id="q1", type="M6", status="approved",
+                            answer_points=[dict(text="Keep the permit zone", sources=["e2"])])
+            save(root / "qa-public.json", {"questions": [question]})
+            save(root / "manifest.json", {"qa_source": "external"})
+            save(root / "stages/group-raw-candidates.json", {"questions": [question]})
+            save(root / "stages/group-qa-input.json", {"payload": {
+                "focus": {"text": "permit zone", "sources": ["资料2"]},
+                "workflow": {"text": "Close the fleet audit", "sources": ["资料10"]},
+            }})
+            item, = qa_inputs(root)
+            self.assertNotIn("development_workflow", item)
+
     def test_workflow_decline_or_invalid_sources_stop_before_qa(self):
         scope = self.scope("M1")
         facts = [{"id": "f1", "statement": "导出必须保留空值。", "sources": ["e1"]}]
