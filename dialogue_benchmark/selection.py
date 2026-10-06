@@ -262,7 +262,9 @@ def _bounded_chunks(indexes, max_size):
     if len(indexes) <= max_size:
         yield list(indexes)
         return
-    stride = max(1, max_size - 1)
+    # Keep enough overlap that a candidate at either edge is compared with
+    # the next connected candidate when a component is just over the bound.
+    stride = max(1, max_size - 2)
     for start in range(0, len(indexes), stride):
         chunk = list(indexes[start:start + max_size])
         if len(chunk) > 1:
@@ -332,7 +334,7 @@ def near_duplicate_clusters(questions, max_size=4):
             # bounded windows. The latter matters for external-memory
             # candidates whose public source IDs differ but whose retrieval
             # target is the same.
-            large_blocks.append((key, indexes))
+            large_blocks.append((key, indexes, questions))
     for indexes in small_blocks:
         for offset, left in enumerate(indexes):
             for right in indexes[offset + 1:]:
@@ -345,14 +347,22 @@ def near_duplicate_clusters(questions, max_size=4):
     grouped = {}
     for index, question in enumerate(questions):
         grouped.setdefault(find(index), []).append(question)
-    clusters = [items for items in grouped.values() if 1 < len(items) <= max_size]
+    clusters = []
+    oversized = []
+    for items in grouped.values():
+        if 1 < len(items) <= max_size:
+            clusters.append(items)
+        elif len(items) > max_size:
+            oversized.append(items)
     seen = {tuple(item.get("id") for item in items) for items in clusters}
     # The bounded windows make each block linear, but a document can still
     # expose many broad object blocks.  Keep the total pair checks linear in
     # the number of candidates (with a small constant for review recall).
     pair_budget = max(len(questions) * max_size * 4, max_size)
+    large_blocks.extend(
+        ("component", list(range(len(items))), items) for items in oversized)
     large_blocks.sort(key=lambda item: (len(item[1]), repr(item[0])))
-    for _, indexes in large_blocks:
+    for key, indexes, source_questions in large_blocks:
         windows = list(_bounded_chunks(indexes, max_size))
         estimated = sum(len(window) * (len(window) - 1) // 2
                         for window in windows)
@@ -360,7 +370,7 @@ def near_duplicate_clusters(questions, max_size=4):
             continue
         pair_budget -= estimated
         for chunk in windows:
-            for items in _reviewable_components(questions, chunk, max_size):
+            for items in _reviewable_components(source_questions, chunk, max_size):
                 key = tuple(item.get("id") for item in items)
                 if key not in seen:
                     clusters.append(items)

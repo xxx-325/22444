@@ -11,10 +11,12 @@ from dialogue_benchmark.selection import (
 )
 
 
-def question(qid, target, answer, source="e1", mode="code", status="approved"):
+def question(qid, target, answer, source="e1", mode="code", status="approved",
+             kind=None):
     return {
         "id": qid,
         "qa_mode": mode,
+        "type": kind,
         "status": status,
         "answer_target": target,
         "question": target + "？",
@@ -178,6 +180,31 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(
             {item["id"] for cluster in clusters for item in cluster},
             {"left", "right"})
+
+    def test_external_repeated_target_survives_oversized_component_partition(self):
+        # These five candidates reproduce the external-only shape: shared
+        # customer/date context creates one broad component, while the three
+        # WO-1090 answers are the repeated retrieval target across M1/M2/M6.
+        questions = [
+            question("memory_g5_t1_q1", "Northline 2024-05 WO-1090 release handling",
+                     "WO-1090 rolls to the next release comparison.", mode="memory", kind="M2"),
+            question("memory_g4_t1_q1", "Northline 2024-05 cost output decision",
+                     "The May run omits cost data.", mode="memory", kind="M1"),
+            question("memory_g7_t1_q1", "Northline 2024-05 WO-1090 confirmed decision",
+                     "WO-1090 rolls to the next release comparison.", mode="memory", kind="M6"),
+            question("memory_g0_t1_q1", "Northline 2024-05 approved baseline date",
+                     "The approved baseline date is 2024-05-06.", mode="memory", kind="M1"),
+            question("memory_g6_t1_q1", "Northline 2024-05 WO-1090 prior rule",
+                     "WO-1090 rolls to the next release comparison.", mode="memory", kind="M1"),
+        ]
+        clusters = near_duplicate_clusters(questions)
+        reviewed_pairs = {
+            tuple(sorted((left["id"], right["id"])))
+            for cluster in clusters
+            for left, right in combinations(cluster, 2)
+        }
+        self.assertIn(("memory_g5_t1_q1", "memory_g7_t1_q1"), reviewed_pairs)
+        self.assertIn(("memory_g6_t1_q1", "memory_g7_t1_q1"), reviewed_pairs)
 
     def test_failed_cluster_review_retains_every_candidate(self):
         left = question("left", "确认 Agent 时限", "Agent 最长 60 分钟")
