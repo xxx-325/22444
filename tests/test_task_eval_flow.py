@@ -269,6 +269,8 @@ class TaskPreflightTests(unittest.TestCase):
         with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
              patch("dialogue_benchmark.task_eval.run.write_tests",
                    return_value={"status": "finished", "metrics": {}}) as write_tests, \
+             patch("dialogue_benchmark.task_eval.run.repair_tests",
+                   return_value={"status": "finished", "metrics": {}}) as repair_tests, \
              patch("dialogue_benchmark.task_eval.run.review_task",
                    return_value={"status": "clean", "issue": "none"}), \
              patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
@@ -281,6 +283,7 @@ class TaskPreflightTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(write_tests.call_count, 1)
+        repair_tests.assert_not_called()
         self.assertEqual(agents, ["reference-solver"])
         record = read(self.root / "construction.json")[0]
         self.assertEqual(record["reason"], "baseline_already_satisfies_task")
