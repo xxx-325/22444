@@ -262,6 +262,9 @@ TEST_EXECUTION = """
 
 AUTHOR_TESTS = """为已确定的新需求写验收测试，然后结束。你负责读材料、写测试文件，程序随后执行。
 不要运行测试、收集测试或探测环境；测试目录当前为空是正常的，先完成文件。
+写每个断言前先在 task.md、acceptance.md 或 history-contract.txt 找到它的直接依据；找不到依据就不要写这个断言，也不要为它新增接口、字段或格式。
+只测试用户要求的可观察结果。尤其不要凭空规定 API 名、字段编码、输出顺序、空输入、输入不可变、异常类型或固定文本。
+如果要求涉及替换、淘汰、当前项或历史项，使用真实业务输入同时包含新旧项，断言最终业务结果和被排除项；不要只在任意嵌套对象中寻找一个看似正确的值。
 1. 读 /workspace/checks/task.md、acceptance.md，以及同目录已有的 history-contract.txt 或 oracle-answer.json。
    它们定义本次工作和历史规则。/workspace/candidate 是只读基线，按需读相关源码和测试。
    交付结果和所需接口由 task.md 定义，不需要在历史对话中出现；历史只确定客户的规则。
@@ -319,6 +322,8 @@ acceptance.md 只改 Check 列内容，可用 test: 或 inspect:，其他列原�
 TEST_FILES = """根据固定需求和完整的小型 Python 仓库写验收测试，没有工具调用。
 requirements 定义本次交付及适用历史，repository 是当前代码、测试和文档。
 private_memory_answer 是仅供测试作者使用的答案材料；它不能写入 task.md，也不能改变公开需求。
+每个断言都必须能指回 requirements 的一条明确要求；没有直接依据的接口、字段、编码、顺序、空输入、不可变性、异常类型或固定文本不要加入。
+涉及 current/accepted/superseded、替换或淘汰时，测试真实的新旧组合和最终业务结果；不要通过扫描任意嵌套字典来代替行为验证。
 如果其中包含尚未写入题面的外部规则或观测，必须把对应的可观察行为加入验收测试，
 使错误地忽略该规则的实现会失败；不要把答案原文或内部来源编号写入公开文件。
 输出 FILE test_acceptance.py 和 FILE acceptance.md 两个完整文件，每个以 END_FILE 结束。
