@@ -1,7 +1,7 @@
 """Generate, validate, freeze, and evaluate repository tasks from historical QA."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -1240,7 +1240,7 @@ def main(argv=None):
                                            "qa_id": item["qa"]["id"], "type": item["qa"]["type"]})
         save(output / "manifest.json", manifest)
 
-    def run(index, item):
+    def run_task(index, item):
         root = output / root_by_index[index]
         prior = next((row for row in manifest["tasks"] if row.get("task") == root.name), None)
         if args.resume and prior and prior.get("status") in {"evaluated", "qualified", "not_admitted"}:
@@ -1288,18 +1288,36 @@ def main(argv=None):
             save(root / "failure.json", failure)
             return failure
 
+    def run(index, item):
+        root = output / root_by_index[index]
+        row = {"status": "interrupted"}
+        try:
+            row = run_task(index, item)
+            return row
+        except BaseException as error:
+            row.update(error_type=type(error).__name__, detail=str(error))
+            raise
+        finally:
+            save_task_progress(root, "terminal", status=row["status"],
+                               finished_at=round(time.time(), 3),
+                               **{key: row[key] for key in
+                                  ("reason", "interruption_reason", "error_type", "detail")
+                                  if key in row})
+
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         next_index = 0
-        while next_index < len(selected):
+        futures = set()
+        while next_index < len(selected) or futures:
             completed = sum(task["status"] in (("qualified", "evaluated") if args.selection_only else ("evaluated",))
                             for task in manifest["tasks"])
-            if completed >= args.count:
+            while (next_index < len(selected) and len(futures) < args.workers
+                   and completed + len(futures) < args.count):
+                futures.add(pool.submit(run, next_index, selected[next_index]))
+                next_index += 1
+            if not futures:
                 break
-            size = min(args.workers, args.count - completed, len(selected) - next_index)
-            futures = [pool.submit(run, index, selected[index])
-                       for index in range(next_index, next_index + size)]
-            next_index += size
-            for future in as_completed(futures):
+            done, futures = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
                 row = future.result()
                 manifest["tasks"] = [existing for existing in manifest["tasks"]
                                      if existing.get("task") != row.get("task")]
