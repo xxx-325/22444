@@ -374,6 +374,9 @@ development_workflow 只是背景；需求可以按本题焦点保留其中一�
 若缩减后没有真实业务行为、或公开需求与历史答案的行为相互矛盾，选 ineligible。
 public_task 是两组都能看到的自然需求；historical_answer 是有记忆组收到的历史答案。
 repository_exploration 和 repository_queries 只说明当前快照，不能替代历史中明确披露的外部约定、状态或实际观测。
+不要因为仓库已经实现通用的排序、合并或渲染算法，就认定历史答案全部已公开；
+若答案还包含客户或批次范围、生效期间、撤销/替代条件或外部观测，而 public_task 和仓库都没有这些内容，
+应把它们作为 memory_gap，并引用对应答案原句。只有这些会改变本次行为的条件也已经公开时，才选 ineligible。
 如果 public_task 或当前仓库已经完整写出所需历史事实，选 ineligible；不要把“仓库里没有搜到”当成外部事实。
 公开需求可以指向一个此前约定的业务范围，但若直接写出答案中的具体字段取值、例外或处理方向，选 ineligible。
 如果需求是尚未完成的自然业务工作，完成它必须依据 historical_answer 中题面未重述的有效规则或观测，选 clean。
