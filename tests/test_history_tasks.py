@@ -857,6 +857,8 @@ class CheckReviewTests(unittest.TestCase):
             (spec / "history-review.md").write_text("Raw history")
             (spec / "task.md").write_text("Export selected records")
             (spec / "test_acceptance.py").write_text("Tests")
+            (spec / "baseline_tests").mkdir()
+            (spec / "baseline_tests/test_old.py").write_text("# frozen baseline test\n" * 10000)
             (spec / "regression/tests").mkdir(parents=True)
             (spec / "regression/tests/test_old.py").write_text("# frozen old test\n" * 10000)
             (baseline / "entry.py").write_text("Old implementation")
@@ -875,6 +877,7 @@ class CheckReviewTests(unittest.TestCase):
                 payload = call.call_args.args[1]
                 self.assertNotIn("history.json", payload["criteria_and_tests"])
                 self.assertNotIn("history-review.md", payload["criteria_and_tests"])
+                self.assertNotIn("baseline_tests/test_old.py", payload["criteria_and_tests"])
                 self.assertNotIn("regression/tests/test_old.py", payload["criteria_and_tests"])
                 self.assertEqual(set(payload["changed_sources"]), {"entry.py"})
                 self.assertEqual(payload["business_inputs"], {"replies.csv": "id,status\none,Delivered, signed\n"})
