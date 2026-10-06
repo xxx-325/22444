@@ -851,6 +851,12 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record["validation"].update(
                 BASELINE={"failed": "unmet", "passed": "met"}.get(baseline_acceptance["status"], "uncertain"),
                 REFERENCE={"passed": "pass", "failed": "fail"}.get(reference_acceptance["status"], "uncertain"))
+        baseline_already_satisfies = (
+            item.get("qa_source") == "external"
+            and baseline_acceptance is not None
+            and baseline_acceptance.get("status") == "passed"
+            and reference_acceptance.get("status") == "passed"
+            and not record.get("reference_version", {}).get("changed_files"))
         if not agent_finished(validated):
             record["reason"] = "validator_incomplete"
         elif final_spec is None:
@@ -859,7 +865,12 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                 else "missing_coverage_checks")
         elif memory_check and record.get("history_mutations", {}).get("status") != "caught":
             record["reason"] = "historical_mutation_not_verified"
-        record["validation_accepted"] = (agent_finished(solved) and agent_finished(validated)
+        if baseline_already_satisfies:
+            record["reason"] = "baseline_already_satisfies_task"
+        admitted = admission(record["validation"], baseline_checks, reference_checks,
+                             baseline_acceptance, reference_acceptance)
+        record["validation_accepted"] = (not baseline_already_satisfies
+                                         and agent_finished(solved) and agent_finished(validated)
                                          and final_spec is not None
                                          and reference_acceptance["status"] == "passed"
                                          and oracle_complete
@@ -867,10 +878,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                          and (not history or (
                                              record["validation"].get("HISTORY") == "supported"
                                              and record["history_mutations"]["status"] == "caught"))
-                                         and admission(record["validation"], baseline_checks, reference_checks,
-                                                       baseline_acceptance, reference_acceptance))
+                                         and admitted)
+        if not admitted and not record.get("reason"):
+            record["reason"] = "admission_rejected"
         record["accepted"] = False
         save(root / "construction.json", attempts)
+        if baseline_already_satisfies:
+            break
         if record["validation_accepted"]:
             if history and design_probe:
                 probe_root = run / "design-probe"

@@ -222,6 +222,99 @@ class TaskPreflightTests(unittest.TestCase):
         self.assertEqual(len(read(self.root / "construction.json")), 1)
         agent.assert_not_called()
 
+    def _external_construction_fixtures(self, *, baseline_status="passed"):
+        self.item["qa_source"] = "external"
+
+        def draft(selection, config, output, spec, budget, feedback=""):
+            self.fake_draft(selection, config, output, spec, budget, feedback)
+            save(spec / "oracle-answer.json", {"answer": "- Historical behavior"})
+            (spec / "acceptance.md").write_text(
+                "| a1 | Pending data remains readable | task | test: test_acceptance::test_feature |\n"
+                "| a2 | Historical behavior is preserved | answer | test: test_acceptance::test_answer |\n")
+
+        def coverage(spec, baseline, candidate, changed, results, config, output, budget):
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "coverage.md").write_text("The frozen checks cover both acceptance rows.")
+            return {"status": "complete"}
+
+        def mutation_writer(spec, candidate, changed, config, validator, budget):
+            checks = validator / "workspace/checks"
+            checks.mkdir(parents=True, exist_ok=True)
+            (checks / "validation.txt").write_text(
+                "BASELINE: unmet\nREFERENCE: pass\nTESTS: executable\n"
+                "MUTATIONS: caught\nCOVERAGE: complete\nVERDICT: accept\n")
+            (checks / "coverage.md").write_text("The frozen checks cover both acceptance rows.")
+            return {"status": "finished", "method": "model_file_generation", "metrics": {}}
+
+        check_calls = []
+
+        def checks(candidate, *args, **kwargs):
+            check_calls.append(candidate)
+            status = (baseline_status if baseline_status == "passed" or len(check_calls) in {1, 3}
+                      else "passed")
+            return {"status": status,
+                    "cases": [{"id": "test_acceptance::test_feature", "status": "passed"},
+                               {"id": "test_acceptance::test_answer", "status": "passed"}]}
+
+        return draft, coverage, mutation_writer, checks
+
+    def test_external_noop_baseline_does_not_reauthor_and_preserves_reason(self):
+        draft, coverage, mutation_writer, checks = self._external_construction_fixtures()
+        agents = []
+
+        def agent(root, config, role, message, **options):
+            agents.append(root.name)
+            return {"status": "finished", "metrics": {}}
+
+        with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
+             patch("dialogue_benchmark.task_eval.run.write_tests",
+                   return_value={"status": "finished", "metrics": {}}) as write_tests, \
+             patch("dialogue_benchmark.task_eval.run.review_task",
+                   return_value={"status": "clean", "issue": "none"}), \
+             patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
+             patch("dialogue_benchmark.task_eval.run.write_history_mutation", side_effect=mutation_writer), \
+             patch("dialogue_benchmark.task_eval.run.check_history_mutations",
+                   return_value={"status": "caught"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+             patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent):
+            result = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 2, {})
+
+        self.assertIsNone(result)
+        self.assertEqual(write_tests.call_count, 1)
+        self.assertEqual(agents, ["reference-solver"])
+        record = read(self.root / "construction.json")[0]
+        self.assertEqual(record["reason"], "baseline_already_satisfies_task")
+        self.assertFalse(record["validation_accepted"])
+        self.assertFalse(record["accepted"])
+
+    def test_external_unmet_baseline_can_continue_and_accept(self):
+        draft, coverage, mutation_writer, checks = self._external_construction_fixtures(
+            baseline_status="failed")
+
+        def agent(root, config, role, message, **options):
+            if root.name == "reference-solver":
+                (root / "workspace/candidate/a.py").write_text("value = 2\n")
+            return {"status": "finished", "metrics": {}}
+
+        with patch("dialogue_benchmark.task_eval.run.write_draft", side_effect=draft), \
+             patch("dialogue_benchmark.task_eval.run.write_tests",
+                   return_value={"status": "finished", "metrics": {}}), \
+             patch("dialogue_benchmark.task_eval.run.review_task",
+                   return_value={"status": "clean", "issue": "none"}), \
+             patch("dialogue_benchmark.task_eval.run.review_checks", side_effect=coverage), \
+             patch("dialogue_benchmark.task_eval.run.write_history_mutation", side_effect=mutation_writer), \
+             patch("dialogue_benchmark.task_eval.run.check_history_mutations",
+                   return_value={"status": "caught"}), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks), \
+             patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent):
+            receipt = construct(self.item, self.root, self.baseline, {"execution_image": "image"}, 0, {})
+
+        self.assertIsNotNone(receipt)
+        record = read(self.root / "construction.json")[0]
+        self.assertEqual(record["baseline_acceptance"]["status"], "failed")
+        self.assertEqual(record["reference_acceptance"]["status"], "passed")
+        self.assertTrue(record["validation_accepted"])
+
     def test_reused_failed_reference_receipt_is_passed_to_solver(self):
         self.validator_status = "ConversationExecutionStatus.INTERRUPTED"
         self.execute([{"status": "failed"}, {"status": "passed"},
