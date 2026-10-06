@@ -518,11 +518,18 @@ def review_task(task, answer, config, output, *, evidence=None, budget=None):
         decision = reviews[0] if len(reviews) == 1 else {}
         result = {"status": decision.get("leakage"), "issue": decision.get("issue")}
         result.update(memory_gap=decision.get("memory_gap"), answer_quote=decision.get("answer_quote"))
-        # Some providers omit the optional ``issue`` line for a clean review.
-        # The decision is still unambiguous from leakage=clean; normalize it
-        # to the canonical no-issue value instead of discarding a valid task.
-        if result["status"] == "clean" and not isinstance(result["issue"], str):
-            result["issue"] = "none"
+        # Some providers add a rationale to a clean external review instead
+        # of writing the requested ``issue: none``.  Accept that only when
+        # the same response contains a supported memory gap and quote;
+        # otherwise a clean verdict with a contradictory reason remains
+        # uncertain.
+        if result["status"] == "clean" and result["issue"] != "none":
+            from .history import answer_quote_supported
+            if (isinstance(result.get("memory_gap"), str)
+                    and result["memory_gap"].strip()
+                    and result["memory_gap"] != "none"
+                    and answer_quote_supported(result.get("answer_quote"), answer)):
+                result["issue"] = "none"
         if (result["status"] not in {"clean", "leaked", "ineligible", "uncertain"}
                 or not isinstance(result["issue"], str) or not result["issue"].strip()
                 or (result["status"] == "clean") != (result["issue"] == "none")):

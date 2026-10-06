@@ -1099,6 +1099,27 @@ class TaskPreflightTests(unittest.TestCase):
         payload = client.return_value.ask.call_args.args[1]
         self.assertEqual(set(payload), {"public_task", "historical_answer"})
 
+    def test_external_clean_review_may_explain_supported_gap(self):
+        answer = "The approved baseline date is 2024-05-06 for this release."
+        response = {
+            "reviews": [{
+                "leakage": "clean",
+                "memory_gap": "The date is not in the public task.",
+                "answer_quote": "The approved baseline date is 2024-05-06",
+                "issue": "The task still needs the historical date.",
+            }]
+        }
+        with patch("dialogue_benchmark.task_eval.runtime.ask_model", return_value=response):
+            result = review_task(
+                "Run this release using the confirmed rule.",
+                answer,
+                {},
+                self.base / "external-clean-review",
+                evidence={"qa_source": "external"},
+            )
+        self.assertEqual(result["status"], "clean")
+        self.assertEqual(result["issue"], "none")
+
     def test_existing_api_delivery_uses_history_qualification_and_frozen_checks(self):
         workflow = "Read input.json → apply Maple's confirmed status rules → deliver report.json"
         task = ("Complete Maple's pending report for input.json with its confirmed status rules. "
