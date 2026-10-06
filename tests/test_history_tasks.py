@@ -885,3 +885,37 @@ class CheckReviewTests(unittest.TestCase):
             result = review_checks(spec, baseline, candidate, [], {}, {}, root / "missing",
                 SimpleNamespace(call=lambda *args: {"reviews": [rows[0]]}))
             self.assertEqual(result["status"], "uncertain")
+
+    def test_review_projects_large_case_lists_with_counts_and_failures_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec, baseline, candidate = [root / name for name in ("spec", "base", "candidate")]
+            for path in (spec, baseline, candidate):
+                path.mkdir()
+            save(spec / "acceptance.json", [{"id": "a1"}])
+            cases = ([{"id": "test::pass-%03d" % index, "status": "passed"}
+                      for index in range(300)]
+                     + [{"id": "test::failed", "status": "failed"},
+                        {"id": "test::error", "status": "error"}])
+            checks = {"reference": {"status": "passed", "tests": len(cases),
+                                     "passed": 300, "failed": 1, "errors": 1,
+                                     "skipped": 0, "cases": cases}}
+            payloads = []
+
+            def review(prompt, payload, config, output):
+                payloads.append(payload)
+                return {"reviews": [
+                    {"id": "a1", "coverage": "complete", "evidence": "checks"},
+                    {"id": "tests", "coverage": "complete", "evidence": "checks"},
+                ]}
+
+            result = review_checks(spec, baseline, candidate, [], checks, {}, root / "review",
+                                   SimpleNamespace(call=review))
+            self.assertEqual(result["status"], "complete")
+            projected = payloads[0]["executed_checks"]["reference"]
+            self.assertLessEqual(len(projected["cases"]), 40)
+            self.assertEqual(projected["case_counts"], {"total": 302, "passed": 300,
+                                                          "failed": 1, "error": 1})
+            self.assertEqual([case["id"] for case in projected["cases"][:2]],
+                             ["test::failed", "test::error"])
+            self.assertIn("test::pass-000", {case["id"] for case in projected["cases"]})

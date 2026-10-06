@@ -138,6 +138,29 @@ def bounded_model_config(config, max_seconds):
     return bounded_config
 
 
+def _review_check_projection(result):
+    """Keep review evidence bounded without changing the saved check receipt."""
+    projected = {key: result[key] for key in
+                 ("status", "tests", "passed", "failed", "errors", "skipped")
+                 if key in result}
+    cases = [{"id": case["id"], "status": case["status"]}
+             for case in result.get("cases", [])]
+    if len(cases) <= 40:
+        projected["cases"] = cases
+        return projected
+    counts = {"total": len(cases)}
+    for case in cases:
+        status = case["status"]
+        counts[status] = counts.get(status, 0) + 1
+    non_passed = [case for case in cases if case["status"] != "passed"]
+    passed = [case for case in cases if case["status"] == "passed"]
+    cases = non_passed[:40]
+    cases.extend(passed[:40 - len(cases)])
+    projected["cases"] = cases
+    projected["case_counts"] = counts
+    return projected
+
+
 def review_checks(spec, baseline, candidate, changed_files, checks, config, output, budget):
     """Review saved tests and source changes without exploratory execution."""
     from .prompts import CHECKS_REVIEW
@@ -165,10 +188,7 @@ def review_checks(spec, baseline, candidate, changed_files, checks, config, outp
                            for line in diff)
             if text:
                 sources[name] = text
-        outcomes = {role: {**{key: result[key] for key in
-                             ("status", "tests", "passed", "failed", "errors", "skipped") if key in result},
-                          "cases": [{"id": case["id"], "status": case["status"]}
-                                    for case in result.get("cases", [])]}
+        outcomes = {role: _review_check_projection(result)
                     for role, result in checks.items()}
         business_inputs = {
             path.relative_to(baseline).as_posix(): path.read_text()
