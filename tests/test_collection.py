@@ -51,6 +51,90 @@ class CollectionTests(unittest.TestCase):
         self.assertIsNone(validate_plan(plan))
         with self.assertRaisesRegex(ValueError, "must not be empty"):
             validate_plan({**plan, "dialogue_quality": {}})
+        for bad in ({"unknown": 1}, {"min_external_events": -1},
+                    {"require_external_event_closure": 1}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_plan({**plan, "dialogue_quality": bad})
+
+    def test_quality_mapping_is_forwarded_to_scenario(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            self.reject_first = False
+            self.quality_mapping = {
+                "min_external_events": 1,
+                "min_distinct_external_foci": 1,
+                "require_external_event_closure": True,
+            }
+            plan["dialogue_quality"] = self.quality_mapping
+            save(root / "input.json", plan)
+            self.invoke(root)
+
+    def test_volume_targets_are_reported_without_blocking_a_complete_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            plan["evaluation"] = {"qa_count": 8, "task_count": 3, "task_budget": 4}
+            save(root / "input.json", plan)
+            result = self.invoke(root)
+            evaluation = result["projects"][0]["scenarios"][0]["evaluations"]["external"]
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(evaluation["shortfall"], {"published_qa": 7, "paired_tasks": 2})
+            report = (root / "run/collection.md").read_text()
+            self.assertIn("QA target", report)
+            self.assertIn("QA shortfall", report)
+
+    def test_empty_qa_or_incomplete_pair_cannot_complete_a_route(self):
+        cases = ("empty_qa", "no_pair", "uncertain_pair")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan = self.plan(root)
+                self.reject_first = False
+                if case == "empty_qa":
+                    self.empty_qa = True
+                elif case == "no_pair":
+                    self.nonempty_qa = True
+                else:
+                    self.uncertain_pair = True
+                    self.nonempty_qa = True
+                save(root / "input.json", plan)
+                result = self.invoke(root)
+                self.assertNotEqual(result["status"], "completed")
+                self.assertNotEqual(result["projects"][0]["scenarios"][0]["status"], "completed")
+                for name in ("empty_qa", "nonempty_qa", "uncertain_pair"):
+                    if hasattr(self, name):
+                        delattr(self, name)
+
+    def test_nonempty_graph_qa_only_route_can_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            self.reject_first = False
+            plan["qa_sources"] = ["graph", "external"]
+            self.paired = True
+            save(root / "input.json", plan)
+            result = self.invoke(root)
+            scene = result["projects"][0]["scenarios"][0]
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(scene["evaluations"]["graph"]["status"], "qa_only")
+
+    def test_empty_graph_qa_cannot_complete_a_two_route_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.empty_qa_source = "graph"
+            plan["qa_sources"] = ["graph", "external"]
+            save(root / "input.json", plan)
+            result = self.invoke(root)
+            scene = result["projects"][0]["scenarios"][0]
+            self.assertNotEqual(result["status"], "completed")
+            self.assertNotEqual(scene["status"], "completed")
+            self.assertEqual(scene["evaluations"]["graph"]["published_qa"], 0)
 
     def test_default_task_workers_allow_independent_tasks_to_run_in_parallel(self):
         self.assertEqual(EVALUATION_DEFAULTS["parallel_workers"], 6)
@@ -117,6 +201,8 @@ class CollectionTests(unittest.TestCase):
         elif name == "scenario":
             cfg = read(Path(command[command.index("--config") + 1]))
             self.assertEqual(Path(cfg["development_plan"]).name, "development-plan.json")
+            if hasattr(self, "quality_mapping"):
+                self.assertEqual(cfg["dialogue_quality"], self.quality_mapping)
             save(target / "frozen/report.json", dict(status="candidate_pass", design={"memory_kinds": ["M1"]}))
             save(target / "frozen/scenario.json", {})
             save(target / "budget.json", budget)
@@ -149,13 +235,22 @@ class CollectionTests(unittest.TestCase):
                 return 1
             paired = getattr(self, "paired", False)
             qa_only = "--qa-only" in command
+            nonempty_qa = paired or qa_only or getattr(self, "nonempty_qa", False)
             save(target / "pipeline.json", dict(status="completed", **(
                 {"stop_reason": "qa_only"} if qa_only else {} if paired else {"stop_reason": "no_eligible_qa"})))
-            save(target / "qa/qa-public.json", dict(questions=[{"id": "q1"}] if paired or qa_only else []))
+            empty_qa = (getattr(self, "empty_qa", False)
+                        or getattr(self, "empty_qa_source", None) == source)
+            save(target / "qa/qa-public.json", dict(questions=[{"id": "q1"}] if nonempty_qa and not empty_qa else []))
             if not qa_only:
-                save(target / "tasks/manifest.json", dict(tasks=[dict(task="task-01", status="evaluated",
-                    comparison={"without_memory": {"result": "failed", "metrics": {}, "trial": "trial-1"},
-                                "with_memory": {"result": "passed", "metrics": {}, "trial": "trial-2"}})] if paired else []))
+                if getattr(self, "uncertain_pair", False):
+                    tasks = [dict(task="task-01", status="evaluated",
+                                  comparison={"without_memory": {"result": "failed", "trial": "trial-1"},
+                                              "with_memory": {"result": "uncertain", "trial": "trial-2"}})]
+                else:
+                    tasks = [dict(task="task-01", status="evaluated",
+                                  comparison={"without_memory": {"result": "failed", "metrics": {}, "trial": "trial-1"},
+                                              "with_memory": {"result": "passed", "metrics": {}, "trial": "trial-2"}})] if paired else []
+                save(target / "tasks/manifest.json", dict(tasks=tasks))
             save(target / "usage.json", dict(requests=1, prompt_tokens=10, completion_tokens=2, complete=True))
         else:
             self.fail("Unexpected stage")

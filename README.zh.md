@@ -150,7 +150,7 @@ python run_collection.py --config /path/to/collection.json \
   --env-file /path/to/provider.env --output runs/project-pilot
 ```
 
-使用模拟器的 Python 环境，或通过 `--python` 指定。DeepSeek 生成可运行的基础项目和两三个连续功能提交。宿主固定功能测试，检查前版失败、新版通过、旧回归保留。复用项目时，用 `prepared_config` 代替业务 `brief`。同一项目的场景从共同基线独立启动；正式两组从各自 dialogue 的实际结束快照开始。
+使用模拟器虚拟环境中的 Python，或通过 `--python` 指定该解释器；不要假定系统 Python 已安装模拟器依赖。DeepSeek 生成可运行的基础项目和两三个连续功能提交。宿主固定功能测试，检查前版失败、新版通过、旧回归保留。复用项目时，用 `prepared_config` 代替业务 `brief`。同一项目的场景从共同基线独立启动；正式两组从各自 dialogue 的实际结束快照开始。
 
 项目的私有开发计划将每个增量需求与相关外部信息、受影响的实现选择和披露触发条件对应起来。
 场景准备沿用同一计划，真实对话从骨架开始，由 Code 逐步完成后续需求。
@@ -168,6 +168,7 @@ python run_collection.py --config /path/to/collection.json \
 双路线批次中，图路线只生成 QA，外部路线继续派生需求和成对执行；
 `evaluation.qa_only: true` 会让两条路线都停在 QA。单条路线失败不会压掉另一条的结果。
 数量分路线报告，不直接相加为跨路线去重后的总数。
+配置中的 QA 和需求数量是报告 target 与 shortfall，不会单独阻断已有非空 QA 且（非 QA-only 路线）至少一个完整终态 pair 的运行。空 QA、不确定或中断的 pair 不算完整运行；这项完整性检查也不替代人工质量验收。
 
 构建召回题集时，设置 `evaluation.qa_only: true`，或使用 `run_episode.py --qa-only`。
 流程在 QA 审核和仓库可恢复性检查后结束，保留对话输入、全部候选、来源证据及 QA 审阅页面，

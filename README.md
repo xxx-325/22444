@@ -256,7 +256,9 @@ python run_collection.py --config /path/to/collection.json \
   --env-file /path/to/provider.env --output runs/project-pilot
 ```
 
-Run with the simulator's Python environment, or supply it through `--python`.
+Run with the simulator's virtualenv Python environment, or supply that
+interpreter through `--python`; the system Python is not expected to have the
+simulator dependencies.
 New projects have a tested baseline and two or three consecutive feature commits.
 A private development plan connects each increment to related outside information,
 affected decisions and disclosure triggers. Scenario preparation reads this same plan;
@@ -286,6 +288,10 @@ In a two-route collection, graph processing produces QA only; related repository
 tasks and paired trials come from the external route. `evaluation.qa_only: true`
 stops both routes after QA. A failed route is recorded without suppressing the other.
 Counts are reported per route and are not added as a combined unique total.
+Configured QA and task counts are reported as targets and shortfalls. They do
+not reject a route that has non-empty QA and, unless it is QA-only, at least
+one complete terminal pair. Empty QA and uncertain or interrupted pairs are
+not complete runs.
 
 For recall dataset construction, set `evaluation.qa_only` to `true`, or use
 `run_episode.py --qa-only`. The run ends after QA review and repository recoverability
