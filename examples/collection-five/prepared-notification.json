@@ -1,0 +1,42 @@
+{
+  "runtime_config": "../runtime.scale.json",
+  "max_total_requests": 3200,
+  "max_total_tokens": 32000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": {
+    "min_increments": 6,
+    "min_visible_messages": 20,
+    "min_public_tool_events": 120,
+    "min_external_events": 8,
+    "min_distinct_external_foci": 8,
+    "require_external_event_closure": true,
+    "require_declared_external_scope": true,
+    "forbid_memory_docs": true
+  },
+  "projects": [
+    {
+      "id": "notification-router",
+      "prepared_config": "../../runs/final-five-r2-notification-router-20261008/notification-router/project/config.json",
+      "scenarios": [
+        {
+          "id": "support-operations",
+          "brief": "A support team incrementally changes routing, fallback, quiet-hour, and reporting behavior. Reveal conventions and external operating facts only when a real implementation, command result, correction, or later workflow needs them.",
+          "external_fact_target": 12,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; record environment differences only when public execution demonstrates them."
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "general_count": 30,
+    "code_count": 30,
+    "qa_count": 8,
+    "group_budget": 80,
+    "task_count": 1,
+    "task_budget": 32,
+    "task_workers": 1,
+    "parallel_workers": 8,
+    "revisions": 5
+  }
+}
