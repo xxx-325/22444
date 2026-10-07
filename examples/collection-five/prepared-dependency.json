@@ -19,7 +19,7 @@
     "scenarios": [{
       "id": "customer-workflow",
       "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work. Later work should reuse earlier decisions.",
-      "external_fact_target": 8,
+      "external_fact_target": 6,
       "preplan_external_facts": true,
       "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
       "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; only differences, failures, or corrections shown by public tool results count as history."
