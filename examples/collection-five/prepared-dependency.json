@@ -1,0 +1,29 @@
+{
+  "runtime_config": "../runtime.scale.json",
+  "max_total_requests": 3200,
+  "max_total_tokens": 32000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": {
+    "min_increments": 6,
+    "min_visible_messages": 20,
+    "min_public_tool_events": 120,
+    "min_external_events": 8,
+    "min_distinct_external_foci": 8,
+    "require_external_event_closure": true,
+    "require_declared_external_scope": true,
+    "forbid_memory_docs": true
+  },
+  "projects": [{
+    "id": "dependency-planner",
+    "prepared_config": "../../runs/final-five-r3-dependency-planner-20261008/dependency-planner/project/config.json",
+    "scenarios": [{
+      "id": "customer-workflow",
+      "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work. Later work should reuse earlier decisions.",
+      "external_fact_target": 12,
+      "preplan_external_facts": true,
+      "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+      "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; only differences, failures, or corrections shown by public tool results count as history."
+    }]
+  }],
+  "evaluation": {"general_count": 30, "code_count": 30, "qa_count": 8, "group_budget": 80, "task_count": 1, "task_budget": 32, "task_workers": 1, "parallel_workers": 8, "revisions": 5}
+}
