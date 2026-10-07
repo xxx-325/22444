@@ -22,6 +22,7 @@
           "id": "support-operations",
           "brief": "A support team incrementally changes routing, fallback, quiet-hour, and reporting behavior. Reveal conventions and external operating facts only when a real implementation, command result, correction, or later workflow needs them.",
           "external_fact_target": 12,
+          "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; record environment differences only when public execution demonstrates them."
         }
