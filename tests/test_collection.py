@@ -4,11 +4,29 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_status,
-                                            episode_usage, run_collection, validate_plan)
+                                            _completed_pair, episode_usage,
+                                            run_collection, validate_plan)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_only_evaluated_terminal_pairs_count(self):
+        comparison = {
+            "without_memory": {"result": "passed"},
+            "with_memory": {"result": "failed"},
+        }
+        self.assertTrue(_completed_pair({"status": "evaluated", "comparison": comparison}))
+        self.assertFalse(_completed_pair({"status": "completed", "comparison": comparison}))
+        self.assertFalse(_completed_pair({
+            "status": "evaluated",
+            "comparison": {**comparison, "with_memory": {"result": "uncertain"}},
+        }))
+        self.assertFalse(_completed_pair({
+            "status": "evaluated",
+            "comparison": {**comparison, "with_memory": {
+                "result": "failed", "execution_status": "interrupted"}},
+        }))
+
     def test_empty_child_statuses_are_not_success(self):
         self.assertEqual(_aggregate_status([]), "no_scenarios")
         self.assertEqual(_aggregate_status(["project_rejected"]), "partial_failure")
@@ -118,7 +136,7 @@ class CollectionTests(unittest.TestCase):
                 {"stop_reason": "qa_only"} if qa_only else {} if paired else {"stop_reason": "no_eligible_qa"})))
             save(target / "qa/qa-public.json", dict(questions=[{"id": "q1"}] if paired or qa_only else []))
             if not qa_only:
-                save(target / "tasks/manifest.json", dict(tasks=[dict(task="task-01", status="completed",
+                save(target / "tasks/manifest.json", dict(tasks=[dict(task="task-01", status="evaluated",
                     comparison={"without_memory": {"result": "failed", "metrics": {}, "trial": "trial-1"},
                                 "with_memory": {"result": "passed", "metrics": {}, "trial": "trial-2"}})] if paired else []))
             save(target / "usage.json", dict(requests=1, prompt_tokens=10, completion_tokens=2, complete=True))

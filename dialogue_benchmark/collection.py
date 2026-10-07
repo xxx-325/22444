@@ -102,6 +102,20 @@ def _aggregate_status(statuses, empty="no_scenarios"):
     return "partial_failure"
 
 
+def _completed_pair(task):
+    """Count only a fully evaluated pair with terminal arm results."""
+    if task.get("status") != "evaluated":
+        return False
+    comparison = task.get("comparison", {})
+    if set(comparison) != {"without_memory", "with_memory"}:
+        return False
+    return all(
+        trial.get("result") in {"passed", "failed"}
+        and trial.get("execution_status") != "interrupted"
+        for trial in comparison.values()
+    )
+
+
 def validate_plan(plan):
     if not plan.get("projects") or not plan.get("runtime_config"):
         raise ValueError("A runtime_config and fixed projects list are required")
@@ -394,8 +408,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     evaluated["counts"] = public.get("counts", {})
                     tasks = _read_if(target / "tasks/manifest.json").get("tasks", [])
                     evaluated["tasks"] = tasks
-                    evaluated["paired_tasks"] = sum(set(t.get("comparison", {})) >= {"with_memory", "without_memory"}
-                                                      for t in tasks)
+                    evaluated["paired_tasks"] = sum(_completed_pair(task) for task in tasks)
                     if plan.get("dialogue_quality") == "scale":
                         if qa_source == "graph":
                             target_qa = options["general_count"] + options["code_count"]
