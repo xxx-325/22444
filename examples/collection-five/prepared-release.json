@@ -19,7 +19,7 @@
     "scenarios": [{
       "id": "release-workflow",
       "brief": "A customer evolves the toolkit through operational changes. Ordinary implementation attempts, observed command results, corrections, and later handoffs should disclose distinct business rules and environment observations. Later work should reuse earlier decisions.",
-      "external_fact_target": 12,
+      "external_fact_target": 8,
       "preplan_external_facts": true,
       "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
       "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; only public observations and corrections become historical evidence."

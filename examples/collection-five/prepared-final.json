@@ -21,7 +21,7 @@
         {
           "id": "customer-workflow",
           "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work. Later work should reuse earlier decisions.",
-          "external_fact_target": 12,
+          "external_fact_target": 8,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; only differences, failures, or corrections shown by public tool results count as history."
@@ -35,7 +35,7 @@
         {
           "id": "warehouse-workflow",
           "brief": "A warehouse team evolves the tool through realistic import, reconciliation, correction, and reporting work. Let customer rules, observed data conditions, failed attempts, and later decisions appear in ordinary conversation and affect later behavior.",
-          "external_fact_target": 12,
+          "external_fact_target": 8,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; use only behavior actually observed in public commands or tests as historical evidence."
@@ -49,7 +49,7 @@
         {
           "id": "support-operations",
           "brief": "A support team incrementally changes routing, fallback, quiet-hour, and reporting behavior. Reveal conventions and external operating facts only when a real implementation, command result, correction, or later workflow needs them.",
-          "external_fact_target": 12,
+          "external_fact_target": 8,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; record environment differences only when public execution demonstrates them."
@@ -63,7 +63,7 @@
         {
           "id": "release-workflow",
           "brief": "A customer evolves the toolkit through a long sequence of operational changes. Ordinary implementation attempts, observed command results, corrections, and later handoffs should disclose distinct business rules and environment observations. Later work should reuse earlier decisions.",
-          "external_fact_target": 12,
+          "external_fact_target": 8,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; only public observations and corrections become historical evidence."
@@ -77,7 +77,7 @@
         {
           "id": "compliance-workflow",
           "brief": "A compliance team develops the toolkit through import, normalization, review, correction, and reporting work. Let real failures, user corrections, external policy facts, and later workflow decisions appear naturally and affect subsequent implementation.",
-          "external_fact_target": 12,
+          "external_fact_target": 8,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; count environment behavior only when it is observed in public execution."
