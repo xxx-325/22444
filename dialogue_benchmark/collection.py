@@ -116,6 +116,15 @@ def _completed_pair(task):
     )
 
 
+def _transient_stage_failure(text):
+    """Identify a bounded provider/gateway failure safe to retry once."""
+    return bool(re.search(
+        r"relay request failed|badgatewayerror|conversationrunerror|provider[_ ]503|gateway error",
+        text,
+        re.IGNORECASE,
+    ))
+
+
 def validate_plan(plan):
     if not plan.get("projects") or not plan.get("runtime_config"):
         raise ValueError("A runtime_config and fixed projects list are required")
@@ -129,6 +138,20 @@ def validate_plan(plan):
         raise ValueError("dialogue_quality must be 'scale' or a quality mapping")
     if isinstance(quality, dict) and not quality:
         raise ValueError("dialogue_quality mapping must not be empty")
+    if isinstance(quality, dict):
+        minimums = {"min_increments", "min_visible_messages", "min_public_tool_events",
+                    "min_external_events", "min_distinct_external_foci"}
+        flags = {"require_external_event_closure", "require_declared_external_scope",
+                 "forbid_memory_docs"}
+        for key, value in quality.items():
+            if key in minimums:
+                if type(value) is not int or value < 0:
+                    raise ValueError(key + " must be a nonnegative integer")
+            elif key in flags:
+                if type(value) is not bool:
+                    raise ValueError(key + " must be boolean")
+            else:
+                raise ValueError("Unknown dialogue_quality option: " + key)
     for key in ("max_total_requests", "max_total_tokens"):
         if type(plan.get(key)) is not int or plan[key] <= 0:
             raise ValueError(key + " must be a positive stage-admission budget")
@@ -283,6 +306,14 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     raise RuntimeError("collection_authentication_failed")
                 if re.search(r"unrecognized arguments|the following arguments are required", text, re.I):
                     raise RuntimeError("collection_input_failed")
+                if _transient_stage_failure(text) and row.get("retry", 0) < 1:
+                    # Preserve the failed attempt, then rerun this same
+                    # stage once.  A provider outage must not require
+                    # manual resume, while deterministic failures remain
+                    # visible and bounded.
+                    row["status"] = "failed"
+                    persist()
+                    return stage(name, folder, command, cwd, receipt, expected, ledger, budget_key)
             return result if row["status"] == "completed" else None
         except BaseException as error:
             row.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
@@ -385,6 +416,14 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 record["evaluations"] = {}
                 for qa_source in state["qa_sources"]:
                     evaluated = record["evaluations"][qa_source] = {}
+                    options = dict(EVALUATION_DEFAULTS)
+                    options.update(plan.get("evaluation", {}))
+                    qa_only = options.pop("qa_only") or (qa_source == "graph" and len(state["qa_sources"]) > 1)
+                    evaluated["target"] = dict(
+                        published_qa=(options["general_count"] + options["code_count"]
+                                      if qa_source == "graph" else options["qa_count"]),
+                        paired_tasks=0 if qa_only else options["task_count"])
+                    evaluated["qa_only"] = qa_only
                     if qa_source == "external" and not events:
                         evaluated.update(status="no_external_history", published_qa=0, paired_tasks=0, tasks=[])
                         continue
@@ -392,9 +431,6 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     command = [str(python), str(Path(__file__).resolve().parents[1] / "run_episode.py"),
                         "--episode-manifest", str(package / "manifest.json"), "--qa-source", qa_source,
                         "--simulator-path", str(simulator), "--env-file", str(env_file), "--output", str(target)]
-                    options = dict(EVALUATION_DEFAULTS)
-                    options.update(plan.get("evaluation", {}))
-                    qa_only = options.pop("qa_only") or (qa_source == "graph" and len(state["qa_sources"]) > 1)
                     if qa_only:
                         command.append("--qa-only")
                     excluded = ({"qa_count", "group_budget"} if qa_source == "graph"
@@ -407,42 +443,31 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     evaluated.update(status=completed.get("stop_reason", "completed") if completed else "evaluation_failed",
                                      qa_only=qa_only, path=str(target.relative_to(output)))
                     public = _read_if(target / "qa/qa-public.json")
+                    if public.get("status") == "failed":
+                        evaluated["status"] = "evaluation_failed"
                     evaluated["published_qa"] = len(public.get("questions", []))
                     evaluated["counts"] = public.get("counts", {})
                     tasks = _read_if(target / "tasks/manifest.json").get("tasks", [])
                     evaluated["tasks"] = tasks
                     evaluated["paired_tasks"] = sum(_completed_pair(task) for task in tasks)
-                    if plan.get("dialogue_quality"):
-                        if qa_source == "graph":
-                            target_qa = options["general_count"] + options["code_count"]
-                            target_tasks = 0
-                        else:
-                            target_qa = options["qa_count"]
-                            target_tasks = options["task_count"] if not qa_only else 0
-                        qa_shortfall = max(0, target_qa - evaluated["published_qa"])
-                        task_shortfall = max(0, target_tasks - evaluated["paired_tasks"])
-                        evaluated["target"] = dict(
-                            published_qa=target_qa, paired_tasks=target_tasks)
-                        evaluated["shortfall"] = dict(
-                            published_qa=qa_shortfall, paired_tasks=task_shortfall)
-                        evaluated["eligible"] = (
-                            evaluated["status"] not in {
-                                "evaluation_failed", "stopped", "no_external_history",
-                                "no_eligible_qa",
-                            }
-                            and evaluated["published_qa"] > 0
-                            and (qa_only or evaluated["paired_tasks"] > 0)
-                        )
-                        if not evaluated["eligible"] and evaluated["status"] == "completed":
-                            evaluated["status"] = "below_target"
+                for evaluated in record["evaluations"].values():
+                    evaluated["shortfall"] = {
+                        key: max(0, value - evaluated[key])
+                        for key, value in evaluated["target"].items()}
+                    evaluated["eligible"] = (
+                        evaluated["status"] in {"completed", "qa_only"}
+                        and evaluated["published_qa"] > 0
+                        and (evaluated["qa_only"] or evaluated["paired_tasks"] > 0))
+                    if not evaluated["eligible"] and evaluated["status"] in {"completed", "qa_only"}:
+                        evaluated["status"] = "below_target"
                 outcomes = [row["status"] for row in record["evaluations"].values()]
-                record["status"] = ("completed" if all(
-                    row.get("eligible", row.get("status") == "completed")
+                record["status"] = ((outcomes[0] if len(outcomes) == 1 else "completed") if all(
+                    row["eligible"]
                     for row in record["evaluations"].values())
                     else "below_target" if "below_target" in outcomes
                     else outcomes[0] if len(outcomes) == 1
                     else "partial_failure" if "evaluation_failed" in outcomes
-                    else "completed")
+                    else "partial_failure")
             if entry["scenarios"]:
                 entry["status"] = _aggregate_status(
                     scenario.get("status") for scenario in entry["scenarios"])
@@ -475,22 +500,25 @@ def write_collection_report(output, state):
     tasks = []
     qa_only = state.get("qa_only", False)
     lines = ["# Collection construction", "", "Status: " + state["status"], "",
-             "| Project | Scenario | Route | Outcome | Published QA | Completed pairs |",
-             "|---|---|---|---|---:|---:|"]
+             "| Project | Scenario | Route | Outcome | Published QA | QA target | QA shortfall | Completed pairs | Pair target | Pair shortfall |",
+             "|---|---|---|---|---:|---:|---:|---:|---:|---:|"]
     for project in state["projects"]:
         for scenario in project["scenarios"]:
             routes = scenario.get("evaluations", {})
             if not routes:
-                lines.append("| %s | %s | — | %s | 0 | 0 |" % (
+                lines.append("| %s | %s | — | %s | 0 | — | — | 0 | — | — |" % (
                     project["id"], scenario["id"], scenario["status"]))
             for qa_source, evaluated in routes.items():
-                lines.append("| %s | %s | %s | %s | %s | %s |" % (
+                lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
                     project["id"], scenario["id"], qa_source, evaluated["status"],
                     evaluated.get("published_qa", 0),
-                    "Not scheduled" if evaluated.get("qa_only", qa_only) else evaluated.get("paired_tasks", 0)))
+                    evaluated["target"]["published_qa"], evaluated["shortfall"]["published_qa"],
+                    "Not scheduled" if evaluated.get("qa_only", qa_only) else evaluated.get("paired_tasks", 0),
+                    evaluated["target"]["paired_tasks"], evaluated["shortfall"]["paired_tasks"]))
                 tasks.extend(dict(t, task=evaluated["path"] + "/tasks/" + t["task"])
                              for t in evaluated.get("tasks", []))
     lines += ["", "QA counts are reported per route. They are not added into a combined unique count."]
+    lines += ["Targets and shortfalls describe output volume, not admission. A completed route has nonempty published QA and, unless QA-only, at least one complete terminal pair. These are run-completeness checks, not manual quality acceptance."]
     totals = {}
     for project in state["projects"]:
         for scenario in project["scenarios"]:

@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_status,
-                                            _completed_pair, episode_usage,
+                                            _completed_pair, _transient_stage_failure,
+                                            episode_usage,
                                             run_collection, validate_plan)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
@@ -26,6 +27,12 @@ class CollectionTests(unittest.TestCase):
             "comparison": {**comparison, "with_memory": {
                 "result": "failed", "execution_status": "interrupted"}},
         }))
+
+    def test_only_gateway_failures_are_retryable(self):
+        self.assertTrue(_transient_stage_failure(
+            "ConversationRunError: BadGatewayError - Relay request failed"))
+        self.assertFalse(_transient_stage_failure("SyntaxError: invalid input"))
+        self.assertFalse(_transient_stage_failure("Unauthorized: invalid api key"))
 
     def test_empty_child_statuses_are_not_success(self):
         self.assertEqual(_aggregate_status([]), "no_scenarios")
