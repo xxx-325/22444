@@ -124,8 +124,11 @@ def validate_plan(plan):
             or any(source not in ("graph", "external") for source in sources)
             or len(set(sources)) != len(sources)):
         raise ValueError("qa_sources must select distinct graph/external routes")
-    if plan.get("dialogue_quality") not in (None, "scale"):
-        raise ValueError("dialogue_quality must be 'scale' when provided")
+    quality = plan.get("dialogue_quality")
+    if quality is not None and quality != "scale" and not isinstance(quality, dict):
+        raise ValueError("dialogue_quality must be 'scale' or a quality mapping")
+    if isinstance(quality, dict) and not quality:
+        raise ValueError("dialogue_quality mapping must not be empty")
     for key in ("max_total_requests", "max_total_tokens"):
         if type(plan.get(key)) is not int or plan[key] <= 0:
             raise ValueError(key + " must be a positive stage-admission budget")
@@ -409,7 +412,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     tasks = _read_if(target / "tasks/manifest.json").get("tasks", [])
                     evaluated["tasks"] = tasks
                     evaluated["paired_tasks"] = sum(_completed_pair(task) for task in tasks)
-                    if plan.get("dialogue_quality") == "scale":
+                    if plan.get("dialogue_quality"):
                         if qa_source == "graph":
                             target_qa = options["general_count"] + options["code_count"]
                             target_tasks = 0
@@ -423,8 +426,13 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                         evaluated["shortfall"] = dict(
                             published_qa=qa_shortfall, paired_tasks=task_shortfall)
                         evaluated["eligible"] = (
-                            evaluated["status"] not in {"evaluation_failed", "stopped"}
-                            and qa_shortfall == 0 and task_shortfall == 0)
+                            evaluated["status"] not in {
+                                "evaluation_failed", "stopped", "no_external_history",
+                                "no_eligible_qa",
+                            }
+                            and evaluated["published_qa"] > 0
+                            and (qa_only or evaluated["paired_tasks"] > 0)
+                        )
                         if not evaluated["eligible"] and evaluated["status"] == "completed":
                             evaluated["status"] = "below_target"
                 outcomes = [row["status"] for row in record["evaluations"].values()]

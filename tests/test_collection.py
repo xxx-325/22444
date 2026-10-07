@@ -35,6 +35,16 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(_aggregate_status(["qa_only"]), "completed")
         self.assertEqual(_aggregate_status(["qa_only", "completed"]), "completed")
 
+    def test_quality_mapping_is_accepted(self):
+        plan = {"projects": [dict(id="planner", brief="Plan dependencies",
+                                  scenarios=[dict(id="first")])],
+                "runtime_config": "runtime.json",
+                "max_total_requests": 1, "max_total_tokens": 1,
+                "dialogue_quality": {"min_external_events": 1}}
+        self.assertIsNone(validate_plan(plan))
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            validate_plan({**plan, "dialogue_quality": {}})
+
     def test_default_task_workers_allow_independent_tasks_to_run_in_parallel(self):
         self.assertEqual(EVALUATION_DEFAULTS["parallel_workers"], 6)
         self.assertEqual(EVALUATION_DEFAULTS["task_workers"], 2)
