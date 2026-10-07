@@ -153,6 +153,7 @@ class CollectionTests(unittest.TestCase):
                     run_collection(root / "input.json", root / "run", root, root / ".env",
                                    python=Path(".venv/bin/python"))
             self.assertTrue(Path(commands[0][0]).is_absolute())
+            self.assertTrue(commands[0][0].endswith("/.venv/bin/python"))
 
     def test_rejected_scenario_is_retained_and_next_scenario_starts_from_same_base(self):
         with tempfile.TemporaryDirectory() as directory:

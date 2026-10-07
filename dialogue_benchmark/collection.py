@@ -140,9 +140,10 @@ def validate_plan(plan):
 
 
 def run_collection(plan_path, output, simulator, env_file, python=sys.executable, resume=False):
-    plan_path, output, simulator, python = (
-        Path(p).resolve() for p in (plan_path, output, simulator, python)
-    )
+    plan_path, output, simulator = (Path(p).resolve() for p in (plan_path, output, simulator))
+    # Keep a virtualenv launcher symlink intact; resolving it loses the
+    # environment's site-packages and can silently switch to bare Python.
+    python = Path(python).absolute()
     plan = read(plan_path)
     validate_plan(plan)
     runtime_path = (plan_path.parent / plan["runtime_config"]).resolve()
@@ -151,7 +152,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         if isinstance(runtime.get(role), dict):
             runtime[role]["max_output_tokens"] = None
     identity = dict(plan_sha256=_sha256(plan_path), runtime_sha256=_sha256(runtime_path),
-                    simulator=str(simulator), python=str(Path(python).resolve()),
+                    simulator=str(simulator), python=str(python),
                     prepared_configs={p["id"]: _sha256((plan_path.parent / p["prepared_config"]).resolve())
                                       for p in plan["projects"] if p.get("prepared_config")})
     if resume:
