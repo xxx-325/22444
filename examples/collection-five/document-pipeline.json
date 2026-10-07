@@ -1,0 +1,34 @@
+{
+  "runtime_config": "../runtime.scale.json",
+  "max_total_requests": 3000,
+  "max_total_tokens": 30000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": "scale",
+  "projects": [
+    {
+      "id": "document-pipeline",
+      "brief": "Build an offline Python document intake and review toolkit. It should parse structured submissions, normalize metadata, apply review states, produce audit summaries, and preserve a stable command-line interface. Use only the standard library.",
+      "increments": 8,
+      "scenarios": [
+        {
+          "id": "compliance-workflow",
+          "brief": "A compliance team develops the toolkit through import, normalization, review, correction, and reporting work. Let real failures, user corrections, external policy facts, and later workflow decisions appear naturally and affect subsequent implementation.",
+          "external_fact_target": 24,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; count environment behavior only when it is observed in public execution."
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "general_count": 50,
+    "code_count": 50,
+    "qa_count": 10,
+    "group_budget": 100,
+    "task_count": 1,
+    "task_budget": 32,
+    "task_workers": 1,
+    "parallel_workers": 8,
+    "revisions": 5
+  }
+}

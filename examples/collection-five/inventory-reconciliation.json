@@ -1,0 +1,34 @@
+{
+  "runtime_config": "../runtime.scale.json",
+  "max_total_requests": 2200,
+  "max_total_tokens": 22000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": "scale",
+  "projects": [
+    {
+      "id": "inventory-reconciliation",
+      "brief": "Build an offline Python inventory reconciliation tool for stock snapshots, adjustments, and discrepancy reports. Keep the API small, deterministic, and standard-library only.",
+      "increments": 6,
+      "scenarios": [
+        {
+          "id": "warehouse-workflow",
+          "brief": "A warehouse team evolves the tool through realistic import, reconciliation, correction, and reporting work. Let customer rules, observed data conditions, failed attempts, and later decisions appear in ordinary conversation and affect later behavior.",
+          "external_fact_target": 20,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; use only behavior actually observed in public commands or tests as historical evidence."
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "general_count": 30,
+    "code_count": 30,
+    "qa_count": 8,
+    "group_budget": 80,
+    "task_count": 1,
+    "task_budget": 32,
+    "task_workers": 1,
+    "parallel_workers": 8,
+    "revisions": 5
+  }
+}
