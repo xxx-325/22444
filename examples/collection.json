@@ -1,7 +1,7 @@
 {
   "runtime_config": "runtime.scale.json",
-  "max_total_requests": 500,
-  "max_total_tokens": 6000000,
+  "max_total_requests": 2500,
+  "max_total_tokens": 24000000,
   "qa_sources": ["graph", "external"],
   "dialogue_quality": "scale",
   "projects": [
@@ -23,10 +23,10 @@
   "evaluation": {
     "general_count": 50,
     "code_count": 50,
-    "qa_count": 20,
+    "qa_count": 8,
     "group_budget": 80,
-    "task_count": 10,
-    "task_budget": 40,
+    "task_count": 1,
+    "task_budget": 32,
     "task_workers": 1,
     "parallel_workers": 8,
     "revisions": 5
