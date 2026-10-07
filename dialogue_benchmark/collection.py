@@ -140,7 +140,9 @@ def validate_plan(plan):
 
 
 def run_collection(plan_path, output, simulator, env_file, python=sys.executable, resume=False):
-    plan_path, output, simulator = (Path(p).resolve() for p in (plan_path, output, simulator))
+    plan_path, output, simulator, python = (
+        Path(p).resolve() for p in (plan_path, output, simulator, python)
+    )
     plan = read(plan_path)
     validate_plan(plan)
     runtime_path = (plan_path.parent / plan["runtime_config"]).resolve()

@@ -134,6 +134,26 @@ class CollectionTests(unittest.TestCase):
                  "external_events": p.parent / "external-events.json"} if not getattr(self, "empty", False) else {}):
             return run_collection(root / "input.json", root / "run", root, root / ".env")
 
+    def test_relative_python_is_resolved_before_stage_changes_working_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            commands = []
+            def capture_and_stop(command, cwd, log):
+                commands.append(command)
+                raise KeyboardInterrupt()
+
+            with patch("dialogue_benchmark.collection._command",
+                       side_effect=capture_and_stop), \
+                 patch("dialogue_benchmark.collection.subprocess.check_output",
+                       return_value="root-sha\n"), \
+                 patch("dialogue_benchmark.episode_input.load_episode_manifest",
+                       side_effect=lambda p: {"external_events": p.parent / "external-events.json"}):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_collection(root / "input.json", root / "run", root, root / ".env",
+                                   python=Path(".venv/bin/python"))
+            self.assertTrue(Path(commands[0][0]).is_absolute())
+
     def test_rejected_scenario_is_retained_and_next_scenario_starts_from_same_base(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
