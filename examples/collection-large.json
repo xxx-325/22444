@@ -1,0 +1,34 @@
+{
+  "runtime_config": "runtime.scale.json",
+  "max_total_requests": 900,
+  "max_total_tokens": 18000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": "scale",
+  "projects": [
+    {
+      "id": "release-operations",
+      "brief": "Build a local Python toolkit for coordinating release operations across several related workflows. It should ingest structured work items, validate lifecycle transitions, resolve dependencies, produce operator-facing summaries, and expose a stable command-line interface that can evolve without breaking existing users. Keep the project offline and use the standard library.",
+      "increments": 8,
+      "scenarios": [
+        {
+          "id": "customer-release-workflow",
+          "brief": "A customer uses the toolkit through a long sequence of operational changes. Let ordinary implementation attempts, observed command results, corrections, and later handoffs disclose distinct business rules and environment observations. Later work should reuse earlier decisions without exposing internal planning labels.",
+          "external_fact_target": 24,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "运行在固定的 Python 3.12 标准库环境中；只有公开工具结果实际显示的运行差异、失败或修正才作为历史信息。"
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "general_count": 50,
+    "code_count": 50,
+    "qa_count": 20,
+    "group_budget": 100,
+    "task_count": 10,
+    "task_budget": 40,
+    "task_workers": 1,
+    "parallel_workers": 8,
+    "revisions": 5
+  }
+}

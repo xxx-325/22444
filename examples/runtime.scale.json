@@ -1,0 +1,56 @@
+{
+  "runtime": "openhands",
+  "execution_backend": "ssh_sandbox",
+  "progressive_issues": true,
+  "continuous_commits": true,
+  "dialogue_language": "zh-CN",
+  "image": "sha256:9815a7782c7024a7698b4aa2516f42fd5247b907f9a455cde2217773998069cf",
+  "execution_image": "sha256:32677e1b6b4b92e3c2b1dd241b4adbb9f09090c541ca02ab2e78c79bb6737b9b",
+  "browser": false,
+  "max_seconds": 43200,
+  "max_requests": 500,
+  "max_tokens": 10000000,
+  "project_repairs": 5,
+  "condenser_max_size": 120,
+  "restart_code_between_tasks": true,
+  "restart_user_between_tasks": true,
+  "restart_judge_between_tasks": true,
+  "user": {
+    "model": "deepseek-v4-pro",
+    "base_url": "https://api.deepseek.com",
+    "key_env": "DEEPSEEK_API_KEY",
+    "reasoning_effort": "max",
+    "max_input_tokens": 262144,
+    "max_output_tokens": null,
+    "request_timeout": 1800
+  },
+  "code": {
+    "model": "deepseek-v4-pro",
+    "base_url": "https://api.deepseek.com",
+    "key_env": "DEEPSEEK_API_KEY",
+    "reasoning_effort": "max",
+    "candidate_pythonpath": "/workspace/candidate",
+    "max_input_tokens": 262144,
+    "max_output_tokens": null,
+    "request_timeout": 1800
+  },
+  "judge": {
+    "model": "deepseek-v4-pro",
+    "base_url": "https://api.deepseek.com",
+    "key_env": "DEEPSEEK_API_KEY",
+    "reasoning_effort": "max",
+    "candidate_pythonpath": "/workspace/candidate",
+    "max_input_tokens": 262144,
+    "max_output_tokens": null,
+    "request_timeout": 1800
+  },
+  "decomposer": {
+    "model": "deepseek-v4-pro",
+    "base_url": "https://api.deepseek.com",
+    "key_env": "DEEPSEEK_API_KEY",
+    "reasoning_effort": "max",
+    "max_input_tokens": 262144,
+    "max_output_tokens": null,
+    "request_timeout": 1800
+  }
+}
