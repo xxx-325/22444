@@ -3,7 +3,16 @@
   "max_total_requests": 2200,
   "max_total_tokens": 22000000,
   "qa_sources": ["graph", "external"],
-  "dialogue_quality": "scale",
+  "dialogue_quality": {
+    "min_increments": 6,
+    "min_visible_messages": 20,
+    "min_public_tool_events": 120,
+    "min_external_events": 18,
+    "min_distinct_external_foci": 18,
+    "require_external_event_closure": true,
+    "require_declared_external_scope": true,
+    "forbid_memory_docs": true
+  },
   "projects": [
     {
       "id": "inventory-reconciliation",
