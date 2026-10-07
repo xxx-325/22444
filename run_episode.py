@@ -21,6 +21,17 @@ from dialogue_benchmark.collection import episode_usage
 MAX_QA_REQUEST_TIMEOUT = 600
 
 
+def _approved_qa(public):
+    """Only an explicitly approved, non-empty QA set may feed tasks."""
+    if public.get("status") != "approved":
+        return False
+    questions = public.get("questions")
+    return bool(questions) and all(
+        isinstance(question, dict) and question.get("status") == "approved"
+        for question in questions
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("simulator-path", "env-file", "output"):
@@ -183,6 +194,9 @@ def main(argv=None):
         if qa_result.get("status") == "failed":
             state["stop_reason"] = "qa_generation_failed"
             raise RuntimeError("QA generation failed; see qa/qa-audit.json")
+        if qa_result.get("questions") and not _approved_qa(qa_result):
+            state["stop_reason"] = "qa_not_approved"
+            raise RuntimeError("QA is not approved; see qa/qa-audit.json")
         if args.qa_only or not qa_result["questions"]:
             if not args.qa_only:
                 task_manifest = {"target": args.task_count, "tasks": [],

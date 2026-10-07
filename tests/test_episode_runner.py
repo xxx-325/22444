@@ -26,7 +26,11 @@ class EpisodeRunnerTests(unittest.TestCase):
                 config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
                 def generated(args):
                     output = Path(args[args.index("--output") + 1])
-                    save(output / "qa-public.json", {"status": "completed", "questions": questions})
+                    approved = [dict(question, status="approved") for question in questions]
+                    save(output / "qa-public.json", {
+                        "status": "approved" if approved else "completed_no_questions",
+                        "questions": approved,
+                    })
                     save(output / "manifest.json", {"qa_mode": "memory", "usage": [
                         dict(prompt_tokens=10, completion_tokens=5)]})
                     return 0
@@ -41,7 +45,8 @@ class EpisodeRunnerTests(unittest.TestCase):
                 tasks.assert_not_called()
                 compact.assert_not_called()
                 self.assertFalse((root / "run/tasks").exists())
-                self.assertEqual(read(root / "run/qa/qa-public.json")["questions"], questions)
+                expected = [dict(question, status="approved") for question in questions]
+                self.assertEqual(read(root / "run/qa/qa-public.json")["questions"], expected)
                 self.assertEqual(read(root / "run/usage.json")["total_tokens"], 15)
                 state = read(root / "run/pipeline.json")
                 self.assertEqual(state["status"], "completed")
@@ -62,7 +67,8 @@ class EpisodeRunnerTests(unittest.TestCase):
             (source / "session.jsonl").write_text(json.dumps({"kind": "user", "content": "rule"}) + "\n")
             config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
             def generated(args):
-                save(Path(args[args.index("--output") + 1]) / "qa-public.json", {"questions": [{"id": "q1"}]})
+                save(Path(args[args.index("--output") + 1]) / "qa-public.json", {
+                    "status": "approved", "questions": [{"id": "q1", "status": "approved"}]})
                 return 0
             def tasks(args):
                 save(Path(args[args.index("--output") + 1]) / "manifest.json", {"tasks": []})
@@ -94,7 +100,8 @@ class EpisodeRunnerTests(unittest.TestCase):
                                 "request_timeout": 1800, "reasoning_effort": "max"}}
             def generated(args):
                 output = Path(args[args.index("--output") + 1])
-                save(output / "qa-public.json", {"questions": [{"id": "q1"}]})
+                save(output / "qa-public.json", {
+                    "status": "approved", "questions": [{"id": "q1", "status": "approved"}]})
                 return 0
             with patch("run_episode.configure", return_value=config), \
                  patch("run_episode.generate_qa", side_effect=generated) as qa, \
@@ -144,7 +151,8 @@ class EpisodeRunnerTests(unittest.TestCase):
                 output = Path(args[args.index("--output") + 1])
                 save(output / "manifest.json", {
                     "input_sha256": hashlib.sha256(Path(args[0]).read_bytes()).hexdigest()})
-                save(output / "qa-public.json", {"questions": [{"id": "q1"}]})
+                save(output / "qa-public.json", {
+                    "status": "approved", "questions": [{"id": "q1", "status": "approved"}]})
                 return 0
             def tasks(args):
                 order.append("resume" if "--resume" in args else "tasks")
