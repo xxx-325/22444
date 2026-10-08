@@ -259,6 +259,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
     def persist():
         state["usage"] = sum_usage([s.get("usage", dict(sum_usage([]), complete=False))
                                     for s in state["stages"]])
+        state["usage_status"] = "ready" if state["usage"]["complete"] else "pending"
         save(output / "collection.json", state)
 
     def stage(name, folder, command, cwd, receipt, expected, ledger, budget_key=None):
@@ -386,6 +387,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             except (OSError, ValueError, TypeError) as error:
                 row["usage"] = dict(sum_usage([]), complete=False, error_type=type(error).__name__)
             row["receipt_sha256"] = _sha256(receipt)
+            row["output_ready"] = receipt.is_file()
+            row["usage_ready"] = bool(row["usage"].get("complete"))
             persist()
 
     def upstream(module, config, target):

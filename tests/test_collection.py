@@ -206,6 +206,9 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(result["status"], "completed_with_warnings")
             self.assertEqual(result["projects"][0]["scenarios"][0]["status"], "completed")
             self.assertIn({"code": "usage_incomplete"}, result["warnings"])
+            dialogue = next(stage for stage in result["stages"] if stage["name"] == "dialogue")
+            self.assertTrue(dialogue["output_ready"])
+            self.assertFalse(dialogue["usage_ready"])
 
     def test_missing_receipt_retries_the_stage_before_marking_it_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:
