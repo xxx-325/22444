@@ -325,7 +325,7 @@ def build_config(config_path: Path, output: Path, *, simulator_path: Path,
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path,
-                        default=ROOT / "examples/collection-five/long-dialogue-three.json")
+                        default=ROOT / "examples/collection-three-business.json")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--simulator-path", type=Path, required=True)
     parser.add_argument("--env-file", type=Path, required=True)
