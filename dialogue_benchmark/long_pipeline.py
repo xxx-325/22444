@@ -189,7 +189,8 @@ def _task_stage(args) -> int:
     external = input_root / "external"
     public_path = external / "qa/qa-public.json"
     public = read(public_path) if public_path.is_file() else {}
-    qualified = bool(public.get("questions")) and all(
+    pipeline = read(external / "pipeline.json") if (external / "pipeline.json").is_file() else {}
+    qualified = pipeline.get("status") not in {"failed", "interrupted"} and bool(public.get("questions")) and all(
         q.get("status") == "approved" for q in public["questions"])
     output.mkdir(parents=True, exist_ok=True)
     task_manifest = output / "tasks" / "manifest.json"
