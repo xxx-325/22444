@@ -196,9 +196,11 @@ def _task_stage(args) -> int:
     task_manifest = output / "tasks" / "manifest.json"
     stage_summary = output / "task-stage.json"
     if not qualified:
+        save(task_manifest, {"status": "skipped", "reason": "external_qa_not_qualified",
+                             "tasks": []})
         save(stage_summary, {"status": "skipped", "reason": "external_qa_not_qualified",
                              "tasks": []})
-        _write_receipt(output / "stage-receipt.json", [stage_summary], result="skipped")
+        _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary], result="skipped")
         return 0
     if not (output / "qa").exists():
         shutil.copytree(external / "qa", output / "qa")
