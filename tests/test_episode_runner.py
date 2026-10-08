@@ -9,10 +9,17 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from dialogue_benchmark.task_eval.artifacts import read, save
-from run_episode import main
+from run_episode import _approved_qa, main
 
 
 class EpisodeRunnerTests(unittest.TestCase):
+    def test_individually_approved_questions_can_feed_provisional_tasks(self):
+        question = {"id": "q1", "status": "approved"}
+        self.assertTrue(_approved_qa({"status": "needs_review", "questions": [question]}))
+        self.assertFalse(_approved_qa({"status": "failed", "questions": [question]}))
+        self.assertFalse(_approved_qa({"status": "needs_review",
+                                       "questions": [{"id": "q1", "status": "needs_review"}]}))
+
     def test_qa_only_retains_answers_and_evidence_without_starting_tasks(self):
         for questions in ([], [{"id": "q1", "qa_mode": "memory", "type": "M1",
                                 "question": "Which customer rule applies?"}]):

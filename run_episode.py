@@ -22,8 +22,13 @@ MAX_QA_REQUEST_TIMEOUT = 600
 
 
 def _approved_qa(public):
-    """Only an explicitly approved, non-empty QA set may feed tasks."""
-    if public.get("status") != "approved":
+    """Return whether safe individual questions can feed provisional tasks.
+
+    The aggregate status may be ``needs_review`` when an unrelated group or
+    review request failed.  That warning must not hide individually approved
+    questions.  Hard-failed or empty public sets still cannot proceed.
+    """
+    if public.get("status") in {"failed", "disabled", "completed_no_questions"}:
         return False
     questions = public.get("questions")
     return bool(questions) and all(

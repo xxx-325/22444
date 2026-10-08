@@ -1332,6 +1332,35 @@ def _public_question(question):
     return item
 
 
+def _review_question(question, *, status=None, reason=None):
+    """Project a candidate for the local reviewer without private model fields."""
+    if isinstance(question, dict) and isinstance(question.get("question"), str):
+        item = _public_question(question)
+        item.update({
+            "candidate_id": question.get("candidate_id", question.get("id")),
+            "evidence_group_id": question.get("evidence_group_id"),
+            "fact_ids": question.get("fact_ids", []),
+            "source_ids": (question.get("static_type_evidence", {}) or {}).get(
+                "source_ids", []),
+        })
+    else:
+        item = {
+            "id": question.get("id") if isinstance(question, dict) else None,
+            "question": question.get("question", "") if isinstance(question, dict) else "",
+            "answer_points": [],
+            "forbidden_points": [],
+            "status": status or "rejected",
+        }
+    if status is not None:
+        item["status"] = status
+    if reason is not None:
+        item["reason"] = reason
+    if isinstance(question, dict):
+        item["failed_checks"] = question.get("failed_checks", [])
+        item["review_status"] = question.get("quality_status", question.get("status"))
+    return item
+
+
 def _redact_public_text(value, workspaces=()):
     if not isinstance(value, str):
         return value, 0
@@ -1993,6 +2022,35 @@ def main(argv=None):
                 save(args.output, "facts.json", result.get("facts", []))
             save(args.output, "candidates.json",
                  result.get("all_candidates", result.get("all_questions", result.get("questions", []))))
+            # Keep an explicit provisional pool and a small review queue.  The
+            # public projection remains the only publishable view, while
+            # unrelated stage warnings no longer hide usable individual
+            # questions from downstream collection stages.
+            candidate_questions = result.get(
+                "all_questions", result.get("all_candidates", result.get("questions", [])))
+            review_queue = [
+                _review_question(question)
+                for question in candidate_questions
+                if isinstance(question, dict) and question.get("status") != "approved"
+            ]
+            review_queue.extend(
+                _review_question(item, status=item.get("status", "rejected"),
+                                 reason=item.get("reason"))
+                for item in result.get("rejected", [])
+                if isinstance(item, dict)
+            )
+            save(args.output, "qa-candidates.json", {
+                "status": result.get("status", "needs_review"),
+                "questions": candidate_questions,
+                "stage_errors": result.get("stage_errors", []),
+            })
+            save(args.output, "qa-review-queue.json", {
+                "status": "needs_review" if review_queue or result.get("stage_errors")
+                        else "empty",
+                "items": review_queue,
+                "stage_errors": result.get("stage_errors", []),
+                "review_warnings": result.get("review_warnings", []),
+            })
             save(args.output, "stage-status.json", result.get("stage_status", []))
             save(args.output, "stage-errors.json", result.get("stage_errors", []))
             save(args.output, "review-warnings.json", result.get("review_warnings", []))
