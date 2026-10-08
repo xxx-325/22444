@@ -258,6 +258,7 @@ class PipelineRunner:
                                 "recovered": True,
                                 "finished_at": saved_handoff.get("completed_at", _now()),
                                 "handoff_sha256": _file_sha256(handoff_path),
+                                "result": saved_handoff.get("result", "completed"),
                             })
                             status = "completed"
                         else:
@@ -347,7 +348,7 @@ class PipelineRunner:
         }
 
     def _validate_receipt(self, stage_spec: Dict[str, object],
-                          paths: Dict[str, str]) -> Optional[Dict[str, str]]:
+                          paths: Dict[str, str]) -> Optional[Dict[str, object]]:
         receipt_path = _receipt_path(stage_spec.get("receipt"), paths)
         if receipt_path is None:
             return None
@@ -385,7 +386,8 @@ class PipelineRunner:
                 artifact_sha = artifact.get("sha256", artifact.get("sha"))
                 if not artifact_path.is_file() or artifact_sha != _file_sha256(artifact_path):
                     raise StageReceiptError("stage receipt artifact hash differs: %s" % artifact_path)
-        return {"path": str(receipt_path), "sha256": _file_sha256(receipt_path)}
+        return {"path": str(receipt_path), "sha256": _file_sha256(receipt_path),
+                "result": receipt.get("result", "completed")}
 
     def _claim(self) -> Optional[Tuple[Dict[str, object], str]]:
         with self._lock:
@@ -457,6 +459,7 @@ class PipelineRunner:
         if receipt:
             handoff["receipt"] = receipt["path"]
             handoff["receipt_sha256"] = receipt["sha256"]
+            handoff["result"] = receipt.get("result", "completed")
         _atomic_json(stage_dir / ".pipeline-handoff.json", handoff)
         handoff_sha256 = _file_sha256(stage_dir / ".pipeline-handoff.json")
         with self._lock:
@@ -466,7 +469,8 @@ class PipelineRunner:
                            "handoff_sha256": handoff_sha256})
             if receipt:
                 record.update({"receipt": receipt["path"],
-                               "receipt_sha256": receipt["sha256"]})
+                               "receipt_sha256": receipt["sha256"],
+                               "result": receipt.get("result", "completed")})
             self._save()
 
     def _attempt(self, case_id: str, stage: str) -> int:
@@ -513,6 +517,7 @@ class PipelineRunner:
             case_values = list(self.state["cases"].values())
             has_warning = any(
                 record.get("status") in {"failed", "skipped", "needs_review"}
+                or record.get("result") not in {None, "completed"}
                 for case in case_values
                 for record in case["stages"].values()
             )

@@ -303,7 +303,16 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             save(root / "qa-audit.json", {"questions": [corrected]})
             save(root / "manifest.json", {"qa_source": "external"})
             save(root / "stages/group-raw-candidates.json", {"questions": [original]})
-            save(root / "stages/group-qa-input.json", {"payload": {"workflow": {"text": "Batch delivery"}}})
+            save(root / "normalized.json", [
+                {"id": "e1", "kind": "message", "role": "user", "text": "Keep nulls"},
+                {"id": "e3", "kind": "message", "role": "user", "text": "Harbor note null exception"},
+            ])
+            save(root / "stages/group-qa-input.json", {
+                "ref_to_source": {"资料1": "e1", "资料3": "e3"},
+                "payload": {"scope": {"dialogue": [
+                    {"id": "e1"}, {"id": "e3"}]},
+                    "workflow": {"text": "Batch delivery", "sources": ["资料3"]}},
+            })
             item, = qa_inputs(root)
         self.assertEqual(item["original_candidate"]["answer_points"][0]["sources"], ["e1"])
         self.assertEqual(item["reviewed_candidate"]["answer_points"][0]["sources"], ["e3"])
@@ -316,10 +325,15 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             save(root / "qa-public.json", {"questions": [question]})
             save(root / "manifest.json", {"qa_source": "external"})
             save(root / "stages/group-raw-candidates.json", {"questions": [question]})
-            save(root / "stages/group-qa-input.json", {"payload": {
-                "focus": {"text": "permit zone", "sources": ["资料2"]},
-                "workflow": {"text": "Close the fleet audit", "sources": ["资料10"]},
-            }})
+            save(root / "normalized.json", [
+                {"id": "e2", "kind": "message", "role": "user", "text": "Keep the permit zone"},
+            ])
+            save(root / "stages/group-qa-input.json", {
+                "ref_to_source": {"资料2": "e2", "资料10": "e10"},
+                "payload": {"scope": {"dialogue": [{"id": "e2"}]},
+                            "focus": {"text": "permit zone", "sources": ["资料2"]},
+                            "workflow": {"text": "Close the fleet audit", "sources": ["资料10"]}},
+            })
             item, = qa_inputs(root)
             self.assertNotIn("development_workflow", item)
 

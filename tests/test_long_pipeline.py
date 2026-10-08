@@ -87,7 +87,9 @@ class LongPipelineTests(unittest.TestCase):
                 save(output / "tasks/manifest.json", {"status": "completed", "tasks": []})
                 return 0
 
-            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_run) as run:
+            with patch("dialogue_benchmark.long_pipeline.qa_inputs",
+                       return_value=[{"qa": {"id": "q1", "status": "approved"}}]), \
+                 patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_run) as run:
                 self.assertEqual(_task_stage(args), 0)
             self.assertIn("--resume-tasks", run.call_args.args[0])
             self.assertFalse(stale.exists())

@@ -1,6 +1,7 @@
 """A bounded, read-only check for questions recoverable from the final repository."""
 
 from copy import deepcopy
+import hashlib
 import json
 import re
 import subprocess
@@ -125,13 +126,58 @@ def _write_json(path, value):
     temp.replace(path)
 
 
+def _repository_digest(root):
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if path.is_file() and not any(part.startswith(".") for part in relative.parts):
+            digest.update(str(relative).encode("utf-8") + b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def _probe_cache_key(question, root, model, *, max_steps, model_request_chars,
+                     reasoning_effort):
+    payload = {
+        "version": 1,
+        "repository": _repository_digest(root),
+        "question": question,
+        "model": model,
+        "max_steps": max_steps,
+        "model_request_chars": model_request_chars,
+        "reasoning_effort": reasoning_effort,
+        "prompt": hashlib.sha256(PROBE_PROMPT.encode("utf-8")).hexdigest(),
+    }
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+
+
 def probe_candidate(question, repository, endpoint, model, key_env, output,
                     *, max_steps=6, model_request_chars=60000,
-                    request_timeout=DEFAULT_REQUEST_TIMEOUT, reasoning_effort=None):
+                    request_timeout=DEFAULT_REQUEST_TIMEOUT, reasoning_effort=None,
+                    cache_dir=None):
     """Run the probe and return a private, auditable recoverability result."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     root = Path(repository).resolve()
+    cache_path = None
+    if cache_dir is not None and root.is_dir():
+        cache_path = Path(cache_dir).resolve() / (
+            _probe_cache_key(question, root, model, max_steps=max_steps,
+                             model_request_chars=model_request_chars,
+                             reasoning_effort=reasoning_effort) + ".json")
+        if cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and cached.get("cache_key") == cache_path.stem:
+                    result = dict(cached["result"])
+                    result["cache_hit"] = True
+                    result["usage"] = []
+                    _write_json(output / "result.json", result)
+                    return result
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
     question_text = question.get("question", "") if isinstance(question, dict) else ""
     claims = []
     if isinstance(question, dict):
@@ -269,4 +315,6 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
     if "repository_snapshot" in state:
         result["repository_snapshot"] = state["repository_snapshot"]
     _write_json(output / "result.json", result)
+    if cache_path is not None and result.get("status") in {"recoverable", "history_required"}:
+        _write_json(cache_path, {"cache_key": cache_path.stem, "result": result})
     return result

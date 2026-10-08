@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..storage import load
 from ..protocol import QA_TYPES, MEMORY_TYPES
+from ..security import credential_detected
 
 
 def save(path, value):
@@ -74,7 +75,45 @@ def write_diff(base, candidate, output):
     return receipt["changed_files"]
 
 
-def qa_inputs(qa_run, *, include_provisional=False):
+def _point_text(point):
+    return point if isinstance(point, str) else point.get("text", point.get("claim", ""))
+
+
+def _input_rejection(question, candidate, request, records, *, require_sources):
+    """Apply hard content/source guards independently of review status."""
+    for document in (question, candidate):
+        if credential_detected(json.dumps(document, ensure_ascii=False)):
+            return "credential_detected"
+    if not require_sources:
+        return None
+    points = candidate.get("answer_points", [])
+    if not points or any(not isinstance(point, dict) or not _point_text(point).strip()
+                         or not point.get("sources") for point in points):
+        return "missing_answer_sources"
+    references = request.get("ref_to_source", {})
+    payload = request.get("payload", {})
+    known = set(references.values())
+    known.update(row.get("id") for row in payload.get("scope", {}).get("dialogue", []))
+    cited = {source for key in ("answer_points", "forbidden_points")
+             for point in candidate.get(key, []) if isinstance(point, dict)
+             for source in point.get("sources", [])}
+    if any(not isinstance(source, str) or source not in known for source in cited):
+        return "unresolved_answer_source"
+    public_ids = {row.get("id") for row in records}
+    if records and any(source.partition("#fragment-")[0] not in public_ids for source in cited):
+        return "source_missing_from_dialogue"
+    represented = {references[row["reference"]] for row in payload.get("materials", [])
+                   if row.get("reference") in references}
+    represented.update(row.get("id") for row in payload.get("scope", {}).get("dialogue", []))
+    if not records and cited - represented:
+        return "source_missing_from_generation_input"
+    public_points = [_point_text(point) for point in question.get("answer_points", [])]
+    if public_points != [_point_text(point) for point in points]:
+        return "answer_differs_from_source_candidate"
+    return None
+
+
+def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
     """Join QA questions to their saved generation request.
 
     Approved questions are always eligible.  A caller may explicitly opt into
@@ -133,18 +172,29 @@ def qa_inputs(qa_run, *, include_provisional=False):
                 for question in (read(audit_path).get("questions", []) if audit_path.exists() else [])
                 if question.get("status") == "approved"}
     result = []
+    diagnostics = diagnostics if diagnostics is not None else []
+    external_path = qa_run / "external-events.json"
+    external_events = read(external_path).get("events", []) if external_path.is_file() else []
     for question in public:
         eligible = question.get("status") == "approved" or (
             include_provisional and question.get("status") in {"needs_review", "provisional"}
         )
         if eligible and question["id"] in requests:
             path, original = requests[question["id"]]
+            request = read(path)
+            candidate = reviewed.get(question["id"], original)
+            rejection = _input_rejection(question, candidate, request, normalized,
+                require_sources=run_manifest.get("qa_source") == "external")
+            if rejection:
+                diagnostics.append({"qa_id": question["id"], "status": question.get("status"),
+                                    "reason": rejection})
+                continue
             item = {"qa": question, "generation_input": str(path.resolve()),
                     "original_candidate": original,
-                    "reviewed_candidate": reviewed.get(question["id"], original),
+                    "reviewed_candidate": candidate,
                     "qa_source": run_manifest.get("qa_source", "graph"),
                     "provisional": question.get("status") != "approved"}
-            payload = read(path).get("payload", {}) if item["qa_source"] == "external" else {}
+            payload = request.get("payload", {}) if item["qa_source"] == "external" else {}
             workflow = payload.get("workflow", {})
             focus = payload.get("focus", {})
             workflow_sources = {
@@ -164,7 +214,82 @@ def qa_inputs(qa_run, *, include_provisional=False):
                 item["development_workflow"] = workflow["text"]
             if public_records is not None:
                 item["public_records"] = public_records
+            if item["qa_source"] == "external":
+                cited = sorted({source for key in ("answer_points", "forbidden_points")
+                                for point in candidate.get(key, []) if isinstance(point, dict)
+                                for source in point.get("sources", [])})
+                associations = set()
+                for event in external_events:
+                    if set(event.get("source_ids", [])) & set(cited):
+                        for key in ("task_id", "focus", "object", "target"):
+                            if isinstance(event.get(key), str) and event[key].strip():
+                                associations.add(key + ":" + event[key].strip())
+                for document in (original, candidate):
+                    group = document.get("evidence_group_id")
+                    if group:
+                        associations.add("evidence:" + group)
+                if item.get("development_workflow"):
+                    associations.add("workflow:" + item["development_workflow"].strip())
+                item.update(source_ids=cited, associations=sorted(associations))
             result.append(item)
+        elif eligible:
+            diagnostics.append({"qa_id": question.get("id"), "status": question.get("status"),
+                                "reason": "generation_input_missing"})
+    return result
+
+
+def has_eligible_qa(qa_run, *, include_provisional=False):
+    return bool(qa_inputs(qa_run, include_provisional=include_provisional))
+
+
+def generation_request(item):
+    """Keep every original request in a grouped task's private receipt."""
+    members = item.get("qa_members")
+    if not members:
+        return read(item["generation_input"])
+    return {"questions": [{"qa_id": member["qa"]["id"],
+                           "request": read(member["generation_input"])} for member in members]}
+
+
+def group_qa_inputs(items, group_size=2, *, diagnostics=None):
+    """Partition related external questions without adjacency-based padding."""
+    if group_size < 1:
+        raise ValueError("QA group size must be positive")
+    diagnostics = diagnostics if diagnostics is not None else []
+    result = [item for item in items if item.get("qa_source") != "external"]
+    pending = [item for item in items if item.get("qa_source") == "external"]
+    if group_size == 1:
+        return list(items)
+    while pending:
+        members = [pending.pop(0)]
+        while len(members) < group_size:
+            match = next((index for index, item in enumerate(pending)
+                if item["qa"].get("question") not in {member["qa"].get("question") for member in members}
+                and any(set(item.get("associations", [])) & set(member.get("associations", []))
+                        or set(item.get("source_ids", [])) & set(member.get("source_ids", []))
+                        for member in members)), None)
+            if match is None:
+                break
+            members.append(pending.pop(match))
+        if len(members) < group_size:
+            diagnostics.append({"qa_ids": [member["qa"]["id"] for member in members],
+                                "reason": "insufficient_related_qa", "required": group_size})
+            continue
+        ids = [member["qa"]["id"] for member in members]
+        question = dict(members[0]["qa"], id="group-" + qa_fingerprint(ids)[:16],
+            question="\n".join(member["qa"]["question"] for member in members),
+            answer_points=[point for member in members for point in member["qa"].get("answer_points", [])],
+            forbidden_points=[point for member in members for point in member["qa"].get("forbidden_points", [])],
+            status="needs_review" if any(member.get("provisional") for member in members) else "approved")
+        grouped = dict(members[0], qa=question, qa_members=members, qa_ids=ids,
+                       provisional=any(member.get("provisional") for member in members),
+                       source_ids=sorted({source for member in members for source in member.get("source_ids", [])}),
+                       associations=sorted({value for member in members for value in member.get("associations", [])}))
+        workflows = list(dict.fromkeys(member["development_workflow"] for member in members
+                                       if member.get("development_workflow")))
+        if workflows:
+            grouped["development_workflow"] = "\n".join(workflows)
+        result.append(grouped)
     return result
 
 

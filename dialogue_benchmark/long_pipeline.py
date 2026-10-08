@@ -20,7 +20,7 @@ from typing import Iterable, Optional
 from .collection import run_collection
 from .episode_input import load_episode_manifest
 from .pipeline_runner import PipelineRunner
-from .task_eval.artifacts import read, save
+from .task_eval.artifacts import has_eligible_qa, read, save, qa_inputs
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,6 +143,8 @@ def _route_command(route: str, manifest: Path, output: Path, args, plan: dict):
                "--qa-source", route, "--simulator-path", str(Path(args.simulator_path).resolve()),
                "--env-file", str(Path(args.env_file).resolve()), "--output", str(output), "--qa-only",
                "--parallel-workers", str(evaluation.get("parallel_workers", 10))]
+    if evaluation.get("model_request_chars") is not None:
+        command += ["--model-request-chars", str(evaluation["model_request_chars"])]
     if route == "external":
         command += ["--qa-count", str(evaluation.get("qa_count", 40))]
         if evaluation.get("group_budget") is not None:
@@ -184,14 +186,21 @@ def _qa_stage(args) -> int:
             save(pipeline, {"status": "failed", "reason": "route_command_failed",
                             "route": route, "returncode": outcomes[route]})
         public = read(route_dir / "qa/qa-public.json") if (route_dir / "qa/qa-public.json").is_file() else {}
+        try:
+            eligible = has_eligible_qa(route_dir / "qa", include_provisional=True)
+        except (OSError, KeyError, TypeError, ValueError):
+            eligible = False
+        approved = bool(public.get("questions")) and all(
+            q.get("status") == "approved" for q in public["questions"])
         records[route] = {"returncode": outcomes[route],
                           "status": read(pipeline).get("status"),
-                          "qualified": outcomes[route] == 0 and bool(public.get("questions"))
-                          and all(q.get("status") == "approved" for q in public["questions"])}
+                          "qualified": outcomes[route] == 0 and approved,
+                          "eligible": outcomes[route] == 0 and eligible,
+                          "provisional": outcomes[route] == 0 and eligible and not approved}
         artifacts.append(pipeline)
     save(output / "qa-summary.json", {"manifest": str(manifest), "routes": records})
     artifacts.append(output / "qa-summary.json")
-    if not any(item["qualified"] for item in records.values()):
+    if not any(item["qualified"] or item["eligible"] for item in records.values()):
         _write_receipt(output / "stage-receipt.json", artifacts, result="routes_failed")
         return 1
     _write_receipt(output / "stage-receipt.json", artifacts,
@@ -211,6 +220,10 @@ def _task_stage(args) -> int:
     pipeline = read(external / "pipeline.json") if (external / "pipeline.json").is_file() else {}
     candidates_path = external / "qa/qa-candidates.json"
     candidates = read(candidates_path) if candidates_path.is_file() else {}
+    try:
+        eligible_items = qa_inputs(external / "qa", include_provisional=True)
+    except (OSError, KeyError, TypeError, ValueError):
+        eligible_items = []
     provisional = [
         question for question in candidates.get("questions", [])
         if isinstance(question, dict)
@@ -222,7 +235,7 @@ def _task_stage(args) -> int:
     allow_provisional = bool(provisional) or public.get("status") == "needs_review"
     qualified = (
         pipeline.get("status") not in {"failed", "interrupted"}
-        and bool(public.get("questions") or provisional)
+        and bool(eligible_items)
         and (all_approved or allow_provisional)
     )
     output.mkdir(parents=True, exist_ok=True)
@@ -251,14 +264,20 @@ def _task_stage(args) -> int:
                "--task-count", str(evaluation.get("task_count", 1)),
                "--task-budget", str(evaluation.get("task_budget", 2)),
                "--task-workers", str(evaluation.get("task_workers", 2)),
-               "--revisions", str(evaluation.get("revisions", 3))]
+               "--revisions", str(evaluation.get("revisions", 3)),
+               "--model-request-chars", str(evaluation.get("model_request_chars", 96000))]
     if allow_provisional and not all_approved:
         command.append("--allow-provisional")
     code = _run_logged(command, ROOT, output / "stdout.log", output / "stderr.log")
     if code or not task_manifest.is_file():
         return code or 1
-    save(stage_summary, {"status": "completed", "manifest": str(task_manifest)})
-    _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary], result="completed")
+    task_data = read(task_manifest)
+    result = "completed" if task_data.get("status") == "complete" else "completed_with_warnings"
+    save(stage_summary, {"status": result, "manifest": str(task_manifest),
+                         "completed": task_data.get("completed", 0),
+                         "shortfall": task_data.get("shortfall", 0),
+                         "provisional_completed": task_data.get("provisional_completed", 0)})
+    _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary], result=result)
     return 0
 
 

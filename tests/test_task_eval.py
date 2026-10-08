@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from dialogue_benchmark.llm import _ask_stage
-from dialogue_benchmark.task_eval.artifacts import qa_inputs
+from dialogue_benchmark.task_eval.artifacts import qa_inputs, group_qa_inputs, generation_request
 from dialogue_benchmark.task_eval.checks import pytest_result, _test_write_violations
 from dialogue_benchmark.task_eval.metrics import compare_trials, measure
 from dialogue_benchmark.task_eval.runtime import (configure, preflight_openhands_runtime,
@@ -20,6 +20,33 @@ from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_
 
 
 class TaskEvaluationTests(unittest.TestCase):
+    def test_external_related_questions_group_with_all_answers_and_private_requests(self):
+        members = []
+        for index, source in enumerate(("m1", "m2"), 1):
+            members.append({"qa": {"id": "q%d" % index, "question": "Question %d" % index,
+                                    "answer_points": [{"text": "Answer %d" % index}]},
+                            "qa_source": "external", "generation_input": "/tmp/input-%d" % index,
+                            "source_ids": [source], "associations": ["task:checkout"],
+                            "provisional": False})
+        with patch("dialogue_benchmark.task_eval.artifacts.read",
+                   side_effect=lambda path: {"payload": path}):
+            grouped = group_qa_inputs(members, 2)
+            self.assertEqual(len(grouped), 1)
+            self.assertEqual(grouped[0]["qa_ids"], ["q1", "q2"])
+            self.assertEqual([point["text"] for point in grouped[0]["qa"]["answer_points"]],
+                             ["Answer 1", "Answer 2"])
+            request = generation_request(grouped[0])
+            self.assertEqual([row["qa_id"] for row in request["questions"]], ["q1", "q2"])
+
+    def test_external_unrelated_questions_are_not_padded_into_group(self):
+        members = [{"qa": {"id": "q%d" % index, "question": "Question %d" % index},
+                    "qa_source": "external", "generation_input": "/tmp/input-%d" % index,
+                    "source_ids": ["m%d" % index], "associations": ["task:%d" % index]}
+                   for index in (1, 2)]
+        diagnostics = []
+        self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), [])
+        self.assertEqual(diagnostics[0]["reason"], "insufficient_related_qa")
+
     def test_openhands_preflight_uses_current_interpreter_without_starting_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             simulator = Path(directory)

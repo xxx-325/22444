@@ -235,6 +235,31 @@ class PipelineRunnerTests(unittest.TestCase):
         self.assertEqual(stages["qa"]["status"], "skipped")
         self.assertEqual(stages["task"]["status"], "skipped")
 
+    def test_completed_receipt_warning_reaches_pipeline_report(self):
+        config = _config(("a",))
+        def run(command, cwd, env, stdout, stderr):
+            output = Path(env["PIPELINE_OUTPUT"])
+            output.mkdir(parents=True, exist_ok=True)
+            artifact = output / "artifact.txt"
+            artifact.write_text(env["PIPELINE_STAGE"], encoding="utf-8")
+            import hashlib
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            (output / "receipt.json").write_text(json.dumps({
+                "status": "completed", "result": "completed_with_warnings",
+                "sha256": digest,
+                "artifacts": [{"path": "artifact.txt", "sha256": digest}],
+            }), encoding="utf-8")
+        for stage in config["stages"].values():
+            stage["receipt"] = "{output}/receipt.json"
+        with tempfile.TemporaryDirectory() as directory:
+            report = PipelineRunner(config, Path(directory) / "run",
+                                    command_runner=run).run()
+        self.assertEqual(report["status"], "completed_with_warnings")
+        self.assertEqual(
+            report["cases"]["a"]["stages"]["repo"]["result"],
+            "completed_with_warnings",
+        )
+
     def test_resume_tampered_handoff_rebuilds_downstream_chain(self):
         calls = []
 

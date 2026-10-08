@@ -1915,7 +1915,8 @@ def main(argv=None):
                         probe = probe_candidate(
                             question, args.repository, args.endpoint, args.model,
                             args.key_env, args.output / "recoverability" / safe_id,
-                            request_timeout=args.request_timeout, reasoning_effort=args.reasoning_effort)
+                            request_timeout=args.request_timeout, reasoning_effort=args.reasoning_effort,
+                            cache_dir=args.output / "recoverability-cache")
                     except Exception as error:
                         probe = {"status": "uncertain",
                                  "reason": "probe_error:%s" % type(error).__name__}

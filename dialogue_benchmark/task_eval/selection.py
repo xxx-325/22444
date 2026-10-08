@@ -339,7 +339,10 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
         # The QA route and internal type labels are control-side metadata.  The
         # selector only needs the question and the answer material to decide
         # whether a real follow-up task exists.
-        "qa": {k: qa[k] for k in ("question", "answer_points") if k in qa},
+        "qa": {"question": qa.get("question", ""),
+               "answer_points": [point if isinstance(point, str)
+                                 else point.get("text", point.get("claim", ""))
+                                 for point in qa.get("answer_points", [])]},
         "history_sources": sources,
         "repository_overview": repository_overview(baseline),
         "repository_exploration": exploration or "",
@@ -663,6 +666,7 @@ def write_draft(selection, config, output, spec, budget, feedback=""):
             raise ValueError("External task requires the exact injected answer")
         response = budget.call(EXTERNAL_ACCEPTANCE, dict(
             public_task=files["task.md"], historical_answer=answer,
+            historical_questions=selection.get("historical_questions", []),
             repository_overview=payload["repository_overview"],
             repository_evidence=payload["evidence"]), config, Path(output) / "private")
         required = ({"NO_TASK.md"} if any(row.get("name") == "NO_TASK.md" for row in

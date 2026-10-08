@@ -7,7 +7,9 @@ from pathlib import Path
 from convert_session import convert
 from dialogue_benchmark.cli import main as generate_qa
 from dialogue_benchmark.llm import DEFAULT_REQUEST_TIMEOUT
-from dialogue_benchmark.task_eval.artifacts import copy_tree, fingerprint, read, save
+from dialogue_benchmark.task_eval.artifacts import (
+    copy_tree, fingerprint, has_eligible_qa, read, save,
+)
 from dialogue_benchmark.task_eval.run import main as run_tasks
 from dialogue_benchmark.task_eval.runtime import configure, preflight_openhands_runtime
 from dialogue_benchmark.task_eval.versions import baseline_version, pin_baseline
@@ -21,7 +23,7 @@ from dialogue_benchmark.collection import episode_usage
 MAX_QA_REQUEST_TIMEOUT = 600
 
 
-def _usable_qa(public, *, provisional=False):
+def _usable_qa(public, *, provisional=False, qa_root=None):
     """Return whether saved questions can feed task construction.
 
     The aggregate status may be ``needs_review`` when an unrelated group or
@@ -31,6 +33,11 @@ def _usable_qa(public, *, provisional=False):
     """
     if public.get("status") in {"failed", "disabled", "completed_no_questions"}:
         return False
+    if qa_root is not None and (Path(qa_root) / "stages").exists():
+        try:
+            return has_eligible_qa(qa_root, include_provisional=provisional)
+        except (OSError, KeyError, TypeError, ValueError):
+            return False
     questions = public.get("questions")
     allowed = {"approved"}
     if provisional:
@@ -227,9 +234,14 @@ def main(argv=None):
             state["stop_reason"] = "qa_generation_failed"
             raise RuntimeError("QA generation failed; see qa/qa-audit.json")
         provisional = bool(args.allow_provisional or qa_result.get("status") == "needs_review")
-        usable = _usable_qa(qa_result, provisional=provisional)
-        if not usable and provisional:
+        usable = _usable_qa(qa_result, provisional=provisional, qa_root=root / "qa")
+        if not usable and not provisional:
+            # An aggregate warning must not hide individually usable review
+            # candidates.  The hard source/credential checks live in
+            # ``qa_inputs`` rather than in this stage wrapper.
             provisional = _has_provisional_candidates(root)
+            if provisional:
+                usable = _usable_qa(qa_result, provisional=True, qa_root=root / "qa")
         if args.qa_only or not usable:
             if not args.qa_only:
                 task_manifest = {"target": args.task_count, "tasks": [],

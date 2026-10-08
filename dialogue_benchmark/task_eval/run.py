@@ -9,7 +9,8 @@ import shutil
 import time
 
 from . import prompts
-from .artifacts import copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs, read, save, write_diff
+from .artifacts import (copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs,
+                        group_qa_inputs, generation_request, read, save, write_diff)
 from .checks import (run_checks, acceptance_items, acceptance_has_inspect,
                      _acceptance_row_cells,
                      assess_acceptance, check_history_mutations, _inspect_command_cases)
@@ -278,7 +279,7 @@ def load_preparation(attempt, item, baseline, public_history):
     spec = attempt / "author/workspace/checks"
     if (not agent_finished(authored)
             or read(task / "author-reference/qa.json") != item["qa"]
-            or read(task / "author-reference/qa-input.json") != read(item["generation_input"])
+            or read(task / "author-reference/qa-input.json") != generation_request(item)
             or read(task.parent / "manifest.json")["baseline_sha256"] != fingerprint(baseline)):
         raise ValueError("Prepared task does not match completed author, QA, evidence or baseline")
     protected = ["task.md", "memory-use.md"]
@@ -307,7 +308,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     reference = root / "author-reference"
     reference.mkdir(parents=True)
     save(reference / "qa.json", item["qa"])
-    shutil.copy2(item["generation_input"], reference / "qa-input.json")
+    save(reference / "qa-input.json", generation_request(item))
     save(reference / "provenance.json", {k: v for k, v in item.items() if k not in {"qa", "public_records"}})
     # Use the exact source closure saved with the QA request for graph-mode
     # tasks.  External-only tasks keep the dialogue only as QA provenance: the
@@ -401,6 +402,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         gate_state = {}
         draft_selection = dict(selection)
         draft_selection["historical_question"] = item["qa"].get("question", "")
+        if item.get("qa_members"):
+            draft_selection["historical_questions"] = [
+                {"question": member["qa"]["question"], "answer": answer_text(member["qa"])}
+                for member in item["qa_members"]]
         if item.get("qa_source") == "external":
             draft_selection["historical_answer"] = answer_text(item["qa"])
         if public_history:
@@ -903,6 +908,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                            qa_sha256=qa_fingerprint(item["qa"]),
                            validation=record["validation"],
                            baseline_checks=baseline_checks, reference_checks=reference_checks)
+            receipt.update(qa_ids=item.get("qa_ids", [item["qa"]["id"]]),
+                           qa_statuses={member["qa"]["id"]: member["qa"].get("status")
+                                        for member in item.get("qa_members", [item])},
+                           provisional=item.get("provisional", False),
+                           source_ids=item.get("source_ids", []))
             if history:
                 receipt.update(comparison="without_memory_vs_oracle_history",
                                reference_information=history["reference_information"],
@@ -1024,7 +1034,10 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
 def selected_input_hash(item):
     payload = dict(item)
     if "generation_input" in payload:
-        payload["generation_input"] = read(payload["generation_input"])
+        payload["generation_input"] = generation_request(item)
+    if payload.get("qa_members"):
+        payload["qa_members"] = [dict(member, generation_input=generation_request(member))
+                                 for member in payload["qa_members"]]
     return qa_fingerprint(payload)
 
 
@@ -1032,7 +1045,7 @@ def validate_resume(manifest, expected, selected, output, baseline):
     """Check experiment identity before changing any retained artifact."""
     for key in ("source_run", "qa_run", "baseline", "baseline_sha256", "baseline_version",
                 "config", "execution", "target", "task_budget", "selection_only",
-                "selected_qa_ids", "evaluator_version", "simulator_version"):
+                "selected_qa_ids", "qa_group_size", "evaluator_version", "simulator_version"):
         # Legacy manifests predate the two source-version receipts.  They may
         # still be inspected, but a current resume must not silently run the
         # old artifact under a new evaluator.
@@ -1064,7 +1077,7 @@ def validate_resume(manifest, expected, selected, output, baseline):
         root = output / name
         for saved, current in ((root / "author-reference/qa.json", item["qa"]),
                                (root / "author-reference/qa-input.json",
-                                read(item["generation_input"]) if "generation_input" in item else None)):
+                                generation_request(item) if "generation_input" in item else None)):
             if saved.is_file() and read(saved) != current:
                 raise ValueError("Resume saved QA or generation input changed: " + name)
         if (root / "frozen.json").is_file():
@@ -1125,6 +1138,8 @@ def main(argv=None):
     parser.add_argument("--allow-provisional", action="store_true",
                         help="Use QA items marked needs_review as provisional task seeds")
     parser.add_argument("--count", type=int, default=3)
+    parser.add_argument("--qa-group-size", type=int,
+                        help="Related QA per business requirement (default: 2 external, 1 graph)")
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
     parser.add_argument("--task-budget", type=int,
@@ -1142,6 +1157,8 @@ def main(argv=None):
         parser.error("Counts and budgets must be positive; revisions must be nonnegative")
     if task_budget < 1:
         parser.error("Task budget must be positive")
+    if args.qa_group_size is not None and args.qa_group_size < 1:
+        parser.error("QA group size must be positive")
     if args.preparation_feedback and not args.reuse_preparation:
         parser.error("--preparation-feedback requires --reuse-preparation")
     output = args.output.resolve()
@@ -1152,9 +1169,20 @@ def main(argv=None):
         parser.error("--resume requires an existing task manifest")
     if not args.resume and ((output / "manifest.json").exists() or (output / "baseline").exists()):
         parser.error("Use a new output directory; previous experiments are retained")
-    items = qa_inputs(args.qa_run, include_provisional=args.allow_provisional)
+    input_diagnostics = []
+    items = qa_inputs(args.qa_run, include_provisional=args.allow_provisional,
+                      diagnostics=input_diagnostics)
     if not items:
         parser.error("No usable QA with saved generation inputs")
+    group_size = args.qa_group_size if args.qa_group_size is not None else (
+        2 if items[0].get("qa_source") == "external" else 1)
+    grouping_diagnostics = []
+    items = group_qa_inputs(items, group_size, diagnostics=grouping_diagnostics)
+    save(output / "qa-grouping.json", {"group_size": group_size,
+         "groups": [{"qa_id": item["qa"]["id"], "qa_ids": item.get("qa_ids", [item["qa"]["id"]]),
+                     "source_ids": item.get("source_ids", []), "provisional": item.get("provisional", False)}
+                    for item in items],
+         "rejected_inputs": input_diagnostics, "ungrouped": grouping_diagnostics})
     if args.reuse_preparation:
         source_qa = read(args.reuse_preparation.parent / "author-reference/qa.json")
         items = [item for item in items if item["qa"] == source_qa]
@@ -1213,6 +1241,9 @@ def main(argv=None):
                 "selected_qa_ids": [i["qa"]["id"] for i in selected],
                 "config_sha256": config_sha256, "selected_inputs_sha256": selected_inputs_sha256,
                 "allow_provisional": args.allow_provisional}
+    expected_manifest.update(qa_group_size=group_size,
+         selected_qa_groups=[item.get("qa_ids", [item["qa"]["id"]]) for item in selected],
+         qa_input_diagnostics=input_diagnostics, qa_grouping_diagnostics=grouping_diagnostics)
     if args.resume:
         manifest = existing_manifest
         recover_orphan_tasks(manifest, selected, output)
@@ -1313,6 +1344,10 @@ def main(argv=None):
         row = {"status": "interrupted"}
         try:
             row = run_task(index, item)
+            row.update(qa_ids=item.get("qa_ids", [item["qa"]["id"]]),
+                       qa_statuses={member["qa"]["id"]: member["qa"].get("status")
+                                    for member in item.get("qa_members", [item])},
+                       provisional=item.get("provisional", False))
             return row
         except BaseException as error:
             row.update(error_type=type(error).__name__, detail=str(error))
@@ -1349,6 +1384,10 @@ def main(argv=None):
     manifest.update(completed=completed, shortfall=max(0, args.count - completed),
                     stop_reason="target_met" if completed >= args.count else
                     "task_budget_exhausted" if len(selected) >= task_budget else "qa_pool_exhausted")
+    accepted = sum(task.get("status") == ("qualified" if args.selection_only else "evaluated")
+                   and not task.get("provisional") for task in manifest["tasks"])
+    manifest.update(accepted=accepted, provisional_completed=completed - accepted,
+                    status="complete" if accepted >= args.count else "needs_review" if completed else "incomplete")
     save(output / "manifest.json", manifest)
     write_report(output, manifest)
     print("Task pilot complete:", output, flush=True)
