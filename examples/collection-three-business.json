@@ -1,0 +1,75 @@
+{
+  "runtime_config": "runtime.scale.json",
+  "max_total_requests": 3600,
+  "max_total_tokens": 36000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": {
+    "min_increments": 6,
+    "min_visible_messages": 60,
+    "min_user_code_rounds": 30,
+    "min_public_tool_events": 80,
+    "min_external_events": 8,
+    "min_distinct_external_foci": 8,
+    "require_external_event_closure": true,
+    "require_declared_external_scope": true,
+    "forbid_memory_docs": true
+  },
+  "projects": [
+    {
+      "id": "customer-service-platform",
+      "brief": "Build a small customer service collaboration platform for a support team. It should grow through real work on customer records, tickets, service levels, assignment and escalation, pauses and closure, service history, and operational reporting. The product must remain usable from its normal command or API entry points, persist data locally, and have tests. Later work should cross these behaviors instead of becoming isolated helper functions.",
+      "increments": 6,
+      "scenarios": [
+        {
+          "id": "service-operations",
+          "brief": "Continue the support team's product through several related operational changes. Let the user ask questions, inspect behavior, observe failed attempts, correct business expectations, and later rely on those decisions in another part of the workflow.",
+          "external_fact_target": 8,
+          "preplan_external_facts": true,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Use the fixed Python standard-library environment. Only facts, corrections, failures, and environment observations made public during the conversation count as history."
+        }
+      ]
+    },
+    {
+      "id": "data-migration-reconciliation",
+      "brief": "Build a local data migration and reconciliation tool for moving records between two evolving formats. It should support imports, field mapping, incremental runs, duplicate and difference checks, resumable failures, rollback, and readable reports. The normal command line workflow and persisted run state must remain usable and tested. Later work should combine data rules, recovery behavior, and reporting rather than adding unrelated one-line fixes.",
+      "increments": 6,
+      "scenarios": [
+        {
+          "id": "migration-operations",
+          "brief": "Continue the migration tool through several real data-operations requests. Let implementation attempts, command results, user questions, corrections, and later reconciliation work shape the product naturally.",
+          "external_fact_target": 8,
+          "preplan_external_facts": true,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Use the fixed Python standard-library environment. Count an environment difference only after it appears in a public command or test result."
+        }
+      ]
+    },
+    {
+      "id": "release-change-orchestrator",
+      "brief": "Build a release change orchestration tool for a small engineering team. It should manage change plans, dependency checks, staged rollout, pause and resume, rollback after failed observations, and an audit trail. It must have a usable command or API, persistent state, and tests. Later work should require coordination between planning, execution, rollback, and audit behavior.",
+      "increments": 6,
+      "scenarios": [
+        {
+          "id": "change-operations",
+          "brief": "Continue the release workflow through several related changes. Let the user investigate current behavior, ask for explanations, run commands, report unexpected results, correct operating expectations, and later reuse earlier decisions.",
+          "external_fact_target": 8,
+          "preplan_external_facts": true,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Use the fixed Python standard-library environment. Only public differences, failures, and corrections become historical evidence."
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "general_count": 30,
+    "code_count": 30,
+    "qa_count": 12,
+    "group_budget": 80,
+    "task_count": 3,
+    "task_budget": 12,
+    "task_workers": 3,
+    "parallel_workers": 8,
+    "revisions": 5
+  }
+}

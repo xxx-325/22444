@@ -109,6 +109,27 @@ class LongPipelineTests(unittest.TestCase):
                 self.assertTrue(prepared.is_absolute())
                 self.assertEqual(prepared.name, "config.json")
 
+    def test_config_builds_fresh_business_cases_from_briefs(self):
+        source = Path(__file__).parents[1] / "examples/collection-three-business.json"
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            config = build_config(source, output, simulator_path=output / "sim",
+                                  env_file=output / ".env", python=Path(os.sys.executable))
+            self.assertEqual(
+                [case["id"] for case in config["cases"]],
+                [
+                    "customer-service-platform",
+                    "data-migration-reconciliation",
+                    "release-change-orchestrator",
+                ],
+            )
+            for case in config["cases"]:
+                plan = json.loads(Path(case["source"]).read_text(encoding="utf-8"))
+                project = plan["projects"][0]
+                self.assertIn("brief", project)
+                self.assertNotIn("prepared_config", project)
+                self.assertEqual(project["increments"], 6)
+
     def test_real_subprocess_receipts_gate_stage_completion_and_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

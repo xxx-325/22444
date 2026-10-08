@@ -262,27 +262,45 @@ def build_config(config_path: Path, output: Path, *, simulator_path: Path,
     python_path = python.absolute()
     cases = []
     for project in projects:
-        prepared = Path(project.get("prepared_config", ""))
-        prepared = (config_path.parent / prepared).resolve() if not prepared.is_absolute() else prepared.resolve()
-        if not prepared.is_file():
-            raise ValueError("prepared_config must be an existing prepared config: %s" % prepared)
-        prepared_project = prepared
-        try:
-            prepared_payload = read(prepared)
-        except (OSError, ValueError, TypeError):
-            prepared_payload = {}
-        prepared_projects = prepared_payload.get("projects") if isinstance(prepared_payload, dict) else None
-        if isinstance(prepared_projects, list) and len(prepared_projects) == 1:
-            entry = prepared_projects[0]
-            if entry.get("id") == project["id"] and entry.get("prepared_config"):
-                candidate = Path(entry["prepared_config"])
-                prepared_project = (prepared.parent / candidate).resolve()
-        if not prepared_project.is_file():
-            raise ValueError("prepared project config is missing: %s" % prepared_project)
         one = dict(master)
         one["runtime_config"] = str((config_path.parent / master["runtime_config"]).resolve())
         one["dialogue_only"] = True
-        one["projects"] = [{**project, "prepared_config": str(prepared_project)}]
+        if project.get("prepared_config"):
+            prepared = Path(project["prepared_config"])
+            prepared = (
+                (config_path.parent / prepared).resolve()
+                if not prepared.is_absolute()
+                else prepared.resolve()
+            )
+            if not prepared.is_file():
+                raise ValueError("prepared_config must be an existing prepared config: %s" % prepared)
+            prepared_project = prepared
+            try:
+                prepared_payload = read(prepared)
+            except (OSError, ValueError, TypeError):
+                prepared_payload = {}
+            prepared_projects = (
+                prepared_payload.get("projects")
+                if isinstance(prepared_payload, dict)
+                else None
+            )
+            if isinstance(prepared_projects, list) and len(prepared_projects) == 1:
+                entry = prepared_projects[0]
+                if entry.get("id") == project["id"] and entry.get("prepared_config"):
+                    candidate = Path(entry["prepared_config"])
+                    prepared_project = (prepared.parent / candidate).resolve()
+            if not prepared_project.is_file():
+                raise ValueError("prepared project config is missing: %s" % prepared_project)
+            one["projects"] = [{**project, "prepared_config": str(prepared_project)}]
+        elif project.get("brief"):
+            # A fresh case starts from a model-authored repository.  Keep this
+            # as a one-project collection plan so the existing collection
+            # stages (project -> scenario -> dialogue) remain the source of
+            # truth while the outer PipelineRunner can run cases in parallel.
+            one["projects"] = [{key: value for key, value in project.items()
+                                if key != "prepared_config"}]
+        else:
+            raise ValueError("each project needs either brief or prepared_config")
         plan = input_dir / (project["id"] + ".json")
         save(plan, one)
         common = [str(python_path), "-m", "dialogue_benchmark.long_pipeline",
