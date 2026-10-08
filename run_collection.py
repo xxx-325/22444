@@ -15,9 +15,11 @@ def main(argv=None):
                         help="Python environment with the existing simulator dependencies")
     parser.add_argument("--resume", action="store_true",
                         help="Continue the same plan and runtime, retaining all prior stage attempts")
+    parser.add_argument("--dialogue-only", action="store_true",
+                        help="Stop after writing each dialogue package")
     args = parser.parse_args(argv)
     run_collection(args.config, args.output, args.simulator_path, args.env_file, args.python,
-                   resume=args.resume)
+                   resume=args.resume, dialogue_only=args.dialogue_only)
     return 0
 
 

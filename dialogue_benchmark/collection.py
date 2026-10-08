@@ -112,7 +112,7 @@ def _aggregate_status(statuses, empty="no_scenarios"):
         return empty
     # ``qa_only`` is a successful terminal route: it deliberately skips
     # repository tasks and paired execution while still producing QA.
-    if all(status in {"completed", "qa_only"} for status in statuses):
+    if all(status in {"completed", "qa_only", "dialogue_only"} for status in statuses):
         return "completed"
     if any(status in {"failed", "stopped", "interrupted", "project_rejected",
                       "scenario_rejected", "requirements_rejected",
@@ -214,7 +214,8 @@ def validate_plan(plan):
             raise ValueError("Duplicate scenario id")
 
 
-def run_collection(plan_path, output, simulator, env_file, python=sys.executable, resume=False):
+def run_collection(plan_path, output, simulator, env_file, python=sys.executable,
+                   resume=False, dialogue_only=False):
     plan_path, output, simulator = (Path(p).resolve() for p in (plan_path, output, simulator))
     # Keep a virtualenv launcher symlink intact; resolving it loses the
     # environment's site-packages and can silently switch to bare Python.
@@ -228,6 +229,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             runtime[role]["max_output_tokens"] = None
     identity = dict(plan_sha256=_sha256(plan_path), runtime_sha256=_sha256(runtime_path),
                     simulator=str(simulator), python=str(python),
+                    dialogue_only=bool(dialogue_only or plan.get("dialogue_only", False)),
                     prepared_configs={p["id"]: _sha256((plan_path.parent / p["prepared_config"]).resolve())
                                       for p in plan["projects"] if p.get("prepared_config")})
     if resume:
@@ -238,6 +240,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         output.mkdir(parents=True, exist_ok=False, mode=0o700)
         state = dict(status="running", projects=[], stages=[], identity=identity,
                  qa_only=plan.get("evaluation", {}).get("qa_only", False),
+                 dialogue_only=bool(dialogue_only or plan.get("dialogue_only", False)),
                  qa_sources=plan.get("qa_sources", ["external"]),
                  plan_sha256=identity["plan_sha256"],
                  limits={k: plan[k] for k in ("max_total_requests", "max_total_tokens")},
@@ -247,6 +250,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True)
             state[label + "_revision"] = result.stdout.strip() if result.returncode == 0 else None
     state["status"] = "running"
+    dialogue_only = bool(dialogue_only or state.get("dialogue_only", False))
+    state["dialogue_only"] = dialogue_only
     state.pop("stop_reason", None)
     state.pop("error_type", None)
     state.setdefault("warnings", [])
@@ -480,6 +485,12 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 events = read(exported["external_events"])["events"] if exported.get("external_events") else []
                 record["public_memory_counts"] = {kind: sum(e.get("memory_kind") == kind for e in events)
                                                    for kind in ("M1", "M2", "M3", "M4", "M5", "M6")}
+                if dialogue_only:
+                    record["status"] = "dialogue_only"
+                    record["dialogue_manifest"] = str((package / "manifest.json").relative_to(output))
+                    entry["status"] = _aggregate_status(
+                        scenario.get("status") for scenario in entry["scenarios"])
+                    continue
                 record["evaluations"] = {}
                 for qa_source in state["qa_sources"]:
                     evaluated = record["evaluations"][qa_source] = {}
@@ -546,6 +557,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         persist()
         if not state["usage"]["complete"]:
             warning("usage_incomplete")
+        if dialogue_only:
+            state["stop_reason"] = "dialogue_only"
         state["status"] = _terminal_collection_status(state)
     except BaseException as error:
         state.update(status="blocked",
