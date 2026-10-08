@@ -209,8 +209,22 @@ def _task_stage(args) -> int:
     public_path = external / "qa/qa-public.json"
     public = read(public_path) if public_path.is_file() else {}
     pipeline = read(external / "pipeline.json") if (external / "pipeline.json").is_file() else {}
-    qualified = pipeline.get("status") not in {"failed", "interrupted"} and bool(public.get("questions")) and all(
-        q.get("status") == "approved" for q in public["questions"])
+    candidates_path = external / "qa/qa-candidates.json"
+    candidates = read(candidates_path) if candidates_path.is_file() else {}
+    provisional = [
+        question for question in candidates.get("questions", [])
+        if isinstance(question, dict)
+        and question.get("status") in {"needs_review", "provisional"}
+    ]
+    all_approved = bool(public.get("questions")) and all(
+        question.get("status") == "approved" for question in public["questions"]
+    )
+    allow_provisional = bool(provisional) or public.get("status") == "needs_review"
+    qualified = (
+        pipeline.get("status") not in {"failed", "interrupted"}
+        and bool(public.get("questions") or provisional)
+        and (all_approved or allow_provisional)
+    )
     output.mkdir(parents=True, exist_ok=True)
     task_manifest = output / "tasks" / "manifest.json"
     stage_summary = output / "task-stage.json"
@@ -238,6 +252,8 @@ def _task_stage(args) -> int:
                "--task-budget", str(evaluation.get("task_budget", 2)),
                "--task-workers", str(evaluation.get("task_workers", 2)),
                "--revisions", str(evaluation.get("revisions", 3))]
+    if allow_provisional and not all_approved:
+        command.append("--allow-provisional")
     code = _run_logged(command, ROOT, output / "stdout.log", output / "stderr.log")
     if code or not task_manifest.is_file():
         return code or 1

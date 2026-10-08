@@ -94,6 +94,40 @@ class LongPipelineTests(unittest.TestCase):
             self.assertTrue(any(path.name.startswith("tasks")
                                 for path in (output / ".incomplete").iterdir()))
 
+    def test_task_stage_continues_with_provisional_external_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            input_root = root / "qa"
+            external = input_root / "external"
+            output = root / "task"
+            repo.mkdir(parents=True)
+            save(repo / "manifest-path.json", {"manifest": str(root / "episode.json"),
+                                                "plan": str(root / "plan.json")})
+            save(root / "episode.json", {"placeholder": True})
+            save(root / "plan.json", {"evaluation": {"qa_count": 12}})
+            save(external / "pipeline.json", {"status": "completed_with_warnings"})
+            save(external / "qa/qa-public.json", {
+                "status": "needs_review",
+                "questions": [],
+            })
+            save(external / "qa/qa-candidates.json", {
+                "questions": [{"id": "q1", "status": "needs_review"}],
+            })
+            save(external / "qa/manifest.json", {"input_sha256": "test"})
+            args = SimpleNamespace(
+                input=input_root, output=output, python=Path(os.sys.executable),
+                simulator_path=root / "sim", env_file=root / ".env",
+            )
+
+            def fake_run(command, cwd, stdout, stderr):
+                self.assertIn("--allow-provisional", command)
+                save(output / "tasks/manifest.json", {"status": "completed", "tasks": []})
+                return 0
+
+            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_run):
+                self.assertEqual(_task_stage(args), 0)
+
     def test_config_expands_three_absolute_inputs(self):
         source = Path(__file__).parents[1] / "examples/collection-five/long-dialogue-three.json"
         with tempfile.TemporaryDirectory() as directory:
