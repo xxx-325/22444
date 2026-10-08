@@ -4,13 +4,43 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from dialogue_benchmark.collection import (_restore_archived_scenario_checkpoint,
+from dialogue_benchmark.collection import (_restore_archived_dialogue_checkpoint,
+                                            _restore_archived_scenario_checkpoint,
                                             _scenario_resume_checkpoint, episode_usage,
                                             run_collection)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionResumeTests(unittest.TestCase):
+    def test_interrupted_dialogue_restores_richest_archived_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "attempts/project/dialogue/attempt-1/dialogue"
+            save(archive / "private/checkpoint.json", {
+                "schema": "openhands-progressive-v20-test",
+                "state": {},
+                "tasks": [{}],
+                "public": [
+                    {"kind": "user", "text": "one"},
+                    {"kind": "assistant", "phase": "final", "text": "done"},
+                ],
+            })
+            save(root / "project/dialogue/private/checkpoint.json", {
+                "schema": "openhands-progressive-v20-test",
+                "state": {},
+                "tasks": [{}],
+                "public": [],
+            })
+            save(root / "collection.json", {"stages": [
+                {"name": "dialogue", "status": "running",
+                 "path": "project/dialogue", "target": "project/dialogue"},
+                {"name": "dialogue", "status": "interrupted",
+                 "path": str(archive.relative_to(root)), "target": "project/dialogue"},
+            ]})
+            _restore_archived_dialogue_checkpoint(root)
+            restored = read(root / "project/dialogue/private/checkpoint.json")
+            self.assertEqual(len(restored["public"]), 2)
+
     def test_retry_exhausted_scenario_checkpoint_is_restored_to_stable_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
