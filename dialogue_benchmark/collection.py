@@ -182,6 +182,91 @@ def _restore_archived_scenario_checkpoint(collection):
         return
 
 
+def _dialogue_resume_checkpoint(folder):
+    checkpoint = Path(folder) / "private/checkpoint.json"
+    if not checkpoint.is_file():
+        return False
+    try:
+        value = read(checkpoint)
+    except (OSError, ValueError, TypeError):
+        return False
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("tasks"), list)
+        and isinstance(value.get("public"), list)
+        and isinstance(value.get("state"), dict)
+        and value.get("schema", "").startswith("openhands-progressive-")
+    )
+
+
+def _dialogue_round_count(folder):
+    try:
+        value = read(Path(folder) / "private/checkpoint.json")
+    except (OSError, ValueError, TypeError):
+        return -1
+    pending = 0
+    rounds = 0
+    for row in value.get("public", []):
+        if row.get("kind") == "user" and row.get("text", "").strip():
+            pending += 1
+        elif (
+            row.get("kind") == "assistant"
+            and row.get("phase", "final") == "final"
+            and row.get("text", "").strip()
+            and pending
+        ):
+            pending -= 1
+            rounds += 1
+    return rounds
+
+
+def _restore_archived_dialogue_checkpoint(collection):
+    """Restore the richest interrupted dialogue checkpoint before retrying."""
+    collection = Path(collection)
+    state_path = collection / "collection.json"
+    if not state_path.is_file():
+        return
+    state = read(state_path)
+    stages = state.get("stages", [])
+    for index in range(len(stages) - 1, -1, -1):
+        row = stages[index]
+        if row.get("name") != "dialogue" or row.get("status") == "completed":
+            continue
+        target = collection / row.get("target", "")
+        candidates = [row.get("retry_exhausted_path"), row.get("path")]
+        candidates.extend(
+            prior.get("path")
+            for prior in reversed(stages[:index])
+            if prior.get("name") == "dialogue"
+        )
+        folders = [
+            collection / name for name in candidates
+            if isinstance(name, str) and _dialogue_resume_checkpoint(collection / name)
+        ]
+        if target.exists() and _dialogue_resume_checkpoint(target):
+            folders.append(target)
+        if not folders:
+            continue
+        archived = max(folders, key=_dialogue_round_count)
+        if target.exists() and archived != target:
+            backup = collection / "attempts" / row.get("target", "dialogue") / "recovery-current"
+            suffix = 1
+            while backup.exists():
+                backup = backup.with_name("recovery-current-%d" % suffix)
+                suffix += 1
+            backup.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.move(str(target), str(backup))
+        if archived != target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(archived), str(target))
+        row["status"] = "failed"
+        row["retry"] = max(0, MAX_STAGE_RETRIES - 1)
+        row["path"] = str(target.relative_to(collection))
+        row["restored_from"] = str(archived.relative_to(collection))
+        save(state_path, state)
+        return
+
+
 def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
@@ -344,6 +429,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         if state.get("identity") != identity:
             raise ValueError("Collection resume requires the same plan, runtime and prepared inputs")
         _restore_archived_scenario_checkpoint(output)
+        _restore_archived_dialogue_checkpoint(output)
         state = read(output / "collection.json")
     else:
         output.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -443,6 +529,13 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 retry_log.rename(diagnostic)
                 row["retry_diagnostic"] = str(diagnostic.relative_to(output))
             command = [*command, "--resume-existing"]
+        elif (previous and name == "dialogue"
+              and previous.get("resume_count", 0) < MAX_STAGE_RETRIES
+              and _dialogue_resume_checkpoint(folder)):
+            row = previous
+            row["status"] = "running"
+            row["resume_count"] = row.get("resume_count", 0) + 1
+            command = [*command, "--resume"]
         else:
             if previous:
                 if previous.get("retry", 0) >= MAX_STAGE_RETRIES:
