@@ -149,7 +149,7 @@ def _build_parser():
     parser.add_argument("--request-timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT,
                         help="Model request timeout in seconds (default: 90)")
     parser.add_argument("--reuse-facts", type=Path,
-                        help="Reuse saved facts/errors from an identical normalized input and chunk layout")
+                        help="Reuse saved facts/errors from identical normalized input and chunks; extract missing chunks")
     parser.add_argument("--repository", type=Path,
                         help="Final repository snapshot for the read-only recoverability probe")
     parser.add_argument("--qa-source", choices=("graph", "external"), default="graph",
@@ -284,7 +284,7 @@ def _checkpoint(checkpoint_dir, track, phase, index):
 def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     reuse_dir=None, external_only=False, request_timeout=DEFAULT_REQUEST_TIMEOUT,
                     reasoning_effort=None):
-    """Extract every chunk's facts through one bounded shared executor."""
+    """Reuse saved fact results/errors and extract missing chunks in a bounded executor."""
     if not tasks:
         return {"facts": [], "questions": [], "rejected": [], "usage": [],
                 "stage_errors": [], "stage_status": [],
@@ -308,8 +308,6 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
                           "stage_status": {"facts": "failed", "reused": True}}
                 if write:
                     write("facts-error.json", error)
-            elif reuse_dir:
-                raise ValueError("Missing saved fact-stage result")
             else:
                 client = ChatClient(endpoint, model, key_env, request_timeout, reasoning_effort=reasoning_effort)
                 kwargs = {

@@ -401,6 +401,42 @@ class DualModeCliTests(unittest.TestCase):
         self.assertEqual(len(result["stage_errors"]), 1)
         self.assertEqual(len(result["stage_status"]), 2)
 
+    def test_partial_fact_cache_reuses_results_and_extracts_missing_chunk(self):
+        calls = []
+
+        class FakeClient:
+            def __init__(self, *unused, **kwargs):
+                self.usage = [{"total_tokens": 7}]
+
+        def fake_extract(scope, client, qa_mode, checkpoint=None):
+            calls.append(scope["chunk_index"])
+            facts = [{"id": "f1", "statement": "new", "sources": ["e3"]}]
+            if checkpoint:
+                checkpoint("facts.json", facts)
+            return {"facts": facts, "stage_status": {"facts": "completed"}}
+
+        tasks = [(index, "general", {"scope_index": 0, "chunk_index": index})
+                 for index in range(3)]
+        with tempfile.TemporaryDirectory() as directory:
+            saved = Path(directory) / "saved"
+            (saved / "stages").mkdir(parents=True)
+            facts = [{"id": "f1", "statement": "saved", "sources": ["e1"]}]
+            error = {"stage": "facts", "error_code": "parse_error"}
+            (saved / "stages/general-chunk-0000-facts.json").write_text(json.dumps(facts))
+            (saved / "stages/general-chunk-0001-facts-error.json").write_text(json.dumps(error))
+            with patch.object(cli, "ChatClient", FakeClient), \
+                    patch.object(cli, "extract_facts", fake_extract):
+                result = cli._run_fact_tasks(
+                    tasks, "https://example.invalid", "model", "KEY", 1,
+                    reuse_dir=saved)
+
+            self.assertEqual(calls, [2])
+            self.assertEqual([fact["statement"] for fact in result["facts"]], ["saved", "new"])
+            self.assertEqual(result["usage"], [{"total_tokens": 7}])
+            self.assertEqual(result["stage_errors"], [dict(error, track="general", task_index=1)])
+            self.assertEqual([row.get("reused", False) for row in result["stage_status"]],
+                             [True, True, False])
+
     def test_network_both_mode_writes_separate_and_combined_outputs(self):
         class FakeClient:
             def __init__(self, *unused, **kwargs):
