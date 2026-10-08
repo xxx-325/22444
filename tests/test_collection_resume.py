@@ -4,11 +4,32 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from dialogue_benchmark.collection import _scenario_resume_checkpoint, episode_usage, run_collection
+from dialogue_benchmark.collection import (_restore_archived_scenario_checkpoint,
+                                            _scenario_resume_checkpoint, episode_usage,
+                                            run_collection)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionResumeTests(unittest.TestCase):
+    def test_retry_exhausted_scenario_checkpoint_is_restored_to_stable_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archived = root / "attempts/project/scenario/scenario/attempt-3/scenario"
+            save(archived / "frozen/resume.json", {
+                "schema": "scenario-resume-v1", "identity": {},
+                "scenario": {"schema": "continuous-commit-scenario-v1", "commits": []},
+                "external_plan": [], "next_index": 1,
+            })
+            save(root / "collection.json", {"stages": [{
+                "name": "scenario", "status": "retry_exhausted",
+                "path": str(archived.relative_to(root)),
+                "target": "project/scenario/scenario",
+            }]})
+            _restore_archived_scenario_checkpoint(root)
+            self.assertTrue((root / "project/scenario/scenario/frozen/resume.json").is_file())
+            state = read(root / "collection.json")
+            self.assertEqual(state["stages"][0]["status"], "failed")
+
     def test_legacy_checkpoint_is_recoverable_only_when_checksum_metadata_is_complete(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

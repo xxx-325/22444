@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -130,6 +131,37 @@ def _scenario_resume_checkpoint(folder):
         isinstance(value.get("scenario_sha256"), str)
         and isinstance(value.get("external_plan_sha256"), str)
     )
+
+
+def _restore_archived_scenario_checkpoint(collection):
+    """Put the last retry checkpoint back at its stable stage path.
+
+    Older collection retries archived the scenario directory before the
+    checkpoint-aware retry existed.  The simulator can verify that legacy
+    checkpoint independently, so restore only that exact archived directory;
+    any other retry remains untouched.
+    """
+    collection = Path(collection)
+    state_path = collection / "collection.json"
+    if not state_path.is_file():
+        return
+    state = read(state_path)
+    stages = state.get("stages", [])
+    for row in reversed(stages):
+        if row.get("name") != "scenario" or row.get("status") != "retry_exhausted":
+            continue
+        archived = collection / row.get("path", "")
+        target = collection / row.get("target", "")
+        if target.exists() or not _scenario_resume_checkpoint(archived):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(archived), str(target))
+        row["status"] = "failed"
+        row["retry"] = max(0, MAX_STAGE_RETRIES - 1)
+        row["path"] = str(target.relative_to(collection))
+        row["restored_from_retry_exhausted"] = True
+        save(state_path, state)
+        return
 
 
 def _sha256(path):
@@ -293,6 +325,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         state = read(output / "collection.json")
         if state.get("identity") != identity:
             raise ValueError("Collection resume requires the same plan, runtime and prepared inputs")
+        _restore_archived_scenario_checkpoint(output)
+        state = read(output / "collection.json")
     else:
         output.mkdir(parents=True, exist_ok=False, mode=0o700)
         state = dict(status="running", projects=[], stages=[], identity=identity,
