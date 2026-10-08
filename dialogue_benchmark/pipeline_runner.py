@@ -68,9 +68,11 @@ def _replace_tokens(value: str, mapping: Dict[str, str]) -> str:
 
 
 def _receipt_path(spec: object, paths: Dict[str, str]) -> Optional[Path]:
-    if spec is None:
+    if spec is None or spec is False:
         return None
-    if isinstance(spec, str):
+    if spec is True:
+        value = paths["receipt"]
+    elif isinstance(spec, str):
         value = spec
     elif isinstance(spec, dict):
         value = spec.get("path", paths["receipt"])
@@ -315,10 +317,10 @@ class PipelineRunner:
         expected_sha = None
         if isinstance(expected, dict):
             expected_status = expected.get("status", expected_status)
-            expected_sha = expected.get("sha256")
+            expected_sha = expected.get("sha256", expected.get("sha"))
         if not isinstance(receipt, dict) or receipt.get("status") != expected_status:
             raise StageReceiptError("stage receipt is not completed: %s" % receipt_path)
-        receipt_sha = receipt.get("sha256")
+        receipt_sha = receipt.get("sha256", receipt.get("sha"))
         if not isinstance(receipt_sha, str) or not receipt_sha:
             raise StageReceiptError("stage receipt has no sha256: %s" % receipt_path)
         if expected_sha is not None and receipt_sha != expected_sha:
@@ -335,7 +337,8 @@ class PipelineRunner:
                 artifact_path = Path(artifact["path"])
                 if not artifact_path.is_absolute():
                     artifact_path = receipt_path.parent / artifact_path
-                if not artifact_path.is_file() or artifact.get("sha256") != _file_sha256(artifact_path):
+                artifact_sha = artifact.get("sha256", artifact.get("sha"))
+                if not artifact_path.is_file() or artifact_sha != _file_sha256(artifact_path):
                     raise StageReceiptError("stage receipt artifact hash differs: %s" % artifact_path)
         return {"path": str(receipt_path), "sha256": _file_sha256(receipt_path)}
 
