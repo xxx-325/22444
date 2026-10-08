@@ -536,6 +536,22 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             row["status"] = "running"
             row["resume_count"] = row.get("resume_count", 0) + 1
             command = [*command, "--resume"]
+        elif (
+            previous
+            and name == "dialogue"
+            and previous.get("resume_count", 0) < MAX_STAGE_RETRIES
+            and (
+                _restore_archived_dialogue_checkpoint(output) is None
+                and _dialogue_resume_checkpoint(folder)
+            )
+        ):
+            # A failed child may have left its valid checkpoint in an
+            # archived attempt. Restore it before the automatic retry so
+            # the dialogue continues instead of silently starting over.
+            row = previous
+            row["status"] = "running"
+            row["resume_count"] = row.get("resume_count", 0) + 1
+            command = [*command, "--resume"]
         else:
             if previous:
                 if previous.get("retry", 0) >= MAX_STAGE_RETRIES:
