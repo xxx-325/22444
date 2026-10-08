@@ -313,6 +313,7 @@ def main(argv=None) -> int:
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--stage", choices=("repo", "qa", "task"))
     parser.add_argument("--input", type=Path)
     args = parser.parse_args(argv)
@@ -324,7 +325,10 @@ def main(argv=None) -> int:
     config = build_config(args.config, output, simulator_path=args.simulator_path,
                           env_file=args.env_file, python=args.python)
     save(output / "pipeline-config.json", config)
-    report = PipelineRunner(config, output, resume=args.resume).run()
+    if args.max_attempts <= 0:
+        parser.error("--max-attempts must be positive")
+    report = PipelineRunner(config, output, resume=args.resume,
+                            max_attempts=args.max_attempts).run()
     print(json.dumps({"status": report["status"], "output": str(output)}, ensure_ascii=False))
     return 0
 

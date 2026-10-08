@@ -144,6 +144,32 @@ class PipelineRunnerTests(unittest.TestCase):
             state = json.loads((output / "pipeline-state.json").read_text())
             self.assertEqual(state["cases"]["a"]["stages"]["repo"]["attempts"], 1)
 
+    def test_resume_retries_unexhausted_failed_stage_and_unskips_dependents(self):
+        calls = []
+        fail_once = {"repo": True}
+
+        def run(command, cwd, env, stdout, stderr):
+            stage = command[1]
+            calls.append(stage)
+            if stage == "repo" and fail_once["repo"]:
+                fail_once["repo"] = False
+                raise StageCommandError("temporary failure")
+            Path(env["PIPELINE_OUTPUT"]).mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            first = PipelineRunner(
+                _config(("a",)), output, max_attempts=1,
+                command_runner=run, poll_interval=0.001,
+            ).run()
+            self.assertEqual(first["cases"]["a"]["stages"]["repo"]["status"], "failed")
+            resumed = PipelineRunner(
+                _config(("a",)), output, max_attempts=2, resume=True,
+                command_runner=run, poll_interval=0.001,
+            ).run()
+        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(calls, ["repo", "repo", "qa", "task"])
+
     def test_one_failed_case_is_skipped_downstream(self):
         calls = []
 

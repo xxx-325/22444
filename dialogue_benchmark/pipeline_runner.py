@@ -258,6 +258,15 @@ class PipelineRunner:
                                         or (receipt_sha and receipt_sha != _file_sha256(Path(receipt)))):
                             record.update({"status": "needs_review", "reason": "receipt_changed",
                                            "recovered": True, "finished_at": _now()})
+                    if record.get("status") == "failed" and int(
+                            record.get("attempts", 0)) < self.max_attempts:
+                        record.update({"status": "pending", "recovered": True})
+                    if record.get("status") == "skipped" and str(
+                            record.get("reason", "")).startswith("dependency_"):
+                        dependency = DEPENDENCY[stage]
+                        if dependency and case["stages"][dependency].get("status") in {
+                                "pending", "running"}:
+                            record.update({"status": "pending", "recovered": True})
             _atomic_json(self.state_path, state)
             return state
         state = self._new_state()
