@@ -583,7 +583,10 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     and row.get("retry", 0) < MAX_STAGE_RETRIES):
                 row["status"] = "failed"
                 persist()
-                return stage(name, folder, command, cwd, receipt, expected, ledger, budget_key)
+                retry_command = command[:-1] if command and command[-1] in {
+                    "--resume", "--resume-existing"
+                } else command
+                return stage(name, folder, retry_command, cwd, receipt, expected, ledger, budget_key)
             if row["returncode"]:
                 log = folder.with_suffix(".log")
                 text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
@@ -602,7 +605,10 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     # must not require a manual resume.
                     row["status"] = "failed"
                     persist()
-                    return stage(name, folder, command, cwd, receipt, expected, ledger, budget_key)
+                    retry_command = command[:-1] if command and command[-1] in {
+                        "--resume", "--resume-existing"
+                    } else command
+                    return stage(name, folder, retry_command, cwd, receipt, expected, ledger, budget_key)
                 warning("stage_needs_review", stage=target, outcome=row["outcome"],
                         returncode=row["returncode"])
             elif row["status"] != "completed":
