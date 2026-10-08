@@ -17,7 +17,7 @@
   "projects": [
     {
       "id": "release-operations",
-      "prepared_config": "prepared-release.json",
+      "prepared_config": "../../runs/final-five-r2-release-operations-20261008/release-operations/project/config.json",
       "scenarios": [
         {
           "id": "release-workflow",
@@ -31,7 +31,7 @@
     },
     {
       "id": "document-pipeline",
-      "prepared_config": "prepared-document.json",
+      "prepared_config": "../../runs/final-five-r3-document-pipeline-20261008/document-pipeline/project/config.json",
       "scenarios": [
         {
           "id": "compliance-workflow",
@@ -45,7 +45,7 @@
     },
     {
       "id": "dependency-planner",
-      "prepared_config": "prepared-dependency.json",
+      "prepared_config": "../../runs/final-five-r3-dependency-planner-20261008/dependency-planner/project/config.json",
       "scenarios": [
         {
           "id": "customer-workflow",
