@@ -147,16 +147,29 @@ def _restore_archived_scenario_checkpoint(collection):
         return
     state = read(state_path)
     stages = state.get("stages", [])
-    for row in reversed(stages):
-        if row.get("name") != "scenario" or row.get("status") != "retry_exhausted":
+    for index in range(len(stages) - 1, -1, -1):
+        row = stages[index]
+        if row.get("name") != "scenario":
+            continue
+        target = collection / row.get("target", "")
+        if target.exists():
             continue
         # Retry-exhausted rows keep the archived attempt separately; older
-        # rows only exposed the stable path.  Prefer the explicit archive
-        # while retaining the legacy fallback.
-        archived_name = row.get("retry_exhausted_path") or row.get("path", "")
-        archived = collection / archived_name
-        target = collection / row.get("target", "")
-        if target.exists() or not _scenario_resume_checkpoint(archived):
+        # rows only exposed the stable path.  Try the explicit archive first,
+        # then walk earlier archived attempts if the last attempt was empty.
+        names = [row.get("retry_exhausted_path"), row.get("path")]
+        if row.get("status") == "retry_exhausted":
+            names.extend(
+                prior.get("path")
+                for prior in reversed(stages[:index])
+                if prior.get("name") == "scenario"
+            )
+        archived = next(
+            (collection / name for name in names
+             if isinstance(name, str) and _scenario_resume_checkpoint(collection / name)),
+            None,
+        )
+        if archived is None:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(archived), str(target))
@@ -164,6 +177,7 @@ def _restore_archived_scenario_checkpoint(collection):
         row["retry"] = max(0, MAX_STAGE_RETRIES - 1)
         row["path"] = str(target.relative_to(collection))
         row["restored_from_retry_exhausted"] = True
+        row["restored_from"] = str(archived.relative_to(collection))
         save(state_path, state)
         return
 
