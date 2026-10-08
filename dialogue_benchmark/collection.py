@@ -91,6 +91,33 @@ def _recover_receipt(receipt):
     return recovered
 
 
+def _scenario_resume_checkpoint(folder):
+    """Return whether a scenario has a structurally usable prefix checkpoint.
+
+    The simulator performs the full identity and checksum validation.  The
+    collection layer only decides whether preserving this output is safe to
+    request; malformed checkpoints fall back to the normal archived retry.
+    """
+    checkpoint = Path(folder) / "frozen/resume.json"
+    if not checkpoint.is_file():
+        return False
+    try:
+        value = read(checkpoint)
+    except (OSError, ValueError, TypeError):
+        return False
+    return (
+        isinstance(value, dict)
+        and value.get("schema") == "scenario-resume-v1"
+        and isinstance(value.get("identity"), dict)
+        and isinstance(value.get("scenario"), dict)
+        and value["scenario"].get("schema") == "continuous-commit-scenario-v1"
+        and type(value.get("next_index")) is int
+        and value["next_index"] >= 0
+        and isinstance(value.get("scenario_sha256"), str)
+        and isinstance(value.get("external_plan_sha256"), str)
+    )
+
+
 def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
@@ -316,8 +343,28 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             row["status"] = "running"
             row["resume_count"] = row.get("resume_count", 0) + 1
             command = [*command, "--resume"]
+        elif (previous and name == "scenario"
+              and previous.get("resume_count", 0) < MAX_STAGE_RETRIES
+              and _scenario_resume_checkpoint(folder)):
+            # The simulator validates checkpoint identity and checksums. Keep
+            # the accepted prefix in place and charge all calls to its one
+            # cumulative budget journal rather than creating a new attempt.
+            row = previous
+            row["status"] = "running"
+            row["resume_count"] = row.get("resume_count", 0) + 1
+            retry_log = folder.with_suffix(".log")
+            if retry_log.is_file():
+                diagnostics = output / "attempts" / target
+                diagnostics.mkdir(parents=True, exist_ok=True, mode=0o700)
+                suffix = row["resume_count"]
+                diagnostic = diagnostics / ("resume-%d.log" % suffix)
+                while diagnostic.exists():
+                    suffix += 1
+                    diagnostic = diagnostics / ("resume-%d.log" % suffix)
+                retry_log.rename(diagnostic)
+                row["retry_diagnostic"] = str(diagnostic.relative_to(output))
+            command = [*command, "--resume-existing"]
         else:
-            reused_checkpoint = False
             if previous:
                 if previous.get("retry", 0) >= MAX_STAGE_RETRIES:
                     archive = output / "attempts" / target / ("attempt-%d" % (previous.get("retry", 0) + 1))
@@ -331,45 +378,23 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     previous["retry_exhausted_path"] = str(archive.relative_to(output))
                     persist()
                     return None
-                checkpoint = (
-                    name == "scenario"
-                    and (folder / "frozen" / "resume.json").is_file()
-                )
-                if checkpoint:
-                    # prepare_scenario can validate and continue the accepted
-                    # prefix.  Moving this directory to attempts/ would
-                    # destroy the only safe recovery point and force the
-                    # model to recreate earlier history.
-                    resume_command = list(command)
-                    if "--resume-existing" not in resume_command:
-                        resume_command.append("--resume-existing")
-                    previous["status"] = "running"
-                    previous["command"] = resume_command
-                    previous["retry"] = int(previous.get("retry", 0)) + 1
-                    previous["resumed_from_checkpoint"] = True
-                    row = previous
-                    command = resume_command
-                    reused_checkpoint = True
-                    persist()
-                else:
-                    archive = output / "attempts" / target / (
-                        "attempt-%d" % (int(previous.get("retry", 0)) + 1))
-                    archive.mkdir(parents=True, exist_ok=False, mode=0o700)
-                    for artifact in (folder, folder.with_suffix(".log"),
-                                     folder.with_name("dialogue-package") if name == "dialogue" else None):
-                        if artifact is not None and artifact.exists():
-                            artifact.rename(archive / artifact.name)
-                    previous["path"] = str((archive / folder.name).relative_to(output))
-                    previous["archived"] = True
-                    persist()
-                    row = dict(name=name, path=target, target=target, status="running", command=command,
-                               identity=stage_identity,
-                               retry=(int(previous.get("retry", 0)) + 1) if previous else 0)
+                archive = output / "attempts" / target / (
+                    "attempt-%d" % (int(previous.get("retry", 0)) + 1))
+                archive.mkdir(parents=True, exist_ok=False, mode=0o700)
+                for artifact in (folder, folder.with_suffix(".log"),
+                                 folder.with_name("dialogue-package") if name == "dialogue" else None):
+                    if artifact is not None and artifact.exists():
+                        artifact.rename(archive / artifact.name)
+                previous["path"] = str((archive / folder.name).relative_to(output))
+                previous["archived"] = True
+                persist()
+                row = dict(name=name, path=target, target=target, status="running", command=command,
+                           identity=stage_identity,
+                           retry=(int(previous.get("retry", 0)) + 1) if previous else 0)
             else:
                 row = dict(name=name, path=target, target=target, status="running", command=command,
                            identity=stage_identity, retry=0)
-            if not reused_checkpoint:
-                state["stages"].append(row)
+            state["stages"].append(row)
         persist()
         print("Collection:", row["path"], name, flush=True)
         try:
