@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_status,
-                                            _completed_pair, _transient_stage_failure,
+                                            _authentication_failure, _completed_pair,
+                                            _transient_stage_failure,
                                             _recover_receipt,
                                             episode_usage,
                                             run_collection, validate_plan)
@@ -42,6 +43,15 @@ class CollectionTests(unittest.TestCase):
             "ConversationRunError: BadGatewayError - Relay request failed"))
         self.assertFalse(_transient_stage_failure("SyntaxError: invalid input"))
         self.assertFalse(_transient_stage_failure("Unauthorized: invalid api key"))
+
+    def test_authentication_failure_requires_explicit_provider_error(self):
+        self.assertTrue(_authentication_failure("HTTPError: 401 Client Error: Unauthorized"))
+        self.assertTrue(_authentication_failure("ModelStageError: missing_api_key"))
+        self.assertTrue(_authentication_failure("provider response status=403 Forbidden"))
+        self.assertFalse(_authentication_failure(
+            "Scenario review: using 3 workers would leave an unauthorized extra worker."))
+        self.assertFalse(_authentication_failure(
+            "The customer authorization policy was updated for the next run."))
 
     def test_empty_child_statuses_are_not_success(self):
         self.assertEqual(_aggregate_status([]), "no_scenarios")

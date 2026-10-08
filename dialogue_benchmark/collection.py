@@ -188,6 +188,19 @@ def _transient_stage_failure(text):
     ))
 
 
+def _authentication_failure(text):
+    """Match explicit provider authentication failures, not model prose."""
+    patterns = (
+        r"\b(?:http(?:error)?|http_status|status(?:_code)?|response\s+status)\s*[:=]?\s*4(?:01|03)\b",
+        r"\b4(?:01|03)\b[^\n]{0,60}\b(?:unauthorized|forbidden)\b",
+        r"\b(?:invalid|missing|expired|revoked)\s+(?:api[_ -]?key|access[_ -]?token|bearer(?:\s+token)?|credentials?)\b",
+        r"\b(?:api[_ -]?key|access[_ -]?token|bearer(?:\s+token)?|credentials?)\s*(?:is\s+)?(?:invalid|missing|expired|revoked)\b",
+        r"\b(?:missing_api_key|invalid_api_key|authentication_error)\b",
+        r"\bmissing\s+model\s+credential\b",
+    )
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
 def validate_plan(plan):
     if not plan.get("projects") or not plan.get("runtime_config"):
         raise ValueError("A runtime_config and fixed projects list are required")
@@ -415,7 +428,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             if row["returncode"]:
                 log = folder.with_suffix(".log")
                 text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
-                if re.search(r"authentication|invalid api key|unauthorized|missing.*credential", text, re.I):
+                if _authentication_failure(text):
                     raise RuntimeError("collection_authentication_failed")
                 if re.search(r"unrecognized arguments|the following arguments are required", text, re.I):
                     raise RuntimeError("collection_input_failed")
