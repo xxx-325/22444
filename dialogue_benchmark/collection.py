@@ -327,7 +327,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     previous["retry_exhausted_path"] = str(archive.relative_to(output))
                     persist()
                     return None
-                archive = output / "attempts" / target / "attempt-1"
+                archive = output / "attempts" / target / (
+                    "attempt-%d" % (int(previous.get("retry", 0)) + 1))
                 archive.mkdir(parents=True, exist_ok=False, mode=0o700)
                 for artifact in (folder, folder.with_suffix(".log"),
                                  folder.with_name("dialogue-package") if name == "dialogue" else None):
@@ -337,7 +338,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 previous["archived"] = True
                 persist()
             row = dict(name=name, path=target, target=target, status="running", command=command,
-                       identity=stage_identity, retry=1 if previous else 0)
+                       identity=stage_identity,
+                       retry=(int(previous.get("retry", 0)) + 1) if previous else 0)
             state["stages"].append(row)
         persist()
         print("Collection:", row["path"], name, flush=True)

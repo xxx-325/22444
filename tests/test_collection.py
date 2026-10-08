@@ -226,6 +226,23 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(result["projects"][0]["scenarios"][0]["status"], "completed")
             self.assertEqual(result["status"], "completed")
 
+    def test_failed_stage_retries_three_times_with_distinct_archives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.always_fail_dialogue = True
+            result = self.invoke(root)
+            dialogue_rows = [row for row in result["stages"] if row["name"] == "dialogue"]
+            self.assertEqual(len(dialogue_rows), 3)
+            self.assertEqual([row["retry"] for row in dialogue_rows], [0, 1, 2])
+            self.assertEqual(dialogue_rows[-1]["status"], "retry_exhausted")
+            self.assertEqual([row["usage"]["requests"] for row in dialogue_rows], [1, 1, 1])
+            attempts = root / "run/attempts/planner/first/dialogue"
+            self.assertEqual(sorted(path.name for path in attempts.iterdir()),
+                             ["attempt-1", "attempt-2", "attempt-3"])
+            self.assertEqual(result["projects"][0]["scenarios"][0]["status"],
+                             "dialogue_incomplete")
+
     def command(self, command, cwd, log):
         target = Path(command[command.index("--output") + 1])
         self.commands.append(command)
@@ -252,6 +269,9 @@ class CollectionTests(unittest.TestCase):
             save(target / "budget.json", budget)
         elif name == "dialogue":
             package = target.with_name("dialogue-package")
+            if getattr(self, "always_fail_dialogue", False):
+                save(package / "private/review.json", dict(budget=budget))
+                return 1
             if hasattr(self, "missing_receipt_attempts") and self.missing_receipt_attempts == 0:
                 self.missing_receipt_attempts += 1
                 save(package / "private/review.json", dict(budget=budget))
