@@ -1,0 +1,72 @@
+{
+  "runtime_config": "../runtime.scale.json",
+  "max_total_requests": 3600,
+  "max_total_tokens": 36000000,
+  "qa_sources": ["graph", "external"],
+  "dialogue_quality": {
+    "min_increments": 6,
+    "min_visible_messages": 100,
+    "min_user_code_rounds": 50,
+    "min_public_tool_events": 120,
+    "min_external_events": 8,
+    "min_distinct_external_foci": 8,
+    "require_external_event_closure": true,
+    "require_declared_external_scope": true,
+    "forbid_memory_docs": true
+  },
+  "projects": [
+    {
+      "id": "release-operations",
+      "prepared_config": "prepared-release.json",
+      "scenarios": [
+        {
+          "id": "release-workflow",
+          "brief": "A release team continues the toolkit through real operational changes. Let implementation attempts, observed command results, user corrections, and later handoffs appear in ordinary conversation and affect later work.",
+          "external_fact_target": 8,
+          "preplan_external_facts": true,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Use the fixed Python standard-library environment. Treat only public observations and corrections as history."
+        }
+      ]
+    },
+    {
+      "id": "document-pipeline",
+      "prepared_config": "prepared-document.json",
+      "scenarios": [
+        {
+          "id": "compliance-workflow",
+          "brief": "A compliance team continues the document workflow through import, normalization, review, correction, and reporting work. Let real failures and user clarifications shape later changes.",
+          "external_fact_target": 8,
+          "preplan_external_facts": true,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Use the fixed Python standard-library environment. Count an environment difference only after it appears in a public command or test result."
+        }
+      ]
+    },
+    {
+      "id": "dependency-planner",
+      "prepared_config": "prepared-dependency.json",
+      "scenarios": [
+        {
+          "id": "customer-workflow",
+          "brief": "A customer continues the planner across related work. Reveal conventions, observed results, and scoped corrections only when a real implementation or later workflow needs them.",
+          "external_fact_target": 8,
+          "preplan_external_facts": true,
+          "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+          "runtime_conditions": "Use the fixed Python standard-library environment. Only public differences, failures, and corrections count as historical evidence."
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "general_count": 30,
+    "code_count": 30,
+    "qa_count": 12,
+    "group_budget": 80,
+    "task_count": 3,
+    "task_budget": 12,
+    "task_workers": 3,
+    "parallel_workers": 8,
+    "revisions": 5
+  }
+}

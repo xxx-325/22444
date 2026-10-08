@@ -167,13 +167,15 @@ def validate_plan(plan):
             or len(set(sources)) != len(sources)):
         raise ValueError("qa_sources must select distinct graph/external routes")
     quality = plan.get("dialogue_quality")
-    if quality is not None and quality != "scale" and not isinstance(quality, dict):
-        raise ValueError("dialogue_quality must be 'scale' or a quality mapping")
+    if (quality is not None and not isinstance(quality, dict)
+            and quality not in {"scale", "long_dialogue"}):
+        raise ValueError("dialogue_quality must be 'scale', 'long_dialogue', or a quality mapping")
     if isinstance(quality, dict) and not quality:
         raise ValueError("dialogue_quality mapping must not be empty")
     if isinstance(quality, dict):
         minimums = {"min_increments", "min_visible_messages", "min_public_tool_events",
-                    "min_external_events", "min_distinct_external_foci"}
+                    "min_external_events", "min_distinct_external_foci",
+                    "min_user_code_rounds"}
         flags = {"require_external_event_closure", "require_declared_external_scope",
                  "forbid_memory_docs"}
         for key, value in quality.items():
