@@ -1,13 +1,30 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
-from dialogue_benchmark.collection import episode_usage, run_collection
+from dialogue_benchmark.collection import _scenario_resume_checkpoint, episode_usage, run_collection
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionResumeTests(unittest.TestCase):
+    def test_legacy_checkpoint_is_recoverable_only_when_checksum_metadata_is_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save(root / "frozen/resume.json", {
+                "schema": "scenario-resume-v1",
+                "identity": {},
+                "scenario": {"schema": "continuous-commit-scenario-v1", "commits": []},
+                "external_plan": [],
+                "next_index": 1,
+            })
+            self.assertTrue(_scenario_resume_checkpoint(root))
+            value = json.loads((root / "frozen/resume.json").read_text())
+            value["scenario_sha256"] = "present"
+            save(root / "frozen/resume.json", value)
+            self.assertFalse(_scenario_resume_checkpoint(root))
+
     def test_episode_usage_retains_compacted_ledgers_without_double_counting(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

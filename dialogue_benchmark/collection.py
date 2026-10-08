@@ -105,7 +105,7 @@ def _scenario_resume_checkpoint(folder):
         value = read(checkpoint)
     except (OSError, ValueError, TypeError):
         return False
-    return (
+    shape_valid = (
         isinstance(value, dict)
         and value.get("schema") == "scenario-resume-v1"
         and isinstance(value.get("identity"), dict)
@@ -113,7 +113,21 @@ def _scenario_resume_checkpoint(folder):
         and value["scenario"].get("schema") == "continuous-commit-scenario-v1"
         and type(value.get("next_index")) is int
         and value["next_index"] >= 0
-        and isinstance(value.get("scenario_sha256"), str)
+    )
+    if not shape_valid:
+        return False
+    # Early checkpoints predate the checksum fields.  The simulator's
+    # legacy-recovery path independently reconstructs their accepted prefix;
+    # do not discard that prefix here.  Partially present checksum metadata is
+    # unsafe and must fall back to an archived retry.
+    checksum_fields = (
+        value.get("scenario_sha256"),
+        value.get("external_plan_sha256"),
+        (value.get("pending") or {}).get("raw_draft_sha256")
+        if isinstance(value.get("pending"), dict) else None,
+    )
+    return all(item is None for item in checksum_fields) or (
+        isinstance(value.get("scenario_sha256"), str)
         and isinstance(value.get("external_plan_sha256"), str)
     )
 
