@@ -27,7 +27,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence
 SCHEMA = "dialogue-pipeline-v1"
 STAGES = ("repo", "qa", "task")
 DEPENDENCY = {"repo": None, "qa": "repo", "task": "qa"}
-TERMINAL = {"completed", "failed", "skipped"}
+TERMINAL = {"completed", "failed", "skipped", "needs_review"}
 _CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -39,6 +39,14 @@ def _digest(value: object) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _atomic_json(path: Path, value: object) -> None:
@@ -59,8 +67,27 @@ def _replace_tokens(value: str, mapping: Dict[str, str]) -> str:
     return result
 
 
+def _receipt_path(spec: object, paths: Dict[str, str]) -> Optional[Path]:
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        value = spec
+    elif isinstance(spec, dict):
+        value = spec.get("path", paths["receipt"])
+    else:
+        raise ValueError("stage receipt must be a path or object")
+    if not isinstance(value, str) or not value:
+        raise ValueError("stage receipt path must be a non-empty string")
+    path = Path(_replace_tokens(value, paths))
+    return path if path.is_absolute() else Path(paths["output"]) / path
+
+
 class StageCommandError(RuntimeError):
     """A stage command returned a non-zero status or could not start."""
+
+
+class StageReceiptError(RuntimeError):
+    """A successful command did not leave an accepted completion receipt."""
 
 
 CommandRunner = Callable[[Sequence[str], Path, Dict[str, str], Path, Path], None]
@@ -68,18 +95,17 @@ CommandRunner = Callable[[Sequence[str], Path, Dict[str, str], Path, Path], None
 
 def run_command(command: Sequence[str], cwd: Path, env: Dict[str, str],
                 stdout_path: Path, stderr_path: Path) -> None:
-    """Run one stage command and persist its two streams before raising."""
-    try:
-        completed = subprocess.run(
-            list(command), cwd=str(cwd), env=env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-    except OSError as error:
-        stdout_path.write_text("", encoding="utf-8")
-        stderr_path.write_text(str(error), encoding="utf-8")
-        raise StageCommandError(str(error)) from error
-    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
-    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+    """Stream both command outputs directly to their attempt logs."""
+    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
+            "w", encoding="utf-8") as stderr:
+        try:
+            completed = subprocess.run(
+                list(command), cwd=str(cwd), env=env, text=True,
+                stdout=stdout, stderr=stderr, check=False,
+            )
+        except OSError as error:
+            stderr.write(str(error))
+            raise StageCommandError(str(error)) from error
     if completed.returncode:
         raise StageCommandError(
             "command exited with status %d" % completed.returncode)
@@ -206,9 +232,31 @@ class PipelineRunner:
                         record["recovered"] = True
                     if record.get("status") == "completed":
                         handoff = record.get("handoff")
-                        if not handoff or not Path(handoff).is_file():
-                            record["status"] = "pending"
-                            record["recovered_missing_handoff"] = True
+                        handoff_path = Path(handoff) if handoff else None
+                        invalid_reason = None
+                        if not handoff_path or not handoff_path.is_file():
+                            invalid_reason = "missing_handoff"
+                        elif not record.get("handoff_sha256"):
+                            invalid_reason = "handoff_unverified"
+                        elif record["handoff_sha256"] != _file_sha256(handoff_path):
+                            invalid_reason = "handoff_changed"
+                        else:
+                            try:
+                                saved_handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+                            except (OSError, ValueError):
+                                saved_handoff = None
+                            if not isinstance(saved_handoff, dict) or saved_handoff.get("status") != "completed":
+                                invalid_reason = "invalid_handoff"
+                        if invalid_reason:
+                            record.update({"status": "needs_review", "reason": invalid_reason,
+                                           "recovered": True, "finished_at": _now()})
+                            continue
+                        receipt = record.get("receipt")
+                        receipt_sha = record.get("receipt_sha256")
+                        if receipt and (not Path(receipt).is_file()
+                                        or (receipt_sha and receipt_sha != _file_sha256(Path(receipt)))):
+                            record.update({"status": "needs_review", "reason": "receipt_changed",
+                                           "recovered": True, "finished_at": _now()})
             _atomic_json(self.state_path, state)
             return state
         state = self._new_state()
@@ -247,8 +295,49 @@ class PipelineRunner:
             "output": str(stage_dir),
             "handoff": str(handoff),
             "manifest": str(handoff),
+            "receipt": str(stage_dir / "receipt.json"),
             "stage": stage,
         }
+
+    def _validate_receipt(self, stage_spec: Dict[str, object],
+                          paths: Dict[str, str]) -> Optional[Dict[str, str]]:
+        receipt_path = _receipt_path(stage_spec.get("receipt"), paths)
+        if receipt_path is None:
+            return None
+        if not receipt_path.is_file():
+            raise StageReceiptError("missing stage receipt: %s" % receipt_path)
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise StageReceiptError("invalid stage receipt: %s" % receipt_path) from error
+        expected = stage_spec.get("receipt")
+        expected_status = "completed"
+        expected_sha = None
+        if isinstance(expected, dict):
+            expected_status = expected.get("status", expected_status)
+            expected_sha = expected.get("sha256")
+        if not isinstance(receipt, dict) or receipt.get("status") != expected_status:
+            raise StageReceiptError("stage receipt is not completed: %s" % receipt_path)
+        receipt_sha = receipt.get("sha256")
+        if not isinstance(receipt_sha, str) or not receipt_sha:
+            raise StageReceiptError("stage receipt has no sha256: %s" % receipt_path)
+        if expected_sha is not None and receipt_sha != expected_sha:
+            raise StageReceiptError("stage receipt sha256 differs: %s" % receipt_path)
+        artifacts = receipt.get("artifacts")
+        if artifacts is None and receipt.get("artifact") is not None:
+            artifacts = [receipt["artifact"]]
+        if artifacts is not None:
+            if not isinstance(artifacts, list) or not artifacts:
+                raise StageReceiptError("stage receipt artifacts are empty: %s" % receipt_path)
+            for artifact in artifacts:
+                if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
+                    raise StageReceiptError("stage receipt artifact is invalid: %s" % receipt_path)
+                artifact_path = Path(artifact["path"])
+                if not artifact_path.is_absolute():
+                    artifact_path = receipt_path.parent / artifact_path
+                if not artifact_path.is_file() or artifact.get("sha256") != _file_sha256(artifact_path):
+                    raise StageReceiptError("stage receipt artifact hash differs: %s" % artifact_path)
+        return {"path": str(receipt_path), "sha256": _file_sha256(receipt_path)}
 
     def _claim(self, stage: str) -> Optional[Dict[str, object]]:
         with self._lock:
@@ -259,7 +348,7 @@ class PipelineRunner:
                 dependency = DEPENDENCY[stage]
                 if dependency:
                     dependency_status = case["stages"][dependency].get("status")
-                    if dependency_status in {"failed", "skipped"}:
+                    if dependency_status in {"failed", "skipped", "needs_review"}:
                         record.update({"status": "skipped", "reason":
                                        "dependency_%s_%s" % (dependency, dependency_status),
                                        "finished_at": _now()})
@@ -305,6 +394,7 @@ class PipelineRunner:
         stderr_path = stage_dir / ("attempt-%02d.stderr.log" % attempt)
         with self._slots:
             self.command_runner(command, cwd, environment, stdout_path, stderr_path)
+        receipt = self._validate_receipt(stage_spec, paths)
         handoff = {
             "schema": SCHEMA,
             "case_id": case_id,
@@ -315,11 +405,19 @@ class PipelineRunner:
             "command_digest": _digest(list(command)),
             "completed_at": _now(),
         }
+        if receipt:
+            handoff["receipt"] = receipt["path"]
+            handoff["receipt_sha256"] = receipt["sha256"]
         _atomic_json(stage_dir / ".pipeline-handoff.json", handoff)
+        handoff_sha256 = _file_sha256(stage_dir / ".pipeline-handoff.json")
         with self._lock:
             record = self.state["cases"][case_id]["stages"][stage]
             record.update({"status": "completed", "finished_at": handoff["completed_at"],
-                           "handoff": str(stage_dir / ".pipeline-handoff.json")})
+                           "handoff": str(stage_dir / ".pipeline-handoff.json"),
+                           "handoff_sha256": handoff_sha256})
+            if receipt:
+                record.update({"receipt": receipt["path"],
+                               "receipt_sha256": receipt["sha256"]})
             self._save()
 
     def _attempt(self, case_id: str, stage: str) -> int:
@@ -337,6 +435,12 @@ class PipelineRunner:
             case_id = case["id"]
             try:
                 self._execute(case, stage)
+            except StageReceiptError as error:
+                with self._lock:
+                    record = self.state["cases"][case_id]["stages"][stage]
+                    record.update({"status": "needs_review", "last_error": str(error),
+                                   "finished_at": _now()})
+                    self._save()
             except Exception as error:
                 with self._lock:
                     record = self.state["cases"][case_id]["stages"][stage]
@@ -357,7 +461,7 @@ class PipelineRunner:
         with self._lock:
             case_values = list(self.state["cases"].values())
             has_warning = any(
-                record.get("status") in {"failed", "skipped"}
+                record.get("status") in {"failed", "skipped", "needs_review"}
                 for case in case_values
                 for record in case["stages"].values()
             )

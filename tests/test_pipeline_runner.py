@@ -109,6 +109,61 @@ class PipelineRunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PipelineRunner(_config(("same", "same")), Path("unused"))
 
+    def test_receipt_is_required_when_stage_spec_declares_one(self):
+        config = _config(("a",))
+        for spec in config["stages"].values():
+            spec["receipt"] = {"path": "{output}/receipt.json"}
+
+        def run(command, cwd, env, stdout, stderr):
+            output = Path(env["PIPELINE_OUTPUT"])
+            output.mkdir(parents=True, exist_ok=True)
+            Path(env["PIPELINE_HANDOFF"]).parent.joinpath("artifact.txt").write_text(
+                env["PIPELINE_STAGE"], encoding="utf-8")
+            (output / "receipt.json").write_text(
+                json.dumps({"status": "completed", "sha256": "worker"}),
+                encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = PipelineRunner(config, Path(directory) / "run",
+                                    command_runner=run).run()
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["cases"]["a"]["stages"]["task"]["status"], "completed")
+
+    def test_missing_receipt_is_needs_review_and_skips_dependents(self):
+        config = _config(("a",))
+        config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+
+        def run(command, cwd, env, stdout, stderr):
+            Path(env["PIPELINE_OUTPUT"]).mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = PipelineRunner(config, Path(directory) / "run",
+                                    max_attempts=1, command_runner=run).run()
+        stages = report["cases"]["a"]["stages"]
+        self.assertEqual(stages["repo"]["status"], "needs_review")
+        self.assertEqual(stages["qa"]["status"], "skipped")
+        self.assertEqual(stages["task"]["status"], "skipped")
+
+    def test_resume_tampered_handoff_is_needs_review(self):
+        calls = []
+
+        def run(command, cwd, env, stdout, stderr):
+            calls.append(tuple(command[:3]))
+            Path(env["PIPELINE_OUTPUT"]).mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            PipelineRunner(_config(("a",)), output, command_runner=run).run()
+            handoff = output / "cases" / "a" / "repo" / ".pipeline-handoff.json"
+            handoff.write_text(handoff.read_text(encoding="utf-8") + "tampered", encoding="utf-8")
+            report = PipelineRunner(_config(("a",)), output, resume=True,
+                                    command_runner=run).run()
+        stages = report["cases"]["a"]["stages"]
+        self.assertEqual(stages["repo"]["status"], "needs_review")
+        self.assertEqual(stages["qa"]["status"], "completed")
+        self.assertEqual(stages["task"]["status"], "completed")
+        self.assertEqual(len(calls), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
