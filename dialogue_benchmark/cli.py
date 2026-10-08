@@ -1224,6 +1224,13 @@ def _publication_view(questions, limits, workspaces=(), duplicate_decisions=(),
             for key, probe_input in probe_inputs:
                 probe_results[key] = run_probe(probe_input)
     for index, q in enumerate(questions):
+        if not isinstance(q, dict):
+            rejected.append({
+                "question": q,
+                "reason": "malformed_candidate",
+                "stage": "publication",
+            })
+            continue
         key = probe_aliases.get(index) if recoverability_check is not None else None
         if key in probe_results:
             probe = probe_results[key]
@@ -2204,6 +2211,21 @@ def main(argv=None):
         save(args.output, "qa-public.json", public)
         save(args.output, "qa-audit.json", audit)
         save(args.output, "qa.json", public)
+        save(args.output, "qa-handoff.json", {
+            "schema": "dialogue-qa-handoff-v1",
+            "status": public.get("status", "needs_review"),
+            "public_path": "qa-public.json",
+            "audit_path": "qa-audit.json",
+            "candidate_path": "qa-candidates.json",
+            "review_queue_path": "qa-review-queue.json",
+            "published_count": len(public_questions),
+            "candidate_count": len(result.get("all_candidates", [])),
+            "review_count": sum(
+                question.get("status") != "approved"
+                for question in result.get("all_questions", [])
+                if isinstance(question, dict)
+            ),
+        })
         status_counts = {}
         type_counts = {}
         for item in public_questions:

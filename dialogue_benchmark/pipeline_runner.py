@@ -226,47 +226,84 @@ class PipelineRunner:
             if state.get("config_digest") != self._config_identity():
                 raise ValueError("pipeline config differs from saved state")
             for case in state.get("cases", {}).values():
-                for stage in STAGES:
+                invalidate_after = None
+                for index, stage in enumerate(STAGES):
                     record = case["stages"][stage]
-                    if record.get("status") == "running":
-                        record["status"] = "pending"
-                        record["recovered"] = True
-                    if record.get("status") == "completed":
-                        handoff = record.get("handoff")
-                        handoff_path = Path(handoff) if handoff else None
-                        invalid_reason = None
-                        if not handoff_path or not handoff_path.is_file():
-                            invalid_reason = "missing_handoff"
-                        elif not record.get("handoff_sha256"):
-                            invalid_reason = "handoff_unverified"
-                        elif record["handoff_sha256"] != _file_sha256(handoff_path):
-                            invalid_reason = "handoff_changed"
+                    status = record.get("status")
+                    handoff = record.get("handoff")
+                    handoff_path = Path(handoff) if handoff else None
+                    saved_handoff = None
+                    if handoff_path and handoff_path.is_file():
+                        try:
+                            saved_handoff = json.loads(
+                                handoff_path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            saved_handoff = None
+                    valid_handoff = (
+                        isinstance(saved_handoff, dict)
+                        and saved_handoff.get("schema") == SCHEMA
+                        and saved_handoff.get("case_id") == case.get("id")
+                        and saved_handoff.get("stage") == stage
+                        and saved_handoff.get("status") == "completed"
+                        and (not record.get("handoff_sha256")
+                             or record["handoff_sha256"] == _file_sha256(handoff_path))
+                    )
+                    if status == "running":
+                        if valid_handoff:
+                            # The process may have written its handoff just
+                            # before the host crashed. Promote it instead of
+                            # repeating the stage side effect.
+                            record.update({
+                                "status": "completed",
+                                "recovered": True,
+                                "finished_at": saved_handoff.get("completed_at", _now()),
+                                "handoff_sha256": _file_sha256(handoff_path),
+                            })
+                            status = "completed"
                         else:
-                            try:
-                                saved_handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
-                            except (OSError, ValueError):
-                                saved_handoff = None
-                            if not isinstance(saved_handoff, dict) or saved_handoff.get("status") != "completed":
-                                invalid_reason = "invalid_handoff"
+                            record.update({"status": "pending", "recovered": True})
+                            status = "pending"
+                    if status == "completed":
+                        invalid_reason = None
+                        if not valid_handoff:
+                            invalid_reason = "invalid_handoff"
+                        else:
+                            receipt = record.get("receipt")
+                            receipt_sha = record.get("receipt_sha256")
+                            if receipt and (
+                                    not Path(receipt).is_file()
+                                    or (receipt_sha and
+                                        receipt_sha != _file_sha256(Path(receipt)))):
+                                invalid_reason = "receipt_changed"
                         if invalid_reason:
-                            record.update({"status": "needs_review", "reason": invalid_reason,
-                                           "recovered": True, "finished_at": _now()})
-                            continue
-                        receipt = record.get("receipt")
-                        receipt_sha = record.get("receipt_sha256")
-                        if receipt and (not Path(receipt).is_file()
-                                        or (receipt_sha and receipt_sha != _file_sha256(Path(receipt)))):
-                            record.update({"status": "needs_review", "reason": "receipt_changed",
-                                           "recovered": True, "finished_at": _now()})
-                    if record.get("status") == "failed" and int(
+                            # Rebuild this stage and all transitive dependents
+                            # from the same input snapshot. Never mix a fresh
+                            # upstream artifact with stale downstream output.
+                            record.update({
+                                "status": "pending",
+                                "reason": invalid_reason,
+                                "recovered": True,
+                            })
+                            invalidate_after = index
+                            status = "pending"
+                    if status == "failed" and int(
                             record.get("attempts", 0)) < self.max_attempts:
                         record.update({"status": "pending", "recovered": True})
-                    if record.get("status") == "skipped" and str(
+                        status = "pending"
+                    if status == "skipped" and str(
                             record.get("reason", "")).startswith("dependency_"):
                         dependency = DEPENDENCY[stage]
                         if dependency and case["stages"][dependency].get("status") in {
                                 "pending", "running"}:
                             record.update({"status": "pending", "recovered": True})
+                            status = "pending"
+                    if invalidate_after is not None and index > invalidate_after:
+                        if status in {"completed", "failed", "skipped", "needs_review"}:
+                            record.update({
+                                "status": "pending",
+                                "recovered": True,
+                                "stale_after": STAGES[invalidate_after],
+                            })
             _atomic_json(self.state_path, state)
             return state
         state = self._new_state()

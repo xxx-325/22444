@@ -1041,6 +1041,9 @@ def validate_resume(manifest, expected, selected, output, baseline):
         if key in expected and key in {"evaluator_version", "simulator_version"}:
             if key not in manifest:
                 raise ValueError("Resume manifest missing: " + key)
+    if "allow_provisional" in manifest and manifest.get("allow_provisional") != expected.get(
+            "allow_provisional", False):
+        raise ValueError("Resume provisional QA policy changed")
     hashes = expected["selected_inputs_sha256"]
     if "selected_inputs_sha256" in manifest and manifest["selected_inputs_sha256"] != hashes:
         raise ValueError("Resume QA or generation inputs changed")
@@ -1119,6 +1122,8 @@ def main(argv=None):
                         help="Repair reused tests from saved review feedback before rerunning preflight")
     parser.add_argument("--resume", action="store_true",
                         help="Continue an existing task output, preserving completed task records")
+    parser.add_argument("--allow-provisional", action="store_true",
+                        help="Use QA items marked needs_review as provisional task seeds")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
@@ -1147,9 +1152,9 @@ def main(argv=None):
         parser.error("--resume requires an existing task manifest")
     if not args.resume and ((output / "manifest.json").exists() or (output / "baseline").exists()):
         parser.error("Use a new output directory; previous experiments are retained")
-    items = qa_inputs(args.qa_run)
+    items = qa_inputs(args.qa_run, include_provisional=args.allow_provisional)
     if not items:
-        parser.error("No approved QA with saved generation inputs")
+        parser.error("No usable QA with saved generation inputs")
     if args.reuse_preparation:
         source_qa = read(args.reuse_preparation.parent / "author-reference/qa.json")
         items = [item for item in items if item["qa"] == source_qa]
@@ -1206,7 +1211,8 @@ def main(argv=None):
                 "target": args.count, "task_budget": task_budget,
                 "selection_only": args.selection_only,
                 "selected_qa_ids": [i["qa"]["id"] for i in selected],
-                "config_sha256": config_sha256, "selected_inputs_sha256": selected_inputs_sha256}
+                "config_sha256": config_sha256, "selected_inputs_sha256": selected_inputs_sha256,
+                "allow_provisional": args.allow_provisional}
     if args.resume:
         manifest = existing_manifest
         recover_orphan_tasks(manifest, selected, output)

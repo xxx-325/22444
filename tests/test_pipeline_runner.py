@@ -235,7 +235,7 @@ class PipelineRunnerTests(unittest.TestCase):
         self.assertEqual(stages["qa"]["status"], "skipped")
         self.assertEqual(stages["task"]["status"], "skipped")
 
-    def test_resume_tampered_handoff_is_needs_review(self):
+    def test_resume_tampered_handoff_rebuilds_downstream_chain(self):
         calls = []
 
         def run(command, cwd, env, stdout, stderr):
@@ -250,10 +250,10 @@ class PipelineRunnerTests(unittest.TestCase):
             report = PipelineRunner(_config(("a",)), output, resume=True,
                                     command_runner=run).run()
         stages = report["cases"]["a"]["stages"]
-        self.assertEqual(stages["repo"]["status"], "needs_review")
+        self.assertEqual(stages["repo"]["status"], "completed")
         self.assertEqual(stages["qa"]["status"], "completed")
         self.assertEqual(stages["task"]["status"], "completed")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 6)
 
 
 if __name__ == "__main__":

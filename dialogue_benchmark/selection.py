@@ -733,7 +733,7 @@ def build_audit(candidates, outcomes, rejected, selections, published, revisions
                                "selection_status": "not_selected", "rejections": [],
                                "revisions": []}
     for q in outcomes:
-        if q.get("id") in rows:
+        if isinstance(q, dict) and q.get("id") in rows:
             rows[q["id"]].update(current=deepcopy(q), review_status=q.get("status", "needs_review"))
     for item in rejected:
         q = item.get("question")
@@ -757,7 +757,7 @@ def build_audit(candidates, outcomes, rejected, selections, published, revisions
             row["selection_reason"] = item.get("reason")
             row["duplicate_of"] = item.get("duplicate_of")
     for q in published:
-        if q.get("id") in rows:
+        if isinstance(q, dict) and q.get("id") in rows:
             rows[q["id"]]["selection_status"] = "published"
     return list(rows.values())
 

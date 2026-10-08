@@ -74,10 +74,30 @@ def write_diff(base, candidate, output):
     return receipt["changed_files"]
 
 
-def qa_inputs(qa_run):
-    """Join approved questions to the actual saved generation request, never reconstruct it."""
+def qa_inputs(qa_run, *, include_provisional=False):
+    """Join QA questions to their saved generation request.
+
+    Approved questions are always eligible.  A caller may explicitly opt into
+    the provisional pool so a local review warning does not discard otherwise
+    usable questions; the original status is retained on the task record and
+    never turns into a public approval.
+    """
     qa_run = Path(qa_run)
     public = read(qa_run / "qa-public.json")["questions"]
+    if include_provisional:
+        candidates = read(qa_run / "qa-candidates.json") if (
+            qa_run / "qa-candidates.json").is_file() else {}
+        provisional = [
+            question for question in candidates.get("questions", [])
+            if isinstance(question, dict)
+            and question.get("status") in {"approved", "needs_review", "provisional"}
+        ]
+        # Keep the publishable projection authoritative when it already has
+        # the question.  Only use the extra provisional pool to fill the gap.
+        known = {question.get("id") for question in public}
+        public = list(public) + [
+            question for question in provisional if question.get("id") not in known
+        ]
     run_manifest = read(qa_run / "manifest.json") if (qa_run / "manifest.json").exists() else {}
     types = MEMORY_TYPES if run_manifest.get("qa_source") == "external" else QA_TYPES
     if any(question.get("type") not in types and not (
@@ -114,12 +134,16 @@ def qa_inputs(qa_run):
                 if question.get("status") == "approved"}
     result = []
     for question in public:
-        if question.get("status") == "approved" and question["id"] in requests:
+        eligible = question.get("status") == "approved" or (
+            include_provisional and question.get("status") in {"needs_review", "provisional"}
+        )
+        if eligible and question["id"] in requests:
             path, original = requests[question["id"]]
             item = {"qa": question, "generation_input": str(path.resolve()),
                     "original_candidate": original,
                     "reviewed_candidate": reviewed.get(question["id"], original),
-                    "qa_source": run_manifest.get("qa_source", "graph")}
+                    "qa_source": run_manifest.get("qa_source", "graph"),
+                    "provisional": question.get("status") != "approved"}
             payload = read(path).get("payload", {}) if item["qa_source"] == "external" else {}
             workflow = payload.get("workflow", {})
             focus = payload.get("focus", {})

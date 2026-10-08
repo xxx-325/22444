@@ -21,20 +21,45 @@ from dialogue_benchmark.collection import episode_usage
 MAX_QA_REQUEST_TIMEOUT = 600
 
 
-def _approved_qa(public):
-    """Return whether safe individual questions can feed provisional tasks.
+def _usable_qa(public, *, provisional=False):
+    """Return whether saved questions can feed task construction.
 
     The aggregate status may be ``needs_review`` when an unrelated group or
     review request failed.  That warning must not hide individually approved
-    questions.  Hard-failed or empty public sets still cannot proceed.
+    questions.  With ``provisional`` the caller may also use the review pool;
+    those questions remain marked as provisional in task artifacts.
     """
     if public.get("status") in {"failed", "disabled", "completed_no_questions"}:
         return False
     questions = public.get("questions")
+    allowed = {"approved"}
+    if provisional:
+        allowed.update({"needs_review", "provisional"})
     return bool(questions) and all(
-        isinstance(question, dict) and question.get("status") == "approved"
+        isinstance(question, dict) and question.get("status") in allowed
         for question in questions
     )
+
+
+def _has_provisional_candidates(root):
+    path = root / "qa/qa-candidates.json"
+    if not path.is_file():
+        return False
+    try:
+        questions = read(path).get("questions", [])
+    except (OSError, ValueError, TypeError):
+        return False
+    return any(
+        isinstance(question, dict)
+        and question.get("status") in {"approved", "needs_review", "provisional"}
+        and question.get("id")
+        for question in questions
+    )
+
+
+def _approved_qa(public):
+    """Return the strict publishable check used by older callers."""
+    return _usable_qa(public)
 
 
 def main(argv=None):
@@ -65,6 +90,8 @@ def main(argv=None):
     parser.add_argument("--reuse-facts", type=Path)
     parser.add_argument("--resume-tasks", action="store_true",
                         help="Reuse completed QA and resume saved repository tasks")
+    parser.add_argument("--allow-provisional", action="store_true",
+                        help="Continue task construction from needs_review QA candidates")
     # Collection resume uses the short form when it re-enters an existing
     # evaluation stage. Keep one internal flag so both entry points share the
     # same append-only QA/task recovery behavior.
@@ -199,17 +226,25 @@ def main(argv=None):
         if qa_result.get("status") == "failed":
             state["stop_reason"] = "qa_generation_failed"
             raise RuntimeError("QA generation failed; see qa/qa-audit.json")
-        if qa_result.get("questions") and not _approved_qa(qa_result):
-            state["stop_reason"] = "qa_not_approved"
-            raise RuntimeError("QA is not approved; see qa/qa-audit.json")
-        if args.qa_only or not qa_result["questions"]:
+        provisional = bool(args.allow_provisional or qa_result.get("status") == "needs_review")
+        usable = _usable_qa(qa_result, provisional=provisional)
+        if not usable and provisional:
+            provisional = _has_provisional_candidates(root)
+        if args.qa_only or not usable:
             if not args.qa_only:
                 task_manifest = {"target": args.task_count, "tasks": [],
-                                 "stop_reason": "no_eligible_qa"}
+                                 "stop_reason": "no_eligible_qa",
+                                 "qa_status": qa_result.get("status"),
+                                 "provisional": provisional}
                 save(root / "tasks/manifest.json", task_manifest)
                 write_report(root / "tasks", task_manifest)
-            state.update(status="completed", stop_reason=(
-                "qa_only" if qa_result["questions"] else "no_eligible_qa"))
+            state.update(
+                status=("completed" if (
+                    args.qa_only or qa_result.get("status") in
+                    {None, "completed_no_questions", "approved", "static_only"}
+                ) else "completed_with_warnings"),
+                stop_reason=("qa_only" if args.qa_only and qa_result.get("questions")
+                             else "no_eligible_qa"))
             save(root / "usage.json", episode_usage(root))
             usage_saved = True
             phase("complete")
@@ -230,9 +265,13 @@ def main(argv=None):
             task_args += ["--control-config", str(package["control_config"])]
         if args.design_probe:
             task_args += ["--design-probe"]
+        if provisional:
+            task_args += ["--allow-provisional"]
         status = run_tasks(task_args)
         render(root)
-        state["status"] = "completed" if status == 0 else "failed"
+        state["status"] = "completed" if status == 0 else "completed_with_warnings"
+        if status:
+            state["stop_reason"] = "task_stage_failed"
         phase("complete")
         save(root / "usage.json", episode_usage(root))
         usage_saved = True

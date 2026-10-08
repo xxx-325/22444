@@ -446,6 +446,27 @@ class TaskEvaluationTests(unittest.TestCase):
             self.assertEqual(len(result), 1)
             self.assertEqual(json.loads(Path(result[0]["generation_input"]).read_text())["payload"], "exact input")
 
+    def test_provisional_qa_can_feed_tasks_without_becoming_approved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "stages").mkdir()
+            question = {
+                "type": "constraint_followthrough", "id": "g1_q1",
+                "status": "needs_review", "question": "Question",
+            }
+            (root / "qa-public.json").write_text(json.dumps({"questions": []}))
+            (root / "qa-candidates.json").write_text(
+                json.dumps({"questions": [question]}))
+            (root / "stages/group-raw-candidates.json").write_text(
+                json.dumps({"questions": [question]}))
+            (root / "stages/group-qa-input.json").write_text(
+                json.dumps({"payload": "exact input"}))
+            self.assertEqual(qa_inputs(root), [])
+            result = qa_inputs(root, include_provisional=True)
+            self.assertEqual(len(result), 1)
+            self.assertTrue(result[0]["provisional"])
+            self.assertEqual(result[0]["qa"]["status"], "needs_review")
+
     def test_plain_message_normalized_input_is_public_history(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
