@@ -18,9 +18,10 @@ def _config(case_ids):
 
 
 class PipelineRunnerTests(unittest.TestCase):
-    def test_three_stage_workers_pipeline_cases_and_write_handoffs(self):
+    def test_three_repo_stages_start_together_and_write_handoffs(self):
         calls = []
         lock = threading.Lock()
+        repo_started = threading.Barrier(3)
         active = 0
         maximum = 0
 
@@ -31,7 +32,9 @@ class PipelineRunnerTests(unittest.TestCase):
                 active += 1
                 maximum = max(maximum, active)
                 calls.append((stage, case_id))
-            time.sleep(0.05)
+            if stage == "repo":
+                repo_started.wait(timeout=2)
+            time.sleep(0.01)
             Path(env["PIPELINE_OUTPUT"]).mkdir(parents=True, exist_ok=True)
             Path(env["PIPELINE_OUTPUT"], "artifact.txt").write_text(
                 "%s:%s" % (stage, case_id), encoding="utf-8")
@@ -49,9 +52,13 @@ class PipelineRunnerTests(unittest.TestCase):
             ).run()
             self.assertEqual(report["status"], "completed")
             self.assertEqual(maximum, 3)
+            self.assertEqual(len(calls), 9)
+            self.assertEqual({stage for stage, _ in calls[:3]}, {"repo"})
             for case_id in ("a", "b", "c"):
                 states = report["cases"][case_id]["stages"]
                 self.assertTrue(all(item["status"] == "completed"
+                                    for item in states.values()))
+                self.assertTrue(all(item["attempts"] == 1
                                     for item in states.values()))
                 for stage in ("repo", "qa", "task"):
                     handoff = root / "run" / "cases" / case_id / stage / ".pipeline-handoff.json"
@@ -61,6 +68,64 @@ class PipelineRunnerTests(unittest.TestCase):
                              for stage in ("repo", "qa", "task")}
                 self.assertLess(positions["repo"], positions["qa"])
                 self.assertLess(positions["qa"], positions["task"])
+
+    def test_ready_qa_starts_while_other_repo_stages_are_running(self):
+        repo_started = threading.Barrier(3)
+        qa_started = threading.Event()
+        slow_repo_finished = []
+        lock = threading.Lock()
+
+        def run(command, cwd, env, stdout, stderr):
+            stage, case_id = command[1], command[2]
+            if stage == "repo":
+                repo_started.wait(timeout=2)
+                if case_id != "fast":
+                    if not qa_started.wait(timeout=2):
+                        raise StageCommandError("ready QA did not start")
+                    with lock:
+                        slow_repo_finished.append(case_id)
+            elif stage == "qa" and case_id == "fast":
+                with lock:
+                    self.assertEqual(slow_repo_finished, [])
+                qa_started.set()
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = PipelineRunner(
+                _config(("fast", "slow-a", "slow-b")), Path(directory) / "run",
+                max_attempts=1, command_runner=run, poll_interval=0.001,
+            ).run()
+        self.assertEqual(report["status"], "completed")
+        self.assertTrue(qa_started.is_set())
+        self.assertCountEqual(slow_repo_finished, ["slow-a", "slow-b"])
+
+    def test_shared_workers_respect_max_inflight_without_duplicate_claims(self):
+        for limit in (1, 2, 3):
+            with self.subTest(max_inflight=limit):
+                calls = []
+                lock = threading.Lock()
+                active = 0
+                maximum = 0
+
+                def run(command, cwd, env, stdout, stderr):
+                    nonlocal active, maximum
+                    with lock:
+                        active += 1
+                        maximum = max(maximum, active)
+                        calls.append((command[1], command[2]))
+                    time.sleep(0.01)
+                    with lock:
+                        active -= 1
+
+                with tempfile.TemporaryDirectory() as directory:
+                    report = PipelineRunner(
+                        _config(("a", "b", "c", "d", "e")),
+                        Path(directory) / "run", max_inflight=limit,
+                        command_runner=run, poll_interval=0.001,
+                    ).run()
+                self.assertEqual(report["status"], "completed")
+                self.assertEqual(maximum, limit)
+                self.assertEqual(len(calls), 15)
+                self.assertEqual(len(set(calls)), 15)
 
     def test_resume_does_not_repeat_completed_work(self):
         calls = []

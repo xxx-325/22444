@@ -2,8 +2,8 @@
 
 The runner deliberately knows nothing about model prompts or stage internals.
 Each stage is an external command.  A completed stage writes a handoff marker
-which is the only input the next stage needs.  This makes the three stages
-independent workers while keeping one case's failure from stopping the others.
+which is the only input the next stage needs.  Shared workers claim ready
+stages while keeping one case's failure from stopping the others.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 SCHEMA = "dialogue-pipeline-v1"
@@ -123,7 +123,7 @@ def _command(value: object) -> Sequence[str]:
 
 
 class PipelineRunner:
-    """Run three stage workers over independent cases.
+    """Run ready stages over independent cases with bounded shared workers.
 
     ``config`` has a ``cases`` list and a ``stages`` mapping.  A stage command
     may use ``{case_dir}``, ``{source}``, ``{input}``, ``{output}``,
@@ -149,7 +149,6 @@ class PipelineRunner:
             case["id"]: case for case in self.config["cases"]  # type: ignore[index]
         }
         self._lock = threading.RLock()
-        self._slots = threading.Semaphore(self.max_inflight)
         self.state = self._load_or_create_state()
 
     @staticmethod
@@ -342,34 +341,36 @@ class PipelineRunner:
                     raise StageReceiptError("stage receipt artifact hash differs: %s" % artifact_path)
         return {"path": str(receipt_path), "sha256": _file_sha256(receipt_path)}
 
-    def _claim(self, stage: str) -> Optional[Dict[str, object]]:
+    def _claim(self) -> Optional[Tuple[Dict[str, object], str]]:
         with self._lock:
             for case in self.state["cases"].values():  # type: ignore[union-attr]
-                record = case["stages"][stage]
-                if record.get("status") != "pending":
-                    continue
-                dependency = DEPENDENCY[stage]
-                if dependency:
-                    dependency_status = case["stages"][dependency].get("status")
-                    if dependency_status in {"failed", "skipped", "needs_review"}:
-                        record.update({"status": "skipped", "reason":
-                                       "dependency_%s_%s" % (dependency, dependency_status),
-                                       "finished_at": _now()})
-                        self._save()
+                for stage in STAGES:
+                    record = case["stages"][stage]
+                    if record.get("status") != "pending":
                         continue
-                    if dependency_status != "completed":
-                        continue
-                record["status"] = "running"
-                record["attempts"] = int(record.get("attempts", 0)) + 1
-                record["started_at"] = _now()
-                self._save()
-                return dict(case)
+                    dependency = DEPENDENCY[stage]
+                    if dependency:
+                        dependency_status = case["stages"][dependency].get("status")
+                        if dependency_status in {"failed", "skipped", "needs_review"}:
+                            record.update({"status": "skipped", "reason":
+                                           "dependency_%s_%s" % (dependency, dependency_status),
+                                           "finished_at": _now()})
+                            self._save()
+                            continue
+                        if dependency_status != "completed":
+                            continue
+                    record["status"] = "running"
+                    record["attempts"] = int(record.get("attempts", 0)) + 1
+                    record["started_at"] = _now()
+                    self._save()
+                    return dict(case), stage
         return None
 
-    def _stage_complete(self, stage: str) -> bool:
+    def _complete(self) -> bool:
         with self._lock:
-            return all(case["stages"][stage].get("status") in TERMINAL
-                       for case in self.state["cases"].values())  # type: ignore[union-attr]
+            return all(record.get("status") in TERMINAL
+                       for case in self.state["cases"].values()  # type: ignore[union-attr]
+                       for record in case["stages"].values())
 
     def _execute(self, case: Dict[str, object], stage: str) -> None:
         case_id = case["id"]
@@ -395,8 +396,7 @@ class PipelineRunner:
         attempt = self._attempt(case_id, stage)
         stdout_path = stage_dir / ("attempt-%02d.stdout.log" % attempt)
         stderr_path = stage_dir / ("attempt-%02d.stderr.log" % attempt)
-        with self._slots:
-            self.command_runner(command, cwd, environment, stdout_path, stderr_path)
+        self.command_runner(command, cwd, environment, stdout_path, stderr_path)
         receipt = self._validate_receipt(stage_spec, paths)
         handoff = {
             "schema": SCHEMA,
@@ -427,14 +427,15 @@ class PipelineRunner:
         with self._lock:
             return int(self.state["cases"][case_id]["stages"][stage].get("attempts", 1))
 
-    def _worker(self, stage: str) -> None:
+    def _worker(self) -> None:
         while True:
-            case = self._claim(stage)
-            if case is None:
-                if self._stage_complete(stage):
+            claimed = self._claim()
+            if claimed is None:
+                if self._complete():
                     return
                 time.sleep(self.poll_interval)
                 continue
+            case, stage = claimed
             case_id = case["id"]
             try:
                 self._execute(case, stage)
@@ -456,9 +457,10 @@ class PipelineRunner:
                     self._save()
 
     def run(self) -> Dict[str, object]:
-        """Run the three workers and return the persisted final report."""
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="pipeline") as pool:
-            futures = [pool.submit(self._worker, stage) for stage in STAGES]
+        """Run shared workers and return the persisted final report."""
+        with ThreadPoolExecutor(max_workers=self.max_inflight,
+                                thread_name_prefix="pipeline") as pool:
+            futures = [pool.submit(self._worker) for _ in range(self.max_inflight)]
             for future in futures:
                 future.result()
         with self._lock:
