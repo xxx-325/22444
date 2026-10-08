@@ -22,7 +22,8 @@ class CollectionResumeTests(unittest.TestCase):
             })
             save(root / "collection.json", {"stages": [{
                 "name": "scenario", "status": "retry_exhausted",
-                "path": str(archived.relative_to(root)),
+                "path": "project/scenario/scenario",
+                "retry_exhausted_path": str(archived.relative_to(root)),
                 "target": "project/scenario/scenario",
             }]})
             _restore_archived_scenario_checkpoint(root)

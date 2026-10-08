@@ -150,7 +150,11 @@ def _restore_archived_scenario_checkpoint(collection):
     for row in reversed(stages):
         if row.get("name") != "scenario" or row.get("status") != "retry_exhausted":
             continue
-        archived = collection / row.get("path", "")
+        # Retry-exhausted rows keep the archived attempt separately; older
+        # rows only exposed the stable path.  Prefer the explicit archive
+        # while retaining the legacy fallback.
+        archived_name = row.get("retry_exhausted_path") or row.get("path", "")
+        archived = collection / archived_name
         target = collection / row.get("target", "")
         if target.exists() or not _scenario_resume_checkpoint(archived):
             continue
