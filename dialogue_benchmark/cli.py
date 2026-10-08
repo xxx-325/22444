@@ -31,9 +31,10 @@ from .quality import (CODE_QA_TYPES, GENERAL_QA_TYPES,
 from .security import credential_detected
 from .storage import save_projection
 from .subgraph import adaptive_subgraphs
-from .selection import (build_audit, select_approved, deduplicate,
-                        deduplicate_reviewed, replenish, globally_blocked,
-                        review_duplicate_clusters, apply_duplicate_decisions)
+from .selection import (build_audit, select_approved, difficulty_balance,
+                        type_balance, deduplicate, deduplicate_reviewed,
+                        replenish, globally_blocked, review_duplicate_clusters,
+                        apply_duplicate_decisions)
 
 
 DEFAULT_GENERAL_TYPES = tuple(sorted(GENERAL_QA_TYPES))
@@ -1156,9 +1157,14 @@ def _limit_questions(result, limits):
     result.setdefault("selection", []).extend(selection)
     stats = result.setdefault("question_stats", _empty_question_stats())
     stats.update(post_limit=len(kept), limit_rejected=0,
-                 over_quota=sum(s["selection_status"] == "over_quota" for s in selection))
+                 over_quota=sum(s["selection_status"] == "over_quota" for s in selection),
+                 difficulty_balance=difficulty_balance(kept, limits),
+                 type_balance=type_balance(kept, limits))
     for mode, count in counts.items():
-        stats.setdefault("by_track", {}).setdefault(mode, {}).update(post_limit=count, limit_rejected=0)
+        stats.setdefault("by_track", {}).setdefault(mode, {}).update(
+            post_limit=count, limit_rejected=0,
+            difficulty_balance=stats["difficulty_balance"].get(mode, {}),
+            type_balance=stats["type_balance"].get(mode, {}))
     return result
 
 
@@ -1248,6 +1254,8 @@ def _publication_view(questions, limits, workspaces=(), duplicate_decisions=(),
     safe, reviewed_duplicates = apply_duplicate_decisions(safe, duplicate_decisions)
     unique, duplicates = deduplicate_reviewed(safe)
     kept, selection, counts = select_approved(unique, limits)
+    balance = difficulty_balance(kept, limits)
+    type_counts = type_balance(kept, limits)
     selection = recoverability_selection + reviewed_duplicates + duplicates + selection + [
         {"candidate_id": r["question"].get("id"),
          "selection_status": "safety_blocked",
@@ -1258,6 +1266,8 @@ def _publication_view(questions, limits, workspaces=(), duplicate_decisions=(),
     return {"questions": kept, "counts": counts, "selection": selection,
             "publication_rejected": rejected, "path_stats": totals,
             "deduplicated_count": len(unique),
+            "difficulty_balance": balance,
+            "type_balance": type_counts,
             "eligible_counts": {m: sum(q.get("status") == "approved" and q.get("qa_mode", "code") == m
                                        for q in unique) for m in limits}}
 
@@ -1467,6 +1477,8 @@ def _empty_question_stats():
         "redaction_deduplicated": 0,
         "recoverability_filtered": 0,
         "published": 0,
+        "difficulty_balance": {},
+        "type_balance": {},
         "by_track": {},
     }
 
@@ -1992,13 +2004,19 @@ def main(argv=None):
                     raw_generated=len(result["all_candidates"]), post_review=len(result["all_questions"]),
                     post_limit=len(result["questions"]),
                     deduplicated=qa_result["deduplicated_count"],
-                    over_quota=sum(x["selection_status"] == "over_quota" for x in result["selection"]))
+                    over_quota=sum(x["selection_status"] == "over_quota" for x in result["selection"]),
+                    difficulty_balance=qa_result.get("difficulty_balance", {}),
+                    type_balance=qa_result.get("type_balance", {}))
                 result["question_stats"]["recoverability_filtered"] = result["recoverability"]["filtered"]
                 for track in limits:
                     result["question_stats"]["by_track"][track] = {
                         "raw_generated": sum(q.get("qa_mode") == track for q in result["all_candidates"] if isinstance(q, dict)),
                         "post_review": sum(q.get("qa_mode") == track for q in result["all_questions"]),
-                        "post_limit": qa_result["counts"][track]}
+                        "post_limit": qa_result["counts"][track],
+                        "difficulty_balance": result["question_stats"].get(
+                            "difficulty_balance", {}).get(track, {}),
+                        "type_balance": result["question_stats"].get(
+                            "type_balance", {}).get(track, {})}
                 _add_path_stats(result, qa_result["path_stats"])
                 for track in tracks:
                     track_results[track]["questions"] = [
@@ -2316,6 +2334,10 @@ def main(argv=None):
                 "redaction_deduplicated": result["question_stats"].get("redaction_deduplicated", 0),
                 "recoverability_filtered": result["question_stats"].get(
                     "recoverability_filtered", 0),
+                "difficulty": result["question_stats"].get(
+                    "difficulty_balance", {}),
+                "type_balance": result["question_stats"].get(
+                    "type_balance", {}),
                 "status": status_counts,
                 "type": type_counts,
                 "by_track": result["question_stats"].get("by_track", {}),

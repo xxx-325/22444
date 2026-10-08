@@ -172,6 +172,8 @@ def build(run):
                    nodes=list(nodes.values()), edges=list(edges.values()), groups=groups, questions=questions,
                    candidate_records=candidate_records,
                    progress=manifest.get("progress", {}),
+                   difficulty_balance=manifest.get("questions", {}).get("difficulty", {}),
+                   type_balance=manifest.get("questions", {}).get("type_balance", {}),
                    targets=({"memory": manifest.get("qa_count")} if manifest.get("qa_mode") == "memory"
                             else {mode: manifest.get(mode + "_count") for mode in ("general", "code")}),
                    memory_types=MEMORY_TYPE_LABELS,

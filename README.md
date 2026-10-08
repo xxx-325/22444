@@ -84,7 +84,14 @@ before deriving tasks from an older run.
 
 Graph-mode difficulty is computed locally from the selected evidence structure: number of
 necessary stages/versions, graph distance, and whether the question crosses a
-failure/change/verification chain. The model does not choose the difficulty.
+failure/change/verification chain. The model does not choose the difficulty. Publication
+uses a soft per-track preference of 30% easy, 40% medium, and 30% hard when those
+static labels are available; missing levels are backfilled with approved questions.
+The report records the target, actual counts, and shortfall, so a shortage is visible
+instead of being mistaken for a quality rejection. Type balance is also best-effort:
+the selector spreads available question types, including M1–M6 in external mode,
+without rejecting a valid question or generating extra groups after the count target
+is reached. External QA has no graph-distance difficulty label.
 
 ## Install and run
 

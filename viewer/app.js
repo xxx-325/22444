@@ -305,9 +305,24 @@
   function renderQA() {
     for(const view of ["final","audit"])$("view-"+view).setAttribute("aria-pressed",String(state.qaView===view));
     $("audit-status").disabled=state.qaView!=="audit";
+    const balanceText = mode => {
+      const difficulty = data.difficulty_balance?.[mode];
+      const type = data.type_balance?.[mode];
+      const parts = [];
+      if (difficulty) {
+        const actual = difficulty.actual || {};
+        parts.push(`难度 简${actual.easy||0} / 中${actual.medium||0} / 难${actual.hard||0}`);
+      }
+      if (type) {
+        const actual = type.actual || {};
+        const labels = Object.entries(actual).map(([kind,count]) => `${types[kind]||kind} ${count}`);
+        if (labels.length) parts.push(`类型 ${labels.join("、")}`);
+      }
+      return parts.length ? `（${parts.join("；")}）` : "";
+    };
     $("target-progress").textContent=modes.map(mode=>{
       const count=data.questions.filter(q=>q.qa_mode===mode).length,target=data.targets?.[mode];
-      return `${modeName(mode)}：${count} / ${target??"目标未保存"} · ${stopNames[data.progress?.stop_reasons?.[mode]]||"旧运行未保存补题停止原因"}`;
+      return `${modeName(mode)}：${count} / ${target??"目标未保存"} · ${stopNames[data.progress?.stop_reasons?.[mode]]||"旧运行未保存补题停止原因"} ${balanceText(mode)}`;
     }).join("　｜　");
     for(const mode of modes){const b=$("tab-"+mode);b.textContent=`${modeName(mode)} · ${data.questions.filter(q=>q.qa_mode===mode).length}`;b.setAttribute("aria-selected",String(mode===state.mode));b.tabIndex=mode===state.mode?0:-1;}
     $("qa-list").setAttribute("aria-labelledby","tab-"+state.mode);

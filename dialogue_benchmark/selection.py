@@ -5,6 +5,30 @@ from copy import deepcopy
 import re
 
 
+DIFFICULTY_LEVELS = ("easy", "medium", "hard")
+# This is a publication preference, not a validity rule.  A shortage in one
+# level is filled by another level so that useful approved questions are not
+# discarded merely to hit a ratio.
+DEFAULT_DIFFICULTY_RATIOS = {
+    "easy": 0.30,
+    "medium": 0.40,
+    "hard": 0.30,
+}
+
+
+def _static_difficulty(question):
+    """Return only the deterministic graph label used for balancing."""
+    if question.get("difficulty_origin") != "static_graph_distance":
+        return None
+    level = question.get("difficulty")
+    return level if level in DIFFICULTY_LEVELS else None
+
+
+def _question_type(question):
+    value = question.get("type", question.get("category"))
+    return value if isinstance(value, str) and value.strip() else None
+
+
 _SEMANTIC_TOKEN = re.compile(
     r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+|"
     r"[A-Za-z_][A-Za-z0-9_.-]{3,}|"
@@ -520,18 +544,160 @@ def deduplicate_reviewed(questions):
     return kept, excluded
 
 
+def difficulty_targets(limits):
+    """Return deterministic soft difficulty targets for each publication track."""
+    ratios = DEFAULT_DIFFICULTY_RATIOS
+    normalized = {
+        level: max(0.0, float(ratios.get(level, 0.0)))
+        for level in DIFFICULTY_LEVELS
+    }
+    total = sum(normalized.values())
+    if total <= 0:
+        normalized = dict(DEFAULT_DIFFICULTY_RATIOS)
+        total = sum(normalized.values())
+    normalized = {level: value / total for level, value in normalized.items()}
+    targets = {}
+    for mode, limit in limits.items():
+        if mode not in ("general", "code"):
+            continue
+        limit = max(0, int(limit or 0))
+        raw = {level: normalized[level] * limit for level in DIFFICULTY_LEVELS}
+        counts = {level: int(raw[level]) for level in DIFFICULTY_LEVELS}
+        remainder = limit - sum(counts.values())
+        # Largest remainder allocation makes small quotas deterministic while
+        # preserving the requested proportions as closely as possible.
+        order = sorted(
+            DIFFICULTY_LEVELS,
+            key=lambda level: (raw[level] - counts[level],
+                               -DIFFICULTY_LEVELS.index(level)),
+            reverse=True,
+        )
+        for level in order[:remainder]:
+            counts[level] += 1
+        targets[mode] = counts
+    return targets
+
+
+def difficulty_balance(questions, limits):
+    """Summarize soft targets, actual counts, and available shortfall."""
+    targets = difficulty_targets(limits)
+    balance = {}
+    for mode in limits:
+        if mode not in ("general", "code"):
+            continue
+        actual = {level: 0 for level in DIFFICULTY_LEVELS}
+        unknown = 0
+        for question in questions:
+            if question.get("qa_mode", "code") != mode:
+                continue
+            level = _static_difficulty(question)
+            if level in actual:
+                actual[level] += 1
+            else:
+                unknown += 1
+        balance[mode] = {
+            "target": dict(targets.get(mode, {})),
+            "actual": actual,
+            "unknown": unknown,
+            "shortfall": {
+                level: max(0, targets.get(mode, {}).get(level, 0) - actual[level])
+                for level in DIFFICULTY_LEVELS
+            },
+        }
+    return balance
+
+
+def type_targets(questions, limits):
+    """Allocate equal soft slots among types actually present in each track."""
+    available = {
+        mode: sorted({
+            _question_type(question)
+            for question in questions
+            if question.get("qa_mode", "code") == mode
+            and question.get("status") == "approved"
+            and _question_type(question) is not None
+        })
+        for mode in limits
+    }
+    targets = {}
+    for mode, limit in limits.items():
+        values = available.get(mode, [])
+        if not values:
+            continue
+        base, remainder = divmod(max(0, int(limit or 0)), len(values))
+        targets[mode] = {
+            value: base + (index < remainder)
+            for index, value in enumerate(values)
+        }
+    return targets
+
+
+def type_balance(questions, limits):
+    """Summarize best-effort type coverage without making type a gate."""
+    targets = type_targets(questions, limits)
+    balance = {}
+    for mode in limits:
+        actual = Counter()
+        unknown = 0
+        for question in questions:
+            if question.get("qa_mode", "code") != mode:
+                continue
+            value = _question_type(question)
+            if value is None:
+                unknown += 1
+            else:
+                actual[value] += 1
+        mode_targets = targets.get(mode, {})
+        balance[mode] = {
+            "target": dict(mode_targets),
+            "actual": dict(sorted(actual.items())),
+            "unknown": unknown,
+            "shortfall": {
+                value: max(0, target - actual.get(value, 0))
+                for value, target in mode_targets.items()
+            },
+        }
+    return balance
+
+
 def select_approved(questions, limits):
     """Select approved items only; quota exclusions never change review status."""
     kept, excluded = [], []
     counts = {mode: 0 for mode in limits}
     pending = list(questions)
     types, groups, facts = set(), set(), set()
+    targets = difficulty_targets(limits)
+    type_quota = type_targets(questions, limits)
+    selected_difficulties = {
+        mode: Counter() for mode in limits
+    }
+    selected_types = {mode: Counter() for mode in limits}
+
     def priority(q):
         mode = q.get("qa_mode", "code")
-        return ((mode, q.get("type", q.get("category"))) not in types,
+        level = _static_difficulty(q)
+        question_type = _question_type(q)
+        target = targets.get(mode, {}).get(level, 0)
+        type_target = type_quota.get(mode, {}).get(question_type, 0)
+        approved_for_track = q.get("status") == "approved" and mode in limits
+        fills_target = (
+            approved_for_track
+            and level in DIFFICULTY_LEVELS
+            and selected_difficulties[mode][level] < target
+        )
+        fills_type = (
+            approved_for_track
+            and question_type in type_quota.get(mode, {})
+            and selected_types[mode][question_type] < type_target
+        )
+        return (fills_target and fills_type,
+                fills_target,
+                fills_type,
+                (mode, q.get("type", q.get("category"))) not in types,
                 q.get("evidence_group_id", q.get("id")) not in groups,
                 len(set(q.get("fact_ids", [])) - facts),
                 q.get("track") == "history_core" or (q.get("difficulty_distance") or 0) > 0)
+
     while pending:
         q = max(pending, key=priority)
         pending.remove(q)
@@ -544,6 +710,12 @@ def select_approved(questions, limits):
                              "selection_status": reason, "reason": reason, "track": mode})
             continue
         counts[mode] += 1
+        level = _static_difficulty(q)
+        if level in DIFFICULTY_LEVELS:
+            selected_difficulties[mode][level] += 1
+        question_type = _question_type(q)
+        if question_type is not None:
+            selected_types[mode][question_type] += 1
         kept.append(q)
         types.add((mode, q.get("type", q.get("category"))))
         groups.add(q.get("evidence_group_id", q.get("id")))
@@ -596,9 +768,39 @@ def globally_blocked(errors):
                for e in errors)
 
 
+def balance_group_tasks(tasks):
+    """Stable per-track ordering that fills available difficulty targets first."""
+    result = list(tasks)
+    for mode in ("general", "code"):
+        slots = [i for i, task in enumerate(result) if task[1] == mode]
+        if not slots:
+            continue
+        targets = difficulty_targets({mode: len(slots)})[mode]
+        selected = Counter()
+        remaining = list(range(len(slots)))
+        ordered = []
+        while remaining:
+            def priority(offset):
+                task = tasks[slots[remaining[offset]]]
+                level = task[2].get("static_difficulty")
+                deficit = targets.get(level, 0) - selected[level]
+                return (deficit > 0, selected[level] == 0 and level in DIFFICULTY_LEVELS,
+                        deficit, -remaining[offset])
+            chosen = max(range(len(remaining)), key=priority)
+            local = remaining.pop(chosen)
+            ordered.append(local)
+            level = tasks[slots[local]][2].get("static_difficulty")
+            if level in DIFFICULTY_LEVELS:
+                selected[level] += 1
+        for slot, local in zip(slots, ordered):
+            result[slot] = tasks[slots[local]]
+    return result
+
+
 def replenish(tasks, limits, budgets, workers, run_batch, project, checkpoint=None,
               initial_errors=(), initial_request_count=0, after_batch=None):
     """Process new groups in bounded batches; extraction and transport stay outside."""
+    tasks = balance_group_tasks(tasks)
     pools = {mode: deque(t for t in tasks if t[1] == mode) for mode in limits}
     attempted = Counter()
     merged = {key: [] for key in ("all_candidates", "all_questions", "rejected", "usage",
@@ -647,6 +849,8 @@ def replenish(tasks, limits, budgets, workers, run_batch, project, checkpoint=No
                    "attempted": dict(attempted), "counts": dict(counts),
                    "targets": limits, "missing": {m: max(0, limits[m] - counts[m]) for m in modes},
                    "eligible_counts": view["eligible_counts"],
+                   "difficulty_balance": view.get("difficulty_balance", {}),
+                   "type_balance": view.get("type_balance", {}),
                    "requests": initial_request_count + sum(u.get("request_count", 1) for u in merged["usage"]),
                    "duplicate_decisions": len(dedup_update.get("decisions", [])),
                    "dedup_errors": list(dedup_update.get("errors", [])),
