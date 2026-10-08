@@ -266,7 +266,8 @@ def build_config(config_path: Path, output: Path, *, simulator_path: Path,
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path)
+    parser.add_argument("--config", type=Path,
+                        default=ROOT / "examples/collection-five/long-dialogue-three.json")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--simulator-path", type=Path, required=True)
     parser.add_argument("--env-file", type=Path, required=True)
@@ -279,8 +280,6 @@ def main(argv=None) -> int:
         if args.input is None:
             parser.error("--stage requires --input")
         return _stage_main(args)
-    if args.config is None:
-        parser.error("--config is required for the pipeline run")
     output = args.output.resolve()
     config = build_config(args.config, output, simulator_path=args.simulator_path,
                           env_file=args.env_file, python=args.python)
