@@ -15,7 +15,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .collection import run_collection
 from .episode_input import load_episode_manifest
@@ -107,6 +107,21 @@ def _run_logged(command, cwd: Path, stdout: Path, stderr: Path) -> int:
         return subprocess.run(command, cwd=str(cwd), stdout=out, stderr=err, check=False).returncode
 
 
+def _archive_incomplete(directory: Path) -> Optional[Path]:
+    """Move an incomplete stage directory aside before a fresh attempt."""
+    if not directory.exists():
+        return None
+    archive_root = directory.parent / ".incomplete"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    target = archive_root / directory.name
+    suffix = 1
+    while target.exists():
+        target = archive_root / (directory.name + "-%d" % suffix)
+        suffix += 1
+    shutil.move(str(directory), str(target))
+    return target
+
+
 def _repo_stage(args) -> int:
     plan = Path(args.input).resolve()
     output = Path(args.output).resolve()
@@ -126,7 +141,8 @@ def _route_command(route: str, manifest: Path, output: Path, args, plan: dict):
     evaluation = plan.get("evaluation", {})
     command = [str(args.python), str(ROOT / "run_episode.py"), "--episode-manifest", str(manifest),
                "--qa-source", route, "--simulator-path", str(Path(args.simulator_path).resolve()),
-               "--env-file", str(Path(args.env_file).resolve()), "--output", str(output), "--qa-only"]
+               "--env-file", str(Path(args.env_file).resolve()), "--output", str(output), "--qa-only",
+               "--parallel-workers", str(evaluation.get("parallel_workers", 10))]
     if route == "external":
         command += ["--qa-count", str(evaluation.get("qa_count", 40))]
         if evaluation.get("group_budget") is not None:
@@ -148,7 +164,10 @@ def _qa_stage(args) -> int:
 
     def run(route):
         route_dir = output / route
-        ready = (route_dir / "qa" / "manifest.json").is_file()
+        qa_dir = route_dir / "qa"
+        ready = all((qa_dir / name).is_file() for name in ("manifest.json", "qa-public.json"))
+        if not ready:
+            _archive_incomplete(qa_dir)
         command = _route_command(route, manifest, route_dir, args, plan)
         if ready:
             command.append("--resume-tasks")
@@ -202,8 +221,14 @@ def _task_stage(args) -> int:
                              "tasks": []})
         _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary], result="skipped")
         return 0
-    if not (output / "qa").exists():
+    qa_dir = output / "qa"
+    qa_ready = all((qa_dir / name).is_file() for name in ("manifest.json", "qa-public.json"))
+    if not qa_ready:
+        _archive_incomplete(qa_dir)
         shutil.copytree(external / "qa", output / "qa")
+    tasks_dir = output / "tasks"
+    if tasks_dir.exists() and not (tasks_dir / "manifest.json").is_file():
+        _archive_incomplete(tasks_dir)
     evaluation = plan.get("evaluation", {})
     command = [str(args.python), str(ROOT / "run_episode.py"), "--episode-manifest", str(manifest),
                "--qa-source", "external", "--simulator-path", str(Path(args.simulator_path).resolve()),
