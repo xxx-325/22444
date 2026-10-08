@@ -184,7 +184,35 @@ class CollectionTests(unittest.TestCase):
             result = read(root / "run/collection.json")
             self.assertEqual(result["usage"]["requests"], 3)
             self.assertEqual(result["usage"]["total_tokens"], 69)
-            self.assertEqual(result["projects"][0]["status"], "interrupted")
+            self.assertEqual(result["projects"][0]["status"], "blocked")
+
+    def test_incomplete_usage_is_a_warning_and_does_not_stop_following_stages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.incomplete_usage = True
+            result = self.invoke(root)
+            self.assertEqual(result["status"], "completed_with_warnings")
+            self.assertEqual(result["projects"][0]["scenarios"][0]["status"], "completed")
+            self.assertIn({"code": "usage_incomplete"}, result["warnings"])
+
+    def test_missing_receipt_retries_the_stage_before_marking_it_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.missing_receipt_attempts = 0
+            result = self.invoke(root)
+            dialogue_calls = [
+                command for command in self.commands if Path(
+                    command[command.index("--output") + 1]).name == "dialogue"
+            ]
+            self.assertEqual(len(dialogue_calls), 3)
+            self.assertEqual(result["projects"][0]["scenarios"][0]["status"], "completed")
+            self.assertEqual(result["status"], "completed")
 
     def command(self, command, cwd, log):
         target = Path(command[command.index("--output") + 1])
@@ -212,9 +240,17 @@ class CollectionTests(unittest.TestCase):
             save(target / "budget.json", budget)
         elif name == "dialogue":
             package = target.with_name("dialogue-package")
+            if hasattr(self, "missing_receipt_attempts") and self.missing_receipt_attempts == 0:
+                self.missing_receipt_attempts += 1
+                save(package / "private/review.json", dict(budget=budget))
+                return 2
             save(package / "manifest.json", dict(schema="memory-episode-v1"))
             save(package / "external-events.json", dict(events=[{"memory_kind": "M1"}]))
-            save(package / "private/review.json", dict(budget=budget))
+            review_budget = dict(budget)
+            if getattr(self, "incomplete_usage", False):
+                review_budget["usage_missing"] = True
+                review_budget["pending"] = {"request-1": 0}
+            save(package / "private/review.json", dict(budget=review_budget))
         elif name in ("external", "graph"):
             self.assertIn("--episode-manifest", command)
             source = command[command.index("--qa-source") + 1]
@@ -310,7 +346,7 @@ class CollectionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "collection_budget_exhausted"):
                 self.invoke(root)
             result = read(root / "run/collection.json")
-            self.assertEqual(result["status"], "stopped")
+            self.assertEqual(result["status"], "blocked")
             self.assertEqual(len(self.commands), 2)
             self.assertEqual(result["usage"]["requests"], 2)
             self.assertTrue((root / "run/planner/project/config.json").is_file())
@@ -469,7 +505,7 @@ class CollectionTests(unittest.TestCase):
                 self.assertEqual(scene["evaluations"]["external"]["status"], "evaluation_failed")
                 self.assertEqual(scene["evaluations"]["graph"]["status"], "qa_only")
             self.assertEqual(result["projects"][0]["status"], "partial_failure")
-            self.assertEqual(result["status"], "partial_failure")
+            self.assertEqual(result["status"], "completed_with_warnings")
 
     def test_invalid_route_selection_is_rejected_before_execution(self):
         with tempfile.TemporaryDirectory() as directory:

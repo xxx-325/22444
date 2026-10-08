@@ -81,7 +81,7 @@ class CollectionResumeTests(unittest.TestCase):
                 self._invoke(root)
             self.assertTrue((root / "run/project/scenario/scenario/frozen/report.json").is_file())
             result = self._invoke(root, resume=True)
-            self.assertEqual(result["status"], "partial_failure")
+            self.assertEqual(result["status"], "completed_with_warnings")
             self.assertTrue((root / "run/attempts/project/scenario/requirements/attempt-1").is_dir())
             self.assertEqual(sum(s.get("resume_count", 0) for s in result["stages"]), 0)
 

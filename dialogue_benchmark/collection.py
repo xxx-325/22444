@@ -16,6 +16,7 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=6, task_workers=2, revisions=3,
                            model_request_chars=96000, qa_only=False,
                            general_count=50, code_count=50)
+MAX_STAGE_RETRIES = 2
 
 
 def sum_usage(rows):
@@ -100,6 +101,17 @@ def _aggregate_status(statuses, empty="no_scenarios"):
     if any(status == "below_target" for status in statuses):
         return "below_target"
     return "partial_failure"
+
+
+def _terminal_collection_status(state):
+    """Return a terminal status without promoting local failures to blockers."""
+    aggregate = _aggregate_status(
+        project.get("status") for project in state.get("projects", []))
+    if aggregate == "completed" and not state.get("warnings"):
+        return "completed"
+    if aggregate in {"completed", "partial_failure", "below_target", "no_scenarios"}:
+        return "completed_with_warnings"
+    return "blocked"
 
 
 def _completed_pair(task):
@@ -214,6 +226,14 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
     state["status"] = "running"
     state.pop("stop_reason", None)
     state.pop("error_type", None)
+    state.setdefault("warnings", [])
+
+    def warning(code, **details):
+        item = dict(code=code, **details)
+        if item not in state["warnings"]:
+            state["warnings"].append(item)
+        state["usage_status"] = "pending" if code == "usage_incomplete" else state.get(
+            "usage_status", "ready")
 
     def persist():
         state["usage"] = sum_usage([s.get("usage", dict(sum_usage([]), complete=False))
@@ -252,7 +272,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             previous["status"] = "interrupted"
         persist()
         if not state["usage"]["complete"]:
-            raise RuntimeError("usage_incomplete")
+            warning("usage_incomplete")
         if (state["usage"]["requests"] >= plan["max_total_requests"]
                 or state["usage"]["total_tokens"] >= plan["max_total_tokens"]):
             raise RuntimeError("collection_budget_exhausted")
@@ -266,7 +286,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             command = [*command, "--resume"]
         else:
             if previous:
-                if previous.get("retry", 0) >= 1:
+                if previous.get("retry", 0) >= MAX_STAGE_RETRIES:
                     archive = output / "attempts" / target / ("attempt-%d" % (previous.get("retry", 0) + 1))
                     archive.mkdir(parents=True, exist_ok=False, mode=0o700)
                     for artifact in (folder, folder.with_suffix(".log"),
@@ -299,6 +319,14 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             row["status"] = ("completed" if row["returncode"] == 0
                              and row["outcome"] in expected else "failed")
             row["terminal"] = row["returncode"] == 0 and row["status"] == "failed"
+            if (row["status"] == "failed"
+                    and row["outcome"] in {"missing_receipt", "timeout",
+                                           "connection_error", "protocol_error",
+                                           "request_budget"}
+                    and row.get("retry", 0) < MAX_STAGE_RETRIES):
+                row["status"] = "failed"
+                persist()
+                return stage(name, folder, command, cwd, receipt, expected, ledger, budget_key)
             if row["returncode"]:
                 log = folder.with_suffix(".log")
                 text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
@@ -306,14 +334,23 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     raise RuntimeError("collection_authentication_failed")
                 if re.search(r"unrecognized arguments|the following arguments are required", text, re.I):
                     raise RuntimeError("collection_input_failed")
-                if _transient_stage_failure(text) and row.get("retry", 0) < 1:
+                retryable = (
+                    _transient_stage_failure(text)
+                    or row["outcome"] in {"missing_receipt", "timeout", "connection_error",
+                                           "protocol_error", "request_budget"}
+                )
+                if retryable and row.get("retry", 0) < MAX_STAGE_RETRIES:
                     # Preserve the failed attempt, then rerun this same
-                    # stage once.  A provider outage must not require
-                    # manual resume, while deterministic failures remain
-                    # visible and bounded.
+                    # stage from its saved inputs.  A local provider failure
+                    # must not require a manual resume.
                     row["status"] = "failed"
                     persist()
                     return stage(name, folder, command, cwd, receipt, expected, ledger, budget_key)
+                warning("stage_needs_review", stage=target, outcome=row["outcome"],
+                        returncode=row["returncode"])
+            elif row["status"] != "completed":
+                warning("stage_needs_review", stage=target, outcome=row["outcome"],
+                        returncode=row["returncode"])
             return result if row["status"] == "completed" else None
         except BaseException as error:
             row.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
@@ -358,6 +395,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                                simulator, target / "project.json", {"completed"}, target / "private/budget.json")
                 if result is None:
                     entry["status"] = "project_rejected"
+                    warning("project_rejected", project=project["id"])
                     continue
                 config = read(target / "config.json")
             if plan.get("dialogue_quality"):
@@ -389,6 +427,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     simulator, target / "frozen/report.json", {"completed", "candidate_pass"}, target / "budget.json")
                 if designed is None:
                     record["status"] = "scenario_rejected"
+                    warning("scenario_rejected", project=project["id"], scenario=scenario["id"])
                     continue
                 record["requested_memory_kinds"] = designed.get("design", {}).get("memory_kinds", [])
                 record["designed_memory_counts"] = designed.get("memory_counts", {})
@@ -398,6 +437,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 if stage("requirements", target, upstream("simulator.openhands.prepare_progressive", cfg, target),
                          simulator, target / "report.json", {"candidate_pass"}, target / "budget.json") is None:
                     record["status"] = "requirements_rejected"
+                    warning("requirements_rejected", project=project["id"], scenario=scenario["id"])
                     continue
                 current["prepared_issues"] = str(target / "report.json")
                 save(cfg, current)
@@ -407,6 +447,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                          package / "manifest.json", {"memory-episode-v1"},
                          package / "private/review.json", "budget") is None:
                     record["status"] = "dialogue_incomplete"
+                    warning("dialogue_incomplete", project=project["id"], scenario=scenario["id"])
                     continue
                 from .episode_input import load_episode_manifest
                 exported = load_episode_manifest(package / "manifest.json")
@@ -442,6 +483,9 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                                       target / "pipeline.json", {"completed"}, target / "usage.json")
                     evaluated.update(status=completed.get("stop_reason", "completed") if completed else "evaluation_failed",
                                      qa_only=qa_only, path=str(target.relative_to(output)))
+                    if completed is None:
+                        warning("evaluation_failed", project=project["id"],
+                                scenario=scenario["id"], route=qa_source)
                     public = _read_if(target / "qa/qa-public.json")
                     if public.get("status") == "failed":
                         evaluated["status"] = "evaluation_failed"
@@ -475,18 +519,17 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 entry["status"] = "no_scenarios"
         persist()
         if not state["usage"]["complete"]:
-            raise RuntimeError("usage_incomplete")
-        state["status"] = _aggregate_status(
-            project.get("status") for project in state["projects"])
+            warning("usage_incomplete")
+        state["status"] = _terminal_collection_status(state)
     except BaseException as error:
-        state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "stopped",
+        state.update(status="blocked",
                      stop_reason=str(error), error_type=type(error).__name__)
         for project in state["projects"]:
             if project["status"] == "running":
-                project["status"] = state["status"]
+                project["status"] = "blocked"
             for scenario in project["scenarios"]:
                 if scenario["status"] == "running":
-                    scenario["status"] = state["status"]
+                    scenario["status"] = "blocked"
         raise
     finally:
         persist()
