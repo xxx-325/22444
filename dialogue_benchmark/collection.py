@@ -149,7 +149,7 @@ def _restore_archived_scenario_checkpoint(collection):
     stages = state.get("stages", [])
     for index in range(len(stages) - 1, -1, -1):
         row = stages[index]
-        if row.get("name") != "scenario":
+        if row.get("name") != "scenario" or row.get("status") in {"completed", "failed"}:
             continue
         target = collection / row.get("target", "")
         if target.exists():
