@@ -5,12 +5,21 @@ from unittest.mock import patch
 
 from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_status,
                                             _completed_pair, _transient_stage_failure,
+                                            _recover_receipt,
                                             episode_usage,
                                             run_collection, validate_plan)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_receipt_left_in_atomic_temp_file_is_recovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "pipeline.json"
+            temporary = receipt.with_suffix(".json.tmp")
+            save(temporary, {"status": "completed"})
+            self.assertEqual(_recover_receipt(receipt)["status"], "completed")
+            self.assertTrue(receipt.is_file())
+
     def test_only_evaluated_terminal_pairs_count(self):
         comparison = {
             "without_memory": {"result": "passed"},

@@ -67,6 +67,27 @@ def _read_if(path):
     return read(path) if path.is_file() else {}
 
 
+def _recover_receipt(receipt):
+    """Recover an atomically written receipt left as a temporary file."""
+    receipt = Path(receipt)
+    if receipt.is_file():
+        try:
+            return read(receipt)
+        except (OSError, ValueError, TypeError):
+            pass
+    temporary = receipt.with_suffix(receipt.suffix + ".tmp")
+    if not temporary.is_file():
+        return {}
+    try:
+        recovered = read(temporary)
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(recovered, dict):
+        return {}
+    temporary.replace(receipt)
+    return recovered
+
+
 def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
@@ -314,7 +335,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         print("Collection:", row["path"], name, flush=True)
         try:
             row["returncode"] = _command(command, cwd, folder.with_suffix(".log"))
-            result = _read_if(receipt)
+            result = _recover_receipt(receipt)
             row["outcome"] = result.get("status", result.get("schema", "missing_receipt"))
             row["status"] = ("completed" if row["returncode"] == 0
                              and row["outcome"] in expected else "failed")

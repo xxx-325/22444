@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dialogue_benchmark.review_server import PAGE, append_decision, queue_payload
+from dialogue_benchmark.review_server import (PAGE, append_decision, materialize_public,
+                                               queue_payload)
 
 
 class ReviewServerTests(unittest.TestCase):
@@ -31,6 +32,31 @@ class ReviewServerTests(unittest.TestCase):
                     (root / "review-decisions.jsonl").read_text().splitlines()]
             self.assertEqual([row["action"] for row in rows], ["defer", "reject"])
             self.assertEqual(first["candidate_id"], second["candidate_id"])
+
+    def test_approval_materializes_public_question_and_rejection_removes_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "qa-review-queue.json").write_text(json.dumps({
+                "items": [{
+                    "candidate_id": "q1",
+                    "id": "q1",
+                    "qa_mode": "memory",
+                    "question": "Which rule applies?",
+                    "answer_points": [{"text": "Use the confirmed rule."}],
+                    "status": "needs_review",
+                }],
+                "stage_errors": [],
+            }), encoding="utf-8")
+            (root / "qa-public.json").write_text(json.dumps({
+                "status": "needs_review", "questions": [], "counts": {},
+            }), encoding="utf-8")
+            append_decision(root, {"candidate_id": "q1", "action": "approve"})
+            self.assertEqual(len(json.loads(
+                (root / "qa-public.json").read_text())["questions"]), 1)
+            append_decision(root, {"candidate_id": "q1", "action": "reject"})
+            self.assertEqual(json.loads(
+                (root / "qa-public.json").read_text())["questions"], [])
+            self.assertEqual(materialize_public(root)["status"], "completed_no_questions")
 
     def test_page_is_local_and_has_non_blocking_actions(self):
         self.assertIn("/api/decision", PAGE)

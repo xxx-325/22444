@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .security import credential_detected
 
 PAGE = r"""<!doctype html>
 <html lang="zh-CN">
@@ -45,7 +46,7 @@ function latest(id){return [...data.decisions].reverse().find(x=>x.candidate_id=
 function matches(item){
   const d=latest(item.candidate_id||item.id);
   if(filter==="warnings") return false;
-  const status=d?.action || item.status || "needs_review";
+  const status=d?.action || (item.status==="approved"?"approve":item.status) || "needs_review";
   return filter==="pending" ? !["approve","reject"].includes(status)
        : filter==="approved" ? status==="approve"
        : status==="reject";
@@ -104,11 +105,94 @@ def _decisions(path):
 
 def queue_payload(root: Path) -> dict:
     queue = _read(root / "qa-review-queue.json", {})
+    public = _read(root / "qa-public.json", {})
+    items = list(queue.get("items", []))
+    known = {item.get("candidate_id", item.get("id")) for item in items}
+    items.extend(
+        item for item in public.get("questions", [])
+        if item.get("id") not in known
+    )
     return {
-        "items": queue.get("items", []),
+        "items": items,
         "stage_errors": queue.get("stage_errors", []),
         "decisions": _decisions(root / "review-decisions.jsonl"),
     }
+
+
+def _published_question(item):
+    """Keep the human-reviewed projection as small as the public projection."""
+    answer_points = [
+        {"text": point.get("text", "") if isinstance(point, dict) else str(point)}
+        for point in item.get("answer_points", [])
+    ]
+    forbidden_points = [
+        {"text": point.get("text", "") if isinstance(point, dict) else str(point)}
+        for point in item.get("forbidden_points", [])
+    ]
+    return {
+        key: item.get(key)
+        for key in ("id", "qa_mode", "type", "question", "difficulty",
+                    "type_origin", "type_status", "difficulty_origin",
+                    "difficulty_distance", "stage_count", "reasoning_hops",
+                    "graph_hops", "track", "category")
+        if key in item
+    } | {
+        "status": "approved",
+        "answer_points": answer_points,
+        "forbidden_points": forbidden_points,
+    }
+
+
+def materialize_public(root: Path) -> dict:
+    """Apply append-only decisions to the public QA projection."""
+    public_path = root / "qa-public.json"
+    public = _read(public_path, {})
+    if not public_path.is_file():
+        return public
+    queue = _read(root / "qa-review-queue.json", {})
+    items = list(queue.get("items", []))
+    items.extend(public.get("questions", []))
+    decisions = {row.get("candidate_id"): row for row in _decisions(
+        root / "review-decisions.jsonl")}
+    selected = {}
+    for item in items:
+        candidate_id = item.get("candidate_id", item.get("id"))
+        if not candidate_id:
+            continue
+        decision = decisions.get(candidate_id, {})
+        action = decision.get("action")
+        if action == "reject":
+            selected.pop(candidate_id, None)
+            continue
+        if item.get("status") == "approved" or action == "approve":
+            projected = _published_question(item)
+            visible = " ".join([
+                projected.get("question", ""),
+                *(point["text"] for point in projected["answer_points"]),
+                *(point["text"] for point in projected["forbidden_points"]),
+            ])
+            if not credential_detected(visible):
+                selected[candidate_id] = projected
+    public["questions"] = list(selected.values())
+    public["counts"] = {}
+    for item in public["questions"]:
+        mode = item.get("qa_mode", "code")
+        public["counts"][mode] = public["counts"].get(mode, 0) + 1
+    pending = any(
+        item.get("candidate_id", item.get("id")) not in decisions
+        and item.get("status") != "approved"
+        for item in queue.get("items", [])
+    )
+    public["status"] = "needs_review" if pending or queue.get("stage_errors") else (
+        "approved" if public["questions"] else "completed_no_questions")
+    public["human_review"] = {
+        "decisions": len(decisions),
+        "published": len(public["questions"]),
+    }
+    from .task_eval.artifacts import save
+    save(public_path, public)
+    save(root / "qa.json", public)
+    return public
 
 
 def append_decision(root: Path, body: dict) -> dict:
@@ -128,6 +212,7 @@ def append_decision(root: Path, body: dict) -> dict:
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(decision, ensure_ascii=False) + "\n")
     path.chmod(0o600)
+    materialize_public(root)
     return decision
 
 
