@@ -339,6 +339,8 @@ class CollectionTests(unittest.TestCase):
         elif name == "scenario":
             cfg = read(Path(command[command.index("--config") + 1]))
             self.assertEqual(Path(cfg["development_plan"]).name, "development-plan.json")
+            self.assertNotIn("external_fact_target", cfg["scenario_design"])
+            self.assertNotIn("expected_coverage", cfg["external_attempt_plan"])
             if hasattr(self, "quality_mapping"):
                 self.assertEqual(cfg["dialogue_quality"], self.quality_mapping)
             if getattr(self, "reject_scenario", False):
