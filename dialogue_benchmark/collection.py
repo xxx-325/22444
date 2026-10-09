@@ -98,6 +98,49 @@ def _recover_receipt(receipt):
     return recovered
 
 
+def _dialogue_package_is_current(package, source):
+    """Accept a saved dialogue package only when its source has stopped.
+
+    A provider failure may leave a valid prefix package next to a checkpoint
+    that is already being resumed.  Reusing that prefix while a new turn is
+    in flight would silently send stale history to QA.  Compare the package's
+    public cutoff with the source log; this is deliberately a content check,
+    not another integrity field.
+    """
+    package, source = Path(package), Path(source)
+    manifest = _read_if(package / "manifest.json")
+    cutoff = (manifest.get("dialogue") or {}).get("cutoff_event_id")
+    if not cutoff:
+        return True
+    checkpoint = source / "private/checkpoint.json"
+    if checkpoint.is_file():
+        try:
+            saved = read(checkpoint)
+        except (OSError, ValueError, TypeError):
+            return False
+        if saved.get("in_flight"):
+            return False
+    session = source / "session.jsonl"
+    if not session.is_file():
+        return True
+    last_id = None
+    try:
+        for raw in session.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            row = json.loads(raw)
+            if row.get("kind") == "assistant" and row.get("phase") not in {
+                    None, "final", "commentary"}:
+                continue
+            if row.get("delivery") == "closing_not_forwarded_to_code":
+                continue
+            if isinstance(row.get("id"), str):
+                last_id = row["id"]
+    except (OSError, ValueError, TypeError):
+        return False
+    return last_id is None or last_id == cutoff
+
+
 def _scenario_resume_checkpoint(folder):
     """Return whether a scenario has a structurally usable prefix checkpoint.
 
@@ -660,7 +703,9 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     and previous.get("status") in {"failed", "interrupted"}
                     and not previous.get("terminal")):
                 recovered = _recover_receipt(receipt)
-                if _accepted_receipt(recovered, expected):
+                if (_accepted_receipt(recovered, expected)
+                        and (name != "dialogue"
+                             or _dialogue_package_is_current(receipt.parent, folder))):
                     previous["status"] = "completed"
                     previous["outcome"] = recovered.get(
                         "status", recovered.get("schema", "completed"))

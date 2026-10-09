@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_status,
                                             _accepted_receipt,
+                                            _dialogue_package_is_current,
                                             _authentication_failure, _completed_pair,
                                             _transient_stage_failure,
                                             _recover_receipt,
@@ -541,6 +542,44 @@ class CollectionTests(unittest.TestCase):
             ]
             self.assertEqual(dialogue_calls, [])
             self.assertEqual(resumed["status"], "completed_with_warnings")
+
+    def test_stale_dialogue_package_is_not_reused_while_source_advances(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "dialogue-package"
+            source = root / "dialogue"
+            (source / "private").mkdir(parents=True)
+            package.mkdir()
+            save(package / "manifest.json", {
+                "schema": "memory-episode-v1",
+                "status": "completed_with_warnings",
+                "dialogue": {"cutoff_event_id": "old"},
+            })
+            (source / "session.jsonl").write_text(
+                '{"id":"old","kind":"user","text":"first"}\n'
+                '{"id":"new","kind":"assistant","phase":"final","text":"later"}\n',
+                encoding="utf-8",
+            )
+            save(source / "private/checkpoint.json", {"in_flight": {"request": "pending"}})
+            self.assertFalse(_dialogue_package_is_current(package, source))
+
+    def test_stopped_dialogue_package_matches_source_cutoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "dialogue-package"
+            source = root / "dialogue"
+            (source / "private").mkdir(parents=True)
+            package.mkdir()
+            save(package / "manifest.json", {
+                "schema": "memory-episode-v1",
+                "dialogue": {"cutoff_event_id": "last"},
+            })
+            (source / "session.jsonl").write_text(
+                '{"id":"last","kind":"assistant","phase":"final","text":"done"}\n',
+                encoding="utf-8",
+            )
+            save(source / "private/checkpoint.json", {"in_flight": None})
+            self.assertTrue(_dialogue_package_is_current(package, source))
 
     def test_truncated_receipt_retries_locally_and_preserves_failed_response(self):
         with tempfile.TemporaryDirectory() as directory:
