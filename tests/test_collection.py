@@ -10,11 +10,37 @@ from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_statu
                                             _recover_receipt,
                                             _merge_dynamic_attempt_stats,
                                             episode_usage, plan_external_information,
-                                            run_collection, validate_plan)
+                                            run_collection, validate_plan,
+                                            write_collection_report)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_report_keeps_route_without_result_after_budget_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_collection_report(root, {
+                "status": "blocked",
+                "qa_only": True,
+                "projects": [{
+                    "id": "support",
+                    "scenarios": [{
+                        "id": "operations",
+                        "status": "blocked",
+                        "evaluations": {
+                            "graph": {
+                                "target": {"published_qa": 2, "paired_tasks": 0},
+                                "qa_only": True,
+                            }
+                        },
+                    }],
+                }],
+                "stages": [],
+                "usage": {"requests": 4, "total_tokens": 100, "complete": True},
+            })
+            report = (root / "collection.md").read_text()
+            self.assertIn("| support | operations | graph | not_started |", report)
+
     def test_dynamic_followup_attempt_receipts_are_folded_into_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "dialogue" / "private" / "followups" / "task-2" / "scenario"

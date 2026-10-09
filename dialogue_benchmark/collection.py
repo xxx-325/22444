@@ -1105,12 +1105,14 @@ def write_collection_report(output, state):
                 lines.append("| %s | %s | — | %s | 0 | — | — | 0 | — | — |" % (
                     project["id"], scenario["id"], scenario["status"]))
             for qa_source, evaluated in routes.items():
+                target = evaluated.get("target", {})
+                shortfall = evaluated.get("shortfall", {})
                 lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
-                    project["id"], scenario["id"], qa_source, evaluated["status"],
+                    project["id"], scenario["id"], qa_source, evaluated.get("status", "not_started"),
                     evaluated.get("published_qa", 0),
-                    evaluated["target"]["published_qa"], evaluated["shortfall"]["published_qa"],
+                    target.get("published_qa", "—"), shortfall.get("published_qa", "—"),
                     "Not scheduled" if evaluated.get("qa_only", qa_only) else evaluated.get("paired_tasks", 0),
-                    evaluated["target"]["paired_tasks"], evaluated["shortfall"]["paired_tasks"]))
+                    target.get("paired_tasks", "—"), shortfall.get("paired_tasks", "—")))
                 tasks.extend(dict(t, task=evaluated["path"] + "/tasks/" + t["task"])
                              for t in evaluated.get("tasks", []))
     lines += ["", "QA counts are reported per route. They are not added into a combined unique count."]
