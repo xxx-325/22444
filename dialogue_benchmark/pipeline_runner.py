@@ -35,6 +35,7 @@ _HARD_FAILURE = re.compile(
     r"authentication_error|credential_detected|source_closure_failed|identity_mismatch)\b|"
     r"(?:input|snapshot|identity|source closure|credential|security|authentication)"
     r"[^\n]{0,80}(?:corrupt|invalid|changed|mismatch|failed|failure|leak)|"
+    r"(?:authentication|credential|api[_ -]?key|provider)[^\n]{0,60}"
     r"\b(?:unauthorized|forbidden)\b|\bHTTP\s*(?:401|403)\b", re.I)
 
 

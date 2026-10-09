@@ -530,6 +530,22 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(stages["repo"]["status"], "failed")
             self.assertEqual(stages["qa"]["status"], "skipped")
 
+    def test_business_unauthorized_text_does_not_block_verified_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(("a",))
+            config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+
+            def run(command, cwd, env, stdout, stderr):
+                _completed_receipt(Path(env["PIPELINE_OUTPUT"]),
+                                    result="completed_with_warnings")
+                stdout.write_text("customer is unauthorized for this workflow", encoding="utf-8")
+                raise StageCommandError("command exited with status 1")
+
+            report = PipelineRunner(config, Path(directory) / "run",
+                                    command_runner=run, max_attempts=1).run()
+            self.assertEqual(report["status"], "completed_with_warnings")
+            self.assertEqual(report["cases"]["a"]["stages"]["repo"]["status"], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()
