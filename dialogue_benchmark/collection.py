@@ -465,6 +465,18 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         save(output / "collection.json", state)
 
     def stage(name, folder, command, cwd, receipt, expected, ledger, budget_key=None):
+        def next_archive(target, requested):
+            """Choose a free diagnostic directory after an interrupted retry."""
+            archive_root = output / "attempts" / target
+            archive_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            number = int(requested)
+            candidate = archive_root / ("attempt-%d" % number)
+            while candidate.exists():
+                number += 1
+                candidate = archive_root / ("attempt-%d" % number)
+            candidate.mkdir(parents=True, exist_ok=False, mode=0o700)
+            return candidate
+
         def usage():
             budget = _read_if(ledger)
             if name == "dialogue" and not budget:
@@ -555,8 +567,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         else:
             if previous:
                 if previous.get("retry", 0) >= MAX_STAGE_RETRIES:
-                    archive = output / "attempts" / target / ("attempt-%d" % (previous.get("retry", 0) + 1))
-                    archive.mkdir(parents=True, exist_ok=False, mode=0o700)
+                    archive = next_archive(target, previous.get("retry", 0) + 1)
                     for artifact in (folder, folder.with_suffix(".log"),
                                      folder.with_name("dialogue-package") if name == "dialogue" else None):
                         if artifact is not None and artifact.exists():
@@ -566,9 +577,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     previous["retry_exhausted_path"] = str(archive.relative_to(output))
                     persist()
                     return None
-                archive = output / "attempts" / target / (
-                    "attempt-%d" % (int(previous.get("retry", 0)) + 1))
-                archive.mkdir(parents=True, exist_ok=False, mode=0o700)
+                archive = next_archive(target, int(previous.get("retry", 0)) + 1)
                 for artifact in (folder, folder.with_suffix(".log"),
                                  folder.with_name("dialogue-package") if name == "dialogue" else None):
                     if artifact is not None and artifact.exists():
