@@ -729,8 +729,30 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             row["returncode"] = _command(command, cwd, folder.with_suffix(".log"))
             result = _recover_receipt(receipt)
             row["outcome"] = result.get("status", result.get("schema", "missing_receipt"))
-            row["status"] = ("completed" if row["returncode"] == 0
-                             and _accepted_receipt(result, expected) else "failed")
+            text = ""
+            if row["returncode"]:
+                log = folder.with_suffix(".log")
+                text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+                if _authentication_failure(text):
+                    raise RuntimeError("collection_authentication_failed")
+                if re.search(r"unrecognized arguments|the following arguments are required", text, re.I):
+                    raise RuntimeError("collection_input_failed")
+                hard_codes = (
+                    "source_closure_failed", "credential_detected", "private_content_leaked",
+                    "snapshot_corrupt", "identity_mismatch", "host_unavailable",
+                    "collection_budget_exhausted", "total_budget_exhausted",
+                )
+                diagnostics = "\n".join([text, *(
+                    str(result.get(key, "")) for key in ("stop_reason", "reason", "error_type"))])
+                blocker = next((code for code in hard_codes
+                                if re.search(r"\b" + code + r"\b", diagnostics)), None)
+                if blocker:
+                    raise ValueError("Collection stage hard failure: " + blocker + " (" + target + ")")
+            row["status"] = "completed" if _accepted_receipt(result, expected) else "failed"
+            if row["status"] == "completed" and row["returncode"]:
+                row["result"] = "completed_with_warnings"
+                warning("stage_nonzero_exit", stage=target, returncode=row["returncode"],
+                        outcome=row["outcome"])
             if row["status"] == "completed" and row["outcome"] == "completed_with_warnings":
                 warning("stage_output_warnings", stage=target,
                         warnings=result.get("quality", {}).get("warnings", result.get("warnings", [])))
@@ -746,13 +768,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     "--resume", "--resume-existing"
                 } else command
                 return stage(name, folder, retry_command, cwd, receipt, expected, ledger, budget_key)
-            if row["returncode"]:
-                log = folder.with_suffix(".log")
-                text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
-                if _authentication_failure(text):
-                    raise RuntimeError("collection_authentication_failed")
-                if re.search(r"unrecognized arguments|the following arguments are required", text, re.I):
-                    raise RuntimeError("collection_input_failed")
+            if row["returncode"] and row["status"] != "completed":
                 retryable = (
                     _transient_stage_failure(text)
                     or row["outcome"] in {"missing_receipt", "timeout", "connection_error",
@@ -787,7 +803,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             except (OSError, ValueError, TypeError) as error:
                 row["usage"] = dict(sum_usage([]), complete=False, error_type=type(error).__name__)
             row["receipt_sha256"] = _sha256(receipt)
-            row["output_ready"] = _accepted_receipt(_read_if(receipt), expected)
+            row["output_ready"] = (row["status"] == "completed"
+                                   and _accepted_receipt(_read_if(receipt), expected))
             row["usage_ready"] = bool(row["usage"].get("complete"))
             persist()
 

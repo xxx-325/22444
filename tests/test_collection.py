@@ -50,6 +50,55 @@ class CollectionTests(unittest.TestCase):
             dialogue = [row for row in result["stages"] if row["name"] == "dialogue"]
             self.assertTrue(all(row["status"] == "failed" and not row["output_ready"] for row in dialogue))
 
+    def test_nonzero_exit_with_valid_dialogue_continues_and_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.dialogue_returncode = 1
+            result = self.invoke(root)
+            self.assertEqual(len([c for c in self.commands if "--episode-manifest" in c]), 2)
+            dialogue = [row for row in result["stages"] if row["name"] == "dialogue"]
+            self.assertTrue(all(row["status"] == "completed" and row["output_ready"] for row in dialogue))
+            self.assertTrue(all(row["result"] == "completed_with_warnings" for row in dialogue))
+            self.assertEqual(result["status"], "completed_with_warnings")
+            self.assertEqual(len([w for w in result["warnings"] if w["code"] == "stage_nonzero_exit"]), 2)
+            self.invoke(root, resume=True)
+            self.assertEqual(self.commands, [])
+
+    def test_nonzero_exit_never_promotes_failed_or_blocked_receipt(self):
+        for status in ("failed", "blocked"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.plan(root)
+                self.reject_first = False
+                self.dialogue_status = status
+                self.dialogue_returncode = 1
+                result = self.invoke(root)
+                self.assertFalse(any("--episode-manifest" in c for c in self.commands))
+                self.assertTrue(all(not row["output_ready"] for row in result["stages"]
+                                    if row["name"] == "dialogue"))
+
+    def test_nonzero_exit_hard_failure_cannot_be_hidden_by_valid_receipt(self):
+        errors = ("HTTPError: 401 Client Error: Unauthorized", "source_closure_failed",
+                  "snapshot_corrupt", "credential_detected", "private_content_leaked",
+                  "identity_mismatch", "host_unavailable", "total_budget_exhausted")
+        for error in errors:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.plan(root)
+                self.reject_first = False
+                self.dialogue_returncode = 1
+                self.dialogue_error = error
+                with self.assertRaises((RuntimeError, ValueError)):
+                    self.invoke(root)
+                result = read(root / "run/collection.json")
+                self.assertEqual(result["status"], "blocked")
+                self.assertFalse(any("--episode-manifest" in c for c in self.commands))
+                dialogue = next(row for row in result["stages"] if row["name"] == "dialogue")
+                self.assertFalse(dialogue["output_ready"])
+
     def test_external_information_plan_is_created_before_repository_work(self):
         plan = plan_external_information([{
             "id": "support",
@@ -409,6 +458,9 @@ class CollectionTests(unittest.TestCase):
                 review_budget["usage_missing"] = True
                 review_budget["pending"] = {"request-1": 0}
             save(package / "private/review.json", dict(budget=review_budget))
+            if getattr(self, "dialogue_returncode", 0):
+                log.write_text(getattr(self, "dialogue_error", "Cleanup worker failed"))
+                return self.dialogue_returncode
         elif name in ("external", "graph"):
             self.assertIn("--episode-manifest", command)
             source = command[command.index("--qa-source") + 1]
