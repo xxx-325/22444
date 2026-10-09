@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_status,
+                                            _accepted_receipt,
                                             _authentication_failure, _completed_pair,
                                             _transient_stage_failure,
                                             _recover_receipt,
@@ -13,6 +14,42 @@ from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_warning_receipt_needs_expected_status_or_schema(self):
+        self.assertTrue(_accepted_receipt({"status": "completed_with_warnings"}, {"completed"}))
+        self.assertTrue(_accepted_receipt({"status": "completed_with_warnings",
+                                          "schema": "memory-episode-v1"}, {"memory-episode-v1"}))
+        self.assertFalse(_accepted_receipt({"status": "completed_with_warnings"}, {"candidate_pass"}))
+        for status in ("blocked", "failed", "rejected"):
+            self.assertFalse(_accepted_receipt({"status": status, "schema": "memory-episode-v1"},
+                                               {"memory-episode-v1"}))
+
+    def test_warning_dialogue_manifest_reaches_qa_and_resumes_without_requests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.dialogue_status = "completed_with_warnings"
+            result = self.invoke(root)
+            self.assertEqual(len([c for c in self.commands if "--episode-manifest" in c]), 2)
+            dialogue = [row for row in result["stages"] if row["name"] == "dialogue"]
+            self.assertTrue(all(row["status"] == "completed" and row["output_ready"] for row in dialogue))
+            self.assertEqual(result["status"], "completed_with_warnings")
+            result = self.invoke(root, resume=True)
+            self.assertEqual(self.commands, [])
+            self.assertEqual(result["status"], "completed_with_warnings")
+
+    def test_blocked_dialogue_manifest_does_not_reach_qa(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.dialogue_status = "blocked"
+            result = self.invoke(root)
+            self.assertFalse(any("--episode-manifest" in c for c in self.commands))
+            dialogue = [row for row in result["stages"] if row["name"] == "dialogue"]
+            self.assertTrue(all(row["status"] == "failed" and not row["output_ready"] for row in dialogue))
+
     def test_external_information_plan_is_created_before_repository_work(self):
         plan = plan_external_information([{
             "id": "support",
@@ -362,7 +399,10 @@ class CollectionTests(unittest.TestCase):
                 self.missing_receipt_attempts += 1
                 save(package / "private/review.json", dict(budget=budget))
                 return 2
-            save(package / "manifest.json", dict(schema="memory-episode-v1"))
+            manifest = dict(schema="memory-episode-v1")
+            if hasattr(self, "dialogue_status"):
+                manifest.update(status=self.dialogue_status, quality={"warnings": ["short_dialogue"]})
+            save(package / "manifest.json", manifest)
             save(package / "external-events.json", dict(events=[{"memory_kind": "M1"}]))
             review_budget = dict(budget)
             if getattr(self, "incomplete_usage", False):
@@ -410,13 +450,13 @@ class CollectionTests(unittest.TestCase):
             self.fail("Unexpected stage")
         return 0
 
-    def invoke(self, root):
+    def invoke(self, root, resume=False):
         self.commands = []
         with patch("dialogue_benchmark.collection._command", side_effect=self.command), \
              patch("dialogue_benchmark.collection.subprocess.check_output", return_value="root-sha\n"), \
              patch("dialogue_benchmark.episode_input.load_episode_manifest", side_effect=lambda p: {
                  "external_events": p.parent / "external-events.json"} if not getattr(self, "empty", False) else {}):
-            return run_collection(root / "input.json", root / "run", root, root / ".env")
+            return run_collection(root / "input.json", root / "run", root, root / ".env", resume=resume)
 
     def test_relative_python_is_resolved_before_stage_changes_working_directory(self):
         with tempfile.TemporaryDirectory() as directory:

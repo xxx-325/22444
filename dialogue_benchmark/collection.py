@@ -273,6 +273,17 @@ def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
+def _accepted_receipt(result, expected):
+    status = result.get("status")
+    if status in {"blocked", "failed", "rejected"}:
+        return False
+    if status in expected:
+        return True
+    if status == "completed_with_warnings":
+        return "completed" in expected or result.get("schema") in expected
+    return status in {None, "completed"} and result.get("schema") in expected
+
+
 def _command(command, cwd, log):
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("w", encoding="utf-8") as stream:
@@ -620,7 +631,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     raise ValueError("Collection stage receipt changed: " + target)
                 if previous["status"] == "completed":
                     result = read(receipt)
-                    if result.get("status", result.get("schema")) not in expected:
+                    if not _accepted_receipt(result, expected):
                         raise ValueError("Collection stage receipt is no longer accepted: " + target)
                     return result
                 return None
@@ -719,7 +730,10 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             result = _recover_receipt(receipt)
             row["outcome"] = result.get("status", result.get("schema", "missing_receipt"))
             row["status"] = ("completed" if row["returncode"] == 0
-                             and row["outcome"] in expected else "failed")
+                             and _accepted_receipt(result, expected) else "failed")
+            if row["status"] == "completed" and row["outcome"] == "completed_with_warnings":
+                warning("stage_output_warnings", stage=target,
+                        warnings=result.get("quality", {}).get("warnings", result.get("warnings", [])))
             row["terminal"] = row["returncode"] == 0 and row["status"] == "failed"
             if (row["status"] == "failed"
                     and row["outcome"] in {"missing_receipt", "timeout",
@@ -773,7 +787,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             except (OSError, ValueError, TypeError) as error:
                 row["usage"] = dict(sum_usage([]), complete=False, error_type=type(error).__name__)
             row["receipt_sha256"] = _sha256(receipt)
-            row["output_ready"] = receipt.is_file()
+            row["output_ready"] = _accepted_receipt(_read_if(receipt), expected)
             row["usage_ready"] = bool(row["usage"].get("complete"))
             persist()
 
