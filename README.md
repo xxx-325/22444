@@ -12,9 +12,10 @@ Project goals and acceptance requirements are maintained in
 
 ## What it does
 
-The external-information workflow is: public historical events → QA → one related
-development requirement per qualifying QA → frozen acceptance → paired execution
-with and without the historical answer. It uses one QA pool and M1–M6 memory types.
+The external-information workflow is: public historical events → QA → a natural
+business requirement combining at least two related external QA → frozen acceptance
+→ paired execution with and without the historical answer. It uses one QA pool and
+M1–M6 memory types.
 External QA workflow selection, focus, generation, repair, and evidence review share
 later public User/Code messages up to the cutoff for scoped corrections, even across
 tasks without a declared revision link. Fact extraction uses only the event's
@@ -148,7 +149,9 @@ search. Citing only empty results or filename-only matches leaves the result
 External QA uses one target, `--qa-count`, and one exploration limit,
 `--group-budget` (default: four times the target, at least ten). The target counts
 only approved, safe, unique published questions. Each event group generates at
-most one QA; a qualifying QA supplies one candidate development requirement.
+most one QA. Related external QA are combined into a candidate business requirement;
+each requirement needs at least two questions linked by evidence lineage or shared
+business behavior. Unrelated questions are not combined just to meet a count.
 The existing one-repair limit, review, deduplication, and repository probe remain.
 
 | Memory type | What the answer preserves | Derived requirement |
@@ -246,7 +249,7 @@ python run_episode.py --episode-manifest /path/to/episode/manifest.json \
 
 `qa-public.json` contains the unified final set. The local viewer filters final
 questions and all candidates by memory type and links their historical evidence;
-the task report retains each requirement's source QA and type.
+the task report retains each requirement's source QA, types, and grouping evidence.
 
 ### Generated project collections
 
@@ -266,10 +269,25 @@ python run_collection.py --config /path/to/collection.json \
 Run with the simulator's virtualenv Python environment, or supply that
 interpreter through `--python`; the system Python is not expected to have the
 simulator dependencies.
-New projects have a tested baseline and two or three consecutive feature commits.
-A private development plan connects each increment to related outside information,
-affected decisions and disclosure triggers. Scenario preparation reads this same plan;
-the dialogue starts at the baseline and implements the increments itself.
+Before repository generation, `external-information-plan.json` records each
+scenario's `external_attempt_budget` and opportunities by development stage,
+business behavior, and allowed memory types. Optional
+`external_attempt_distribution` rows supply `stage`, `behavior`, `memory_kinds`,
+and `attempts`; their attempts sum to the budget. This limits opportunities to
+explore, not accepted fact counts. Concrete facts are proposed against the actual
+repository and retained as QA evidence only when disclosed in public dialogue or
+tool results. Private plans never supply answers.
+`collection.md` reports planned and started attempts, candidate groups and facts,
+accepted and rejected facts, public facts, external QA, requirement candidates,
+and unused attempts separately.
+Coverage shortfalls remain visible without blocking independent work.
+
+New projects have a tested baseline and connected feature commits. The private
+development plan describes software capabilities, not concrete customer history.
+After repository generation, `implementation-observations.json` records real source
+evidence and current business opportunities. Scenario preparation uses only the
+current business context; the dialogue starts from the baseline and develops
+those capabilities through user requests.
 The host checks frozen feature tests on the prior and new versions and preserves
 previous regressions. An existing project can use `prepared_config` instead of a
 business `brief`. Scenarios start independently from that project's base; each
@@ -279,8 +297,12 @@ the repository lineage and frozen development plan remain unchanged.
 
 The collection checks cumulative request/token usage between stages; a started
 stage finishes under its own existing budgets. No per-response output cap is
-introduced. Rejected stages remain recorded, and the runner does not add attempts
-to replace failures. Use a new output directory for another fixed plan.
+introduced. Local failures, incomplete usage and quality shortfalls retain their
+artifacts and warnings while independent stages, QA groups and requirements continue.
+Transient failures have bounded retries; resume uses the latest valid checkpoint.
+Authentication failure, corrupted inputs, an unavailable host or exhausted total
+budget stops the collection. The runner does not add attempts to replace failures.
+Use a new output directory for another fixed plan.
 An episode with no exported external history is recorded as `no_external_history`
 and skips the external route; the graph route can still run. M4/M5 scenarios require prepared runtime conditions; design counts and public event
 counts are reported separately. Root Git lineage groups project families.
@@ -345,6 +367,11 @@ This separate command reuses the agent-session simulator's OpenHands SDK runtime
 and offline Docker environments. Run it with that simulator's Python environment,
 configured images, and provider credentials. The selected QA run must include
 approved questions and their saved generation requests.
+External requirements combine at least two related QA. `--qa-group-size` defaults
+to two for external QA and one for graph QA. `qa-grouping.json` records accepted
+groups and ungrouped questions; grouping uses public event or evidence lineage,
+or shared business behavior rather than question order. Provisional inputs remain marked
+in task artifacts and do not count as completed dataset evidence.
 Task agents do not inherit a per-response output token cap from the simulator
 checkpoint. Provider limits and the task's total token and request budgets apply.
 
@@ -477,8 +504,8 @@ This feedback should describe test defects, without solver comparison outcomes.
 Collection and execution errors return to the test author before starting a
 reference solver. Tests separate public functionality from historical rules;
 compatibility assertions compare only the behavior required by the task.
-`count` targets completed task pairs. Distinct QA-derived requirements are tried
-in bounded batches until the target, QA pool, or `task-budget` is exhausted.
+`count` targets completed task pairs. Distinct requirements derived from QA groups
+are tried in bounded batches until the target, QA pool, or `task-budget` is exhausted.
 The default task budget is twice the target; failure records are retained.
 
 `examples/controlled_report_fixture.py` creates a small report repository and a
@@ -496,6 +523,8 @@ to `run_episode.py`. This also probes the pinned final repository for answer
 recoverability before deriving tasks.
 If no QA remains eligible, the pipeline saves an empty task report with
 `no_eligible_qa` and finishes without starting development agents.
+If external QA cannot form a related group, it retains the ungrouped questions
+and saves an empty task report with `no_related_external_qa`.
 
 The dialogue-end code is pinned as an independent local Git baseline, with no
 upstream remote. `--baseline` can reuse an already pinned clean repository.
@@ -580,9 +609,10 @@ control configuration or simulator checkpoint. Standalone QA accepts
 An omitted host-call timeout retains the 90-second default.
 `--model-request-chars` sets the serialized QA and task-construction input limit (default: 32,000
 characters). Increase it when a complete external event bundle needs more room
-within the model's context window. Failed QA stages retain their evidence and
-stop the episode as `qa_generation_failed`, separately from a completed run
-with no eligible questions.
+within the model's context window. QA failures retain evidence and warnings;
+individually usable candidates can continue despite an aggregate warning or failure.
+Provisional candidates retain their status. Empty QA or task groups remain reported
+as shortfalls rather than complete dataset results.
 Collections default this limit to 96,000 characters and accept
 `evaluation.model_request_chars` to configure it.
 Inputs are extracted once per unique source across overlapping subgraphs;
