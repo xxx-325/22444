@@ -259,6 +259,17 @@ def group_qa_inputs(items, group_size=2, *, diagnostics=None):
     result = [item for item in items if item.get("qa_source") != "external"]
     pending = [item for item in items if item.get("qa_source") == "external"]
     if group_size == 1:
+        # A single graph question may stand on its own, but an external
+        # memory question must be combined with a related question before it
+        # can become a business requirement.  Keep the question in the QA
+        # outputs; only omit it from task construction.
+        if pending:
+            diagnostics.extend({
+                "qa_ids": [item["qa"]["id"]],
+                "reason": "external_requirement_requires_related_qa",
+                "required": 2,
+            } for item in pending)
+            return result
         return list(items)
     while pending:
         members = [pending.pop(0)]

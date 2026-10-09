@@ -95,6 +95,15 @@ class TaskEvaluationTests(unittest.TestCase):
         self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), [])
         self.assertEqual(diagnostics[0]["reason"], "insufficient_related_qa")
 
+    def test_single_external_question_stays_qa_only(self):
+        member = {"qa": {"id": "q1", "question": "Question 1"},
+                  "qa_source": "external", "generation_input": "/tmp/input-1",
+                  "source_ids": ["m1"], "associations": ["task:checkout"]}
+        diagnostics = []
+        self.assertEqual(group_qa_inputs([member], 1, diagnostics=diagnostics), [])
+        self.assertEqual(diagnostics[0]["reason"],
+                         "external_requirement_requires_related_qa")
+
     def test_openhands_preflight_uses_current_interpreter_without_starting_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             simulator = Path(directory)
