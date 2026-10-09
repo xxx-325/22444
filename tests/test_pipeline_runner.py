@@ -12,7 +12,7 @@ def _config(case_ids):
     command = ["stage-worker", "{stage}", "{case_id}", "{input}", "{output}"]
     return {
         "stages": {stage: {"command": command} for stage in ("repo", "qa", "task")},
-        "cases": [{"id": case_id, "source": "source/%s" % case_id}
+        "cases": [{"id": case_id, "source": str(Path(__file__).resolve())}
                   for case_id in case_ids],
     }
 
@@ -208,8 +208,8 @@ class PipelineRunnerTests(unittest.TestCase):
         def run(command, cwd, env, stdout, stderr):
             output = Path(env["PIPELINE_OUTPUT"])
             output.mkdir(parents=True, exist_ok=True)
-            Path(env["PIPELINE_HANDOFF"]).parent.joinpath("artifact.txt").write_text(
-                env["PIPELINE_STAGE"], encoding="utf-8")
+            output = Path(env["PIPELINE_OUTPUT"])
+            output.joinpath("artifact.txt").write_text(env["PIPELINE_STAGE"], encoding="utf-8")
             (output / "receipt.json").write_text(
                 json.dumps({"status": "completed", "sha256": "worker"}),
                 encoding="utf-8")
@@ -260,7 +260,7 @@ class PipelineRunnerTests(unittest.TestCase):
             "completed_with_warnings",
         )
 
-    def test_resume_tampered_handoff_rebuilds_downstream_chain(self):
+    def test_resume_tampered_handoff_rejects_without_repeating_work(self):
         calls = []
 
         def run(command, cwd, env, stdout, stderr):
@@ -272,13 +272,115 @@ class PipelineRunnerTests(unittest.TestCase):
             PipelineRunner(_config(("a",)), output, command_runner=run).run()
             handoff = output / "cases" / "a" / "repo" / ".pipeline-handoff.json"
             handoff.write_text(handoff.read_text(encoding="utf-8") + "tampered", encoding="utf-8")
-            report = PipelineRunner(_config(("a",)), output, resume=True,
-                                    command_runner=run).run()
-        stages = report["cases"]["a"]["stages"]
-        self.assertEqual(stages["repo"]["status"], "completed")
-        self.assertEqual(stages["qa"]["status"], "completed")
-        self.assertEqual(stages["task"]["status"], "completed")
-        self.assertEqual(len(calls), 6)
+            with self.assertRaisesRegex(ValueError, "pipeline handoff is invalid: a/repo"):
+                PipelineRunner(_config(("a",)), output, resume=True,
+                               command_runner=run).run()
+        self.assertEqual(len(calls), 3)
+
+    def test_resume_changed_source_at_same_path_rejects_without_calls_or_state_write(self):
+        calls = []
+
+        def run(command, cwd, env, stdout, stderr):
+            calls.append(command[1])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            source.write_text('{"brief": "first"}', encoding="utf-8")
+            config = _config(("a",))
+            config["cases"][0]["source"] = str(source)
+            output = root / "run"
+            PipelineRunner(config, output, command_runner=run).run()
+            original_state = (output / "pipeline-state.json").read_bytes()
+            handoff = json.loads((output / "cases/a/repo/.pipeline-handoff.json").read_text())
+            self.assertTrue(handoff["input_sha256"])
+            source.write_text('{"brief": "second"}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "pipeline input changed: a/repo"):
+                PipelineRunner(config, output, resume=True, command_runner=run).run()
+            self.assertEqual((output / "pipeline-state.json").read_bytes(), original_state)
+        self.assertEqual(calls, ["repo", "qa", "task"])
+
+    def test_resume_missing_source_rejects_without_repeating_work(self):
+        calls = []
+
+        def run(command, cwd, env, stdout, stderr):
+            calls.append(command[1])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            source.write_text("{}", encoding="utf-8")
+            config = _config(("a",))
+            config["cases"][0]["source"] = str(source)
+            output = root / "run"
+            PipelineRunner(config, output, command_runner=run).run()
+            source.unlink()
+            with self.assertRaisesRegex(ValueError, "pipeline input is missing or unreadable"):
+                PipelineRunner(config, output, resume=True, command_runner=run).run()
+        self.assertEqual(calls, ["repo", "qa", "task"])
+
+    def test_resume_changed_upstream_content_rejects_before_downstream_reuse(self):
+        calls = []
+
+        def run(command, cwd, env, stdout, stderr):
+            calls.append(command[1])
+            Path(env["PIPELINE_OUTPUT"], "artifact.txt").write_text(command[1], encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            config = _config(("a",))
+            PipelineRunner(config, output, command_runner=run).run()
+            (output / "cases/a/repo/artifact.txt").write_text("changed", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "pipeline input changed: a/qa"):
+                PipelineRunner(config, output, resume=True, command_runner=run).run()
+        self.assertEqual(calls, ["repo", "qa", "task"])
+
+    def test_resume_validates_receipt_artifact_contents(self):
+        import hashlib
+        calls = []
+        config = _config(("a",))
+        for spec in config["stages"].values():
+            spec["receipt"] = "{output}/receipt.json"
+
+        def run(command, cwd, env, stdout, stderr):
+            calls.append(command[1])
+            output = Path(env["PIPELINE_OUTPUT"])
+            artifact = output / "artifact.txt"
+            artifact.write_text(command[1], encoding="utf-8")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            (output / "receipt.json").write_text(json.dumps({
+                "status": "completed", "sha256": digest,
+                "artifacts": [{"path": "artifact.txt", "sha256": digest}],
+            }), encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            PipelineRunner(config, output, command_runner=run).run()
+            (output / "cases/a/task/artifact.txt").write_text("changed", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "pipeline cached artifact is invalid: a/task"):
+                PipelineRunner(config, output, resume=True, command_runner=run).run()
+        self.assertEqual(calls, ["repo", "qa", "task"])
+
+    def test_resume_recovers_handoff_written_before_running_state_was_saved(self):
+        calls = []
+
+        def run(command, cwd, env, stdout, stderr):
+            calls.append(command[1])
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            config = _config(("a",))
+            PipelineRunner(config, output, command_runner=run).run()
+            state_path = output / "pipeline-state.json"
+            state = json.loads(state_path.read_text())
+            record = state["cases"]["a"]["stages"]["repo"]
+            record["status"] = "running"
+            record.pop("handoff")
+            record.pop("handoff_sha256")
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            resumed = PipelineRunner(config, output, resume=True, command_runner=run).run()
+            self.assertEqual(resumed["cases"]["a"]["stages"]["repo"]["status"], "completed")
+        self.assertEqual(calls, ["repo", "qa", "task"])
 
 
 if __name__ == "__main__":

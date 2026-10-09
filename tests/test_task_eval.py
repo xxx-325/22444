@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import time
@@ -13,13 +15,59 @@ from dialogue_benchmark.task_eval.checks import pytest_result, _test_write_viola
 from dialogue_benchmark.task_eval.metrics import compare_trials, measure
 from dialogue_benchmark.task_eval.runtime import (configure, preflight_openhands_runtime,
                                                    readable_reference, release_completed_execution,
-                                                   run_agent)
+                                                   run_agent, shared_task_slot)
 from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_pollution,
                                                reference_solver_answer,
                                                solver_input, unchanged, validated_spec)
 
 
 class TaskEvaluationTests(unittest.TestCase):
+    def test_task_slots_are_shared_between_processes_and_released_after_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = {
+                "DIALOGUE_TASK_SLOT_DIR": str(root / "slots"),
+                "DIALOGUE_TASK_SLOT_LIMIT": "1",
+            }
+            code = (
+                "import sys\n"
+                "from dialogue_benchmark.task_eval.runtime import shared_task_slot\n"
+                "with shared_task_slot():\n"
+                "    print('acquired', flush=True)\n"
+                "    sys.stdin.readline()\n"
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-c", code], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env={**os.environ, **environment},
+            )
+            try:
+                self.assertEqual(process.stdout.readline().strip(), "acquired")
+                import fcntl
+                with (root / "slots/0.lock").open("a") as lock:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                process.terminate()
+                process.wait(timeout=10)
+                with patch.dict(os.environ, environment), shared_task_slot():
+                    with (root / "slots/0.lock").open("a") as lock:
+                        with self.assertRaises(BlockingIOError):
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=10)
+
+    def test_task_slot_is_released_on_local_failure(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "DIALOGUE_TASK_SLOT_DIR": directory, "DIALOGUE_TASK_SLOT_LIMIT": "1",
+        }):
+            with self.assertRaisesRegex(RuntimeError, "local"):
+                with shared_task_slot():
+                    raise RuntimeError("local")
+            with shared_task_slot():
+                pass
+
     def test_external_related_questions_group_with_all_answers_and_private_requests(self):
         members = []
         for index, source in enumerate(("m1", "m2"), 1):

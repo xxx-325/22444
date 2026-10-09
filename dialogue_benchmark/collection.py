@@ -17,6 +17,7 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=6, task_workers=2, revisions=3,
                            model_request_chars=96000, qa_only=False,
                            general_count=50, code_count=50)
+EXTERNAL_MEMORY_KINDS = ("M1", "M2", "M3", "M4", "M5", "M6")
 # Keep a small bounded retry allowance for a model-authored stage.  The
 # checkpoint-aware path below never discards an accepted prefix, and the extra
 # slot also lets a repaired parser recover a valid saved response.
@@ -314,6 +315,42 @@ def _terminal_collection_status(state):
     return "blocked"
 
 
+def plan_external_information(projects):
+    """Create the control-side information budget before repository work.
+
+    This is deliberately deterministic.  It plans only the requested volume
+    and its distribution across the selected memory kinds; the concrete facts
+    still have to be proposed from the generated repository and reviewed by
+    the scenario stage.  The plan is therefore safe to create before the
+    project exists and cannot leak private facts into model-facing prompts.
+    """
+    rows = []
+    for project in projects:
+        for scenario in project.get("scenarios", []):
+            kinds = tuple(scenario.get("memory_kinds", EXTERNAL_MEMORY_KINDS))
+            target = scenario.get("external_fact_target", 0)
+            if target is None:
+                target = 0
+            if type(target) is not int or target < 0:
+                raise ValueError("external_fact_target must be a nonnegative integer")
+            if not kinds or any(kind not in EXTERNAL_MEMORY_KINDS for kind in kinds):
+                raise ValueError("memory_kinds must select M1..M6")
+            base, remainder = divmod(target, len(kinds))
+            distribution = {
+                kind: base + (index < remainder)
+                for index, kind in enumerate(kinds)
+            }
+            rows.append({
+                "project": project["id"],
+                "scenario": scenario["id"],
+                "target": target,
+                "memory_kinds": list(kinds),
+                "distribution": distribution,
+                "status": "planned",
+            })
+    return {"schema": "external-information-plan-v1", "scenarios": rows}
+
+
 def _completed_pair(task):
     """Count only a fully evaluated pair with terminal arm results."""
     if task.get("status") != "evaluated":
@@ -441,12 +478,21 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                  limits={k: plan[k] for k in ("max_total_requests", "max_total_tokens")},
                  budget_boundary="Finish each started stage, then check cumulative usage before the next stage")
         save(output / "plan.json", plan)
+        information_plan = plan_external_information(plan["projects"])
+        save(output / "external-information-plan.json", information_plan)
+        state["external_information_plan"] = "external-information-plan.json"
         for label, repo in (("qa", Path(__file__).resolve().parents[1]), ("simulator", simulator)):
             result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True)
             state[label + "_revision"] = result.stdout.strip() if result.returncode == 0 else None
     state["status"] = "running"
     dialogue_only = bool(dialogue_only or state.get("dialogue_only", False))
     state["dialogue_only"] = dialogue_only
+    information_plan_path = output / state.get(
+        "external_information_plan", "external-information-plan.json")
+    if "external_information_plan" not in state or not information_plan_path.is_file():
+        information_plan = plan_external_information(plan["projects"])
+        save(output / "external-information-plan.json", information_plan)
+        state["external_information_plan"] = "external-information-plan.json"
     state.pop("stop_reason", None)
     state.pop("error_type", None)
     state.setdefault("warnings", [])
@@ -665,6 +711,12 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         for project in plan["projects"]:
             root = output / project["id"]
             root.mkdir(exist_ok=resume)
+            project_information_plan = {
+                "schema": "external-information-plan-v1",
+                "project": project["id"],
+                "scenarios": [row for row in plan_external_information([project])["scenarios"]],
+            }
+            save(root / "external-information-plan.json", project_information_plan)
             entry = next((p for p in state["projects"] if p["id"] == project["id"]), None)
             if entry is None:
                 entry = dict(id=project["id"], status="running", scenarios=[])
@@ -700,10 +752,18 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             for scenario in project["scenarios"]:
                 scenario_root = root / scenario["id"]
                 scenario_root.mkdir(exist_ok=resume)
+                scenario_plan = next(
+                    row for row in project_information_plan["scenarios"]
+                    if row["scenario"] == scenario["id"]
+                )
                 current = copy.deepcopy(config)
                 current.pop("scenario_file", None)
                 current.pop("prepared_issues", None)
                 current["scenario_design"] = {k: v for k, v in scenario.items() if k != "id"}
+                # This is control-side planning data.  The scenario module
+                # reads only scenario_design for model prompts, so the
+                # internal budget never becomes dialogue content.
+                current["external_information_plan"] = scenario_plan
                 cfg = scenario_root / "config.json"
                 if not (resume and cfg.is_file()):
                     save(cfg, current)
@@ -712,6 +772,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     record = dict(id=scenario["id"], status="running")
                     entry["scenarios"].append(record)
                 record["status"] = "running"
+                record["external_information_plan"] = scenario_plan
                 target = scenario_root / "scenario"
                 designed = stage("scenario", target, upstream("simulator.openhands.prepare_scenario", cfg, target),
                     simulator, target / "frozen/report.json", {"completed", "candidate_pass"}, target / "budget.json")
@@ -744,6 +805,13 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 events = read(exported["external_events"])["events"] if exported.get("external_events") else []
                 record["public_memory_counts"] = {kind: sum(e.get("memory_kind") == kind for e in events)
                                                    for kind in ("M1", "M2", "M3", "M4", "M5", "M6")}
+                actual = sum(record["public_memory_counts"].values())
+                record["external_information_coverage"] = {
+                    "target": scenario_plan["target"],
+                    "actual": actual,
+                    "shortfall": max(0, scenario_plan["target"] - actual),
+                    "distribution": record["public_memory_counts"],
+                }
                 if dialogue_only:
                     record["status"] = "dialogue_only"
                     record["dialogue_manifest"] = str((package / "manifest.json").relative_to(output))
@@ -860,6 +928,17 @@ def write_collection_report(output, state):
                              for t in evaluated.get("tasks", []))
     lines += ["", "QA counts are reported per route. They are not added into a combined unique count."]
     lines += ["Targets and shortfalls describe output volume, not admission. A completed route has nonempty published QA and, unless QA-only, at least one complete terminal pair. These are run-completeness checks, not manual quality acceptance."]
+    lines += ["", "## Planned external information coverage", "",
+              "The plan is created before repository generation. Actual public facts are counted after dialogue export; a shortfall is retained as coverage data.",
+              "", "| Project | Scenario | Planned | Actual | Shortfall |", "|---|---|---:|---:|---:|"]
+    for project in state["projects"]:
+        for scenario in project["scenarios"]:
+            coverage = scenario.get("external_information_coverage", {})
+            plan_row = scenario.get("external_information_plan", {})
+            lines.append("| %s | %s | %s | %s | %s |" % (
+                project["id"], scenario["id"],
+                coverage.get("target", plan_row.get("target", "—")),
+                coverage.get("actual", "—"), coverage.get("shortfall", "—")))
     totals = {}
     for project in state["projects"]:
         for scenario in project["scenarios"]:

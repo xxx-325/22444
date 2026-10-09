@@ -17,7 +17,7 @@ from .checks import (run_checks, acceptance_items, acceptance_has_inspect,
 from .metrics import compare_trials
 from .runtime import (bounded_model_config, configure, preflight_openhands_runtime,
                       review_task, review_checks, repair_tests, write_tests,
-                      write_history_mutation, run_agent)
+                      write_history_mutation, run_agent, shared_task_slot)
 from .report import write_report
 from .versions import baseline_version, export_change, pin_baseline, source_version
 from .history import (prepare_history, freeze_contract, historical_context, read_history_review,
@@ -1343,7 +1343,8 @@ def main(argv=None):
         root = output / root_by_index[index]
         row = {"status": "interrupted"}
         try:
-            row = run_task(index, item)
+            with shared_task_slot():
+                row = run_task(index, item)
             row.update(qa_ids=item.get("qa_ids", [item["qa"]["id"]]),
                        qa_statuses={member["qa"]["id"]: member["qa"].get("status")
                                     for member in item.get("qa_members", [item])},

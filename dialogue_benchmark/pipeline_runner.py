@@ -49,6 +49,18 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _input_sha256(path: Path) -> str:
+    """Fingerprint the file or directory a stage actually reads."""
+    if path.is_file():
+        return _digest(["file", _file_sha256(path)])
+    if path.is_dir():
+        return _digest([
+            (str(item.relative_to(path)), _file_sha256(item))
+            for item in sorted(path.rglob("*")) if item.is_file()
+        ])
+    raise ValueError("pipeline input is missing or unreadable: %s" % path)
+
+
 def _atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
@@ -226,14 +238,17 @@ class PipelineRunner:
             if state.get("config_digest") != self._config_identity():
                 raise ValueError("pipeline config differs from saved state")
             for case in state.get("cases", {}).values():
-                invalidate_after = None
-                for index, stage in enumerate(STAGES):
+                for stage in STAGES:
                     record = case["stages"][stage]
                     status = record.get("status")
-                    handoff = record.get("handoff")
-                    handoff_path = Path(handoff) if handoff else None
+                    paths = self._paths(case, stage)
+                    input_sha = record.get("input_sha256")
+                    if input_sha and input_sha != self._stage_input_sha256(case, stage):
+                        raise ValueError("pipeline input changed: %s/%s" % (case["id"], stage))
+                    handoff_path = Path(record.get("handoff") or
+                                        (Path(paths["output"]) / ".pipeline-handoff.json"))
                     saved_handoff = None
-                    if handoff_path and handoff_path.is_file():
+                    if handoff_path.is_file():
                         try:
                             saved_handoff = json.loads(
                                 handoff_path.read_text(encoding="utf-8"))
@@ -248,6 +263,24 @@ class PipelineRunner:
                         and (not record.get("handoff_sha256")
                              or record["handoff_sha256"] == _file_sha256(handoff_path))
                     )
+                    if status == "completed" or (status == "running" and handoff_path.exists()):
+                        if not valid_handoff:
+                            raise ValueError("pipeline handoff is invalid: %s/%s" % (case["id"], stage))
+                        saved_input_sha = saved_handoff.get("input_sha256")
+                        if not saved_input_sha:
+                            raise ValueError("pipeline handoff has no input fingerprint: %s/%s" %
+                                             (case["id"], stage))
+                        if saved_input_sha != self._stage_input_sha256(case, stage):
+                            raise ValueError("pipeline input changed: %s/%s" % (case["id"], stage))
+                        receipt_path = saved_handoff.get("receipt")
+                        if receipt_path and (not Path(receipt_path).is_file() or
+                                saved_handoff.get("receipt_sha256") != _file_sha256(Path(receipt_path))):
+                            raise ValueError("pipeline receipt changed: %s/%s" % (case["id"], stage))
+                        try:
+                            self._validate_receipt(self._stage_config(case, stage), paths)
+                        except StageReceiptError as error:
+                            raise ValueError("pipeline cached artifact is invalid: %s/%s: %s" %
+                                             (case["id"], stage, error)) from error
                     if status == "running":
                         if valid_handoff:
                             # The process may have written its handoff just
@@ -256,6 +289,8 @@ class PipelineRunner:
                             record.update({
                                 "status": "completed",
                                 "recovered": True,
+                                "handoff": str(handoff_path),
+                                "input_sha256": saved_handoff["input_sha256"],
                                 "finished_at": saved_handoff.get("completed_at", _now()),
                                 "handoff_sha256": _file_sha256(handoff_path),
                                 "result": saved_handoff.get("result", "completed"),
@@ -263,29 +298,6 @@ class PipelineRunner:
                             status = "completed"
                         else:
                             record.update({"status": "pending", "recovered": True})
-                            status = "pending"
-                    if status == "completed":
-                        invalid_reason = None
-                        if not valid_handoff:
-                            invalid_reason = "invalid_handoff"
-                        else:
-                            receipt = record.get("receipt")
-                            receipt_sha = record.get("receipt_sha256")
-                            if receipt and (
-                                    not Path(receipt).is_file()
-                                    or (receipt_sha and
-                                        receipt_sha != _file_sha256(Path(receipt)))):
-                                invalid_reason = "receipt_changed"
-                        if invalid_reason:
-                            # Rebuild this stage and all transitive dependents
-                            # from the same input snapshot. Never mix a fresh
-                            # upstream artifact with stale downstream output.
-                            record.update({
-                                "status": "pending",
-                                "reason": invalid_reason,
-                                "recovered": True,
-                            })
-                            invalidate_after = index
                             status = "pending"
                     if status == "failed" and int(
                             record.get("attempts", 0)) < self.max_attempts:
@@ -298,13 +310,6 @@ class PipelineRunner:
                                 "pending", "running"}:
                             record.update({"status": "pending", "recovered": True})
                             status = "pending"
-                    if invalidate_after is not None and index > invalidate_after:
-                        if status in {"completed", "failed", "skipped", "needs_review"}:
-                            record.update({
-                                "status": "pending",
-                                "recovered": True,
-                                "stale_after": STAGES[invalidate_after],
-                            })
             _atomic_json(self.state_path, state)
             return state
         state = self._new_state()
@@ -346,6 +351,19 @@ class PipelineRunner:
             "receipt": str(stage_dir / "receipt.json"),
             "stage": stage,
         }
+
+    def _stage_input_sha256(self, case: Dict[str, object], stage: str) -> str:
+        paths = self._paths(case, stage)
+        if stage == "repo" and not case.get("source"):
+            return _digest(None)
+        input_path = Path(paths["input"])
+        if not input_path.is_absolute():
+            spec = self._stage_config(case, stage)
+            cwd = Path(_replace_tokens(str(spec.get("cwd", paths["case_dir"])), paths))
+            if not cwd.is_dir():
+                cwd = Path(paths["output"])
+            input_path = cwd / input_path
+        return _input_sha256(input_path)
 
     def _validate_receipt(self, stage_spec: Dict[str, object],
                           paths: Dict[str, str]) -> Optional[Dict[str, object]]:
@@ -444,7 +462,13 @@ class PipelineRunner:
         attempt = self._attempt(case_id, stage)
         stdout_path = stage_dir / ("attempt-%02d.stdout.log" % attempt)
         stderr_path = stage_dir / ("attempt-%02d.stderr.log" % attempt)
+        input_sha = self._stage_input_sha256(case, stage)
+        with self._lock:
+            self.state["cases"][case_id]["stages"][stage]["input_sha256"] = input_sha
+            self._save()
         self.command_runner(command, cwd, environment, stdout_path, stderr_path)
+        if input_sha != self._stage_input_sha256(case, stage):
+            raise StageReceiptError("pipeline input changed during stage: %s/%s" % (case_id, stage))
         receipt = self._validate_receipt(stage_spec, paths)
         handoff = {
             "schema": SCHEMA,
@@ -453,6 +477,7 @@ class PipelineRunner:
             "status": "completed",
             "artifact_dir": str(stage_dir.relative_to(self.output)),
             "input": paths["input"],
+            "input_sha256": input_sha,
             "command_digest": _digest(list(command)),
             "completed_at": _now(),
         }

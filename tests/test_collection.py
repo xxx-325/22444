@@ -7,12 +7,23 @@ from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_statu
                                             _authentication_failure, _completed_pair,
                                             _transient_stage_failure,
                                             _recover_receipt,
-                                            episode_usage,
+                                            episode_usage, plan_external_information,
                                             run_collection, validate_plan)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_external_information_plan_is_created_before_repository_work(self):
+        plan = plan_external_information([{
+            "id": "support",
+            "scenarios": [{"id": "handoff", "external_fact_target": 7,
+                           "memory_kinds": ["M1", "M3"]}],
+        }])
+        row = plan["scenarios"][0]
+        self.assertEqual(row["target"], 7)
+        self.assertEqual(row["distribution"], {"M1": 4, "M3": 3})
+        self.assertEqual(sum(row["distribution"].values()), row["target"])
+
     def test_receipt_left_in_atomic_temp_file_is_recovered(self):
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / "pipeline.json"

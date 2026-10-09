@@ -165,6 +165,12 @@ class LongPipelineTests(unittest.TestCase):
                 self.assertIn("brief", project)
                 self.assertNotIn("prepared_config", project)
                 self.assertEqual(project["increments"], 6)
+                task_command = case["stages"]["task"]["command"]
+                self.assertEqual(
+                    task_command[task_command.index("--task-slot-directory") + 1],
+                    str((output / ".task-slots").resolve()),
+                )
+                self.assertEqual(task_command[task_command.index("--task-slots") + 1], "3")
 
     def test_real_subprocess_receipts_gate_stage_completion_and_resume(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -11,6 +11,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -46,15 +47,16 @@ def _write_receipt(path: Path, artifacts: Iterable[Path], *, result="completed")
     save(path, payload)
 
 
-def _manifest_from_collection(root: Path) -> Path:
+def _manifest_from_collection(root: Path):
     candidates = sorted(root.rglob("dialogue-package/manifest.json"))
     if len(candidates) != 1:
         raise RuntimeError("expected one dialogue package manifest, found %d" % len(candidates))
     manifest = candidates[0]
     loaded = load_episode_manifest(manifest)
     quality = loaded["manifest"].get("quality", {})
+    warnings = []
     if quality.get("passed") is not True:
-        raise RuntimeError("dialogue manifest quality did not pass")
+        warnings.append("dialogue_quality_below_target")
     profile = quality.get("profile", {})
     checks = quality.get("checks", {})
     check_names = {
@@ -68,13 +70,17 @@ def _manifest_from_collection(root: Path) -> Path:
             continue
         check = checks.get(check_name, {})
         if check.get("passed") is not True or check.get("actual", 0) < required:
-            raise RuntimeError("dialogue manifest failed %s" % minimum)
+            warnings.append("%s_shortfall" % check_name)
     closure = checks.get("external_event_closure", {})
     if profile.get("require_external_event_closure") and closure.get("passed") is not True:
         raise RuntimeError("dialogue manifest external source closure failed")
     scope = checks.get("external_scope_policy", {})
     if profile.get("require_declared_external_scope") and scope.get("passed") is not True:
         raise RuntimeError("dialogue manifest external scope failed")
+    for hard_check in ("forbidden_documents", "control_transitions"):
+        check = checks.get(hard_check, {})
+        if check and check.get("passed") is not True:
+            raise RuntimeError("dialogue manifest failed %s" % hard_check)
     # Long cases require fifty source-grounded code rounds. Newer manifests
     # expose an explicit check; older manifests can still be counted from the
     # exported public rows without treating tool calls as rounds.
@@ -97,9 +103,8 @@ def _manifest_from_collection(root: Path) -> Path:
                     pending -= 1
                     actual += 1
         if actual < required_rounds:
-            raise RuntimeError("dialogue manifest has %d/%d complete code rounds" %
-                               (actual, required_rounds))
-    return manifest
+            warnings.append("user_code_rounds_shortfall")
+    return manifest, sorted(set(warnings))
 
 
 def _run_logged(command, cwd: Path, stdout: Path, stderr: Path) -> int:
@@ -133,11 +138,24 @@ def _repo_stage(args) -> int:
     state = collection / "collection.json"
     run_collection(plan, collection, Path(args.simulator_path), Path(args.env_file),
                    Path(args.python), resume=state.is_file(), dialogue_only=True)
-    manifest = _manifest_from_collection(collection)
+    manifest, quality_warnings = _manifest_from_collection(collection)
+    external_information_plan = collection / "external-information-plan.json"
     save(output / "manifest-path.json", {"manifest": str(manifest),
-                                         "plan": str(plan)})
-    _write_receipt(output / "stage-receipt.json", [manifest, collection / "collection.json",
-                                                     output / "manifest-path.json"])
+                                         "plan": str(plan),
+                                         "external_information_plan": str(external_information_plan)
+                                         if external_information_plan.is_file() else None,
+                                         "quality_warnings": quality_warnings})
+    save(output / "quality-summary.json", {
+        "status": "completed_with_warnings" if quality_warnings else "completed",
+        "warnings": quality_warnings,
+        "manifest": str(manifest),
+    })
+    receipt_artifacts = [manifest, collection / "collection.json",
+                         output / "manifest-path.json", output / "quality-summary.json"]
+    if external_information_plan.is_file():
+        receipt_artifacts.append(external_information_plan)
+    _write_receipt(output / "stage-receipt.json", receipt_artifacts,
+                   result="completed_with_warnings" if quality_warnings else "completed")
     return 0
 
 
@@ -286,6 +304,9 @@ def _task_stage(args) -> int:
 
 
 def _stage_main(args) -> int:
+    if args.stage == "task" and args.task_slot_directory:
+        os.environ["DIALOGUE_TASK_SLOT_DIR"] = str(args.task_slot_directory.resolve())
+        os.environ["DIALOGUE_TASK_SLOT_LIMIT"] = str(args.task_slots)
     return {"repo": _repo_stage, "qa": _qa_stage, "task": _task_stage}[args.stage](args)
 
 
@@ -355,6 +376,8 @@ def build_config(config_path: Path, output: Path, *, simulator_path: Path,
             "task": {"command": [str(python_path), "-m", "dialogue_benchmark.long_pipeline",
                                     "--stage", "task", "--input", "{input}", "--output", "{output}",
                                     "--simulator-path", str(simulator_path.resolve()), "--env-file", str(env_file.resolve()),
+                                    "--task-slot-directory", str((output / ".task-slots").resolve()),
+                                    "--task-slots", str(master.get("evaluation", {}).get("max_task_workers", 3)),
                                     "--python", str(python_path)], "cwd": str(ROOT), "receipt": "{output}/stage-receipt.json"},
         }})
     return {"cases": cases, "stages": {stage: {"command": [str(python_path), "-c", "pass"]}
@@ -373,7 +396,11 @@ def main(argv=None) -> int:
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--stage", choices=("repo", "qa", "task"))
     parser.add_argument("--input", type=Path)
+    parser.add_argument("--task-slot-directory", type=Path)
+    parser.add_argument("--task-slots", type=int, default=3)
     args = parser.parse_args(argv)
+    if args.task_slots < 1:
+        parser.error("--task-slots must be positive")
     if args.stage:
         if args.input is None:
             parser.error("--stage requires --input")

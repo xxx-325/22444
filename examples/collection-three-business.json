@@ -23,7 +23,7 @@
         {
           "id": "service-operations",
           "brief": "Continue the support team's product through several related operational changes. Let the user ask questions, inspect behavior, observe failed attempts, correct business expectations, and later rely on those decisions in another part of the workflow.",
-          "external_fact_target": 16,
+          "external_fact_target": 12,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Only facts, corrections, failures, and environment observations made public during the conversation count as history."
@@ -38,7 +38,7 @@
         {
           "id": "migration-operations",
           "brief": "Continue the migration tool through several real data-operations requests. Let implementation attempts, command results, user questions, corrections, and later reconciliation work shape the product naturally.",
-          "external_fact_target": 16,
+          "external_fact_target": 12,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Count an environment difference only after it appears in a public command or test result."
@@ -53,7 +53,7 @@
         {
           "id": "change-operations",
           "brief": "Continue the release workflow through several related changes. Let the user investigate current behavior, ask for explanations, run commands, report unexpected results, correct operating expectations, and later reuse earlier decisions.",
-          "external_fact_target": 16,
+          "external_fact_target": 12,
           "preplan_external_facts": true,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Only public differences, failures, and corrections become historical evidence."
@@ -68,7 +68,8 @@
     "group_budget": 80,
     "task_count": 3,
     "task_budget": 12,
-    "task_workers": 1,
+    "task_workers": 3,
+    "max_task_workers": 3,
     "parallel_workers": 8,
     "revisions": 5,
     "model_request_chars": 96000

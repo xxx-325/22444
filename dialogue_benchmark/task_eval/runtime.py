@@ -1,7 +1,9 @@
 """Thin adapter over the existing simulator's isolated OpenHands runtime."""
 
 from pathlib import Path
+from contextlib import contextmanager
 from difflib import unified_diff
+import errno
 import os
 import subprocess
 import sys
@@ -13,6 +15,38 @@ from ..llm import DEFAULT_REQUEST_TIMEOUT, validate_request_timeout, validate_re
 
 
 BUSINESS_DATA_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl"}
+
+
+@contextmanager
+def shared_task_slot():
+    """Bound independent task executions across case processes on one host."""
+    directory = os.environ.get("DIALOGUE_TASK_SLOT_DIR")
+    if not directory:
+        yield
+        return
+    import fcntl
+
+    limit = int(os.environ.get("DIALOGUE_TASK_SLOT_LIMIT", "3"))
+    if limit < 1:
+        raise ValueError("DIALOGUE_TASK_SLOT_LIMIT must be positive")
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    while True:
+        for index in range(limit):
+            stream = (root / f"{index}.lock").open("a")
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                stream.close()
+                if error.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                continue
+            try:
+                yield
+            finally:
+                stream.close()
+            return
+        time.sleep(0.1)
 
 
 def preflight_openhands_runtime(simulator_path, *, python_executable=None):
