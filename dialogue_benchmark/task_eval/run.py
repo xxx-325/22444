@@ -1029,6 +1029,8 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
                     try:
                         judged, review_path, roots = inspect_acceptance(
                             candidate, spec, items, checks, round_root, config, agent_options)
+                        if not isinstance(judged, dict) or not isinstance(judged.get("status"), str):
+                            raise ValueError("invalid_judge_result")
                     except Exception as error:
                         # A Judge failure is an evaluation failure.  Keep the
                         # solver receipt and candidate status independent.
@@ -1077,6 +1079,8 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             try:
                 judged, review_path, roots = inspect_acceptance(
                     candidate, spec, items, checks, inspection, config, agent_options)
+                if not isinstance(judged, dict) or not isinstance(judged.get("status"), str):
+                    raise ValueError("invalid_judge_result")
             except Exception as error:
                 judged = {"status": "error", "error_type": type(error).__name__,
                           "detail": str(error)}
