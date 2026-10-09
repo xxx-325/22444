@@ -42,8 +42,33 @@ class CollectionTests(unittest.TestCase):
         }])
         row = plan["scenarios"][0]
         self.assertEqual(row["attempt_budget"], 4)
-        self.assertIsNone(row["expected_coverage"])
+        self.assertNotIn("expected_coverage", row)
         self.assertEqual(sum(item["attempts"] for item in row["opportunities"]), 4)
+
+    def test_legacy_fact_target_only_seeds_attempt_budget_and_never_enters_plan(self):
+        plan = plan_external_information([{
+            "id": "support",
+            "brief": "Support handoff workflow",
+            "increments": 2,
+            "scenarios": [{"id": "handoff", "external_fact_target": 9,
+                           "external_attempt_budget": 2,
+                           "memory_kinds": ["M1"]}],
+        }])
+        row = plan["scenarios"][0]
+        self.assertEqual(row["attempt_budget"], 2)
+        self.assertNotIn("external_fact_target", row)
+        self.assertNotIn("facts", row)
+        self.assertNotIn("answers", row)
+        self.assertNotIn("expected_coverage", row)
+
+    def test_legacy_fact_target_is_only_a_soft_attempt_fallback(self):
+        plan = plan_external_information([{
+            "id": "support",
+            "brief": "Support handoff workflow",
+            "scenarios": [{"id": "handoff", "external_fact_target": 3,
+                           "memory_kinds": ["M1"]}],
+        }])
+        self.assertEqual(plan["scenarios"][0]["attempt_budget"], 3)
 
     def test_external_opportunity_stage_is_checked_before_repository_work(self):
         with self.assertRaisesRegex(ValueError, "invalid external attempt distribution"):
@@ -262,6 +287,26 @@ class CollectionTests(unittest.TestCase):
             self.assertTrue(dialogue["output_ready"])
             self.assertFalse(dialogue["usage_ready"])
 
+    def test_rejected_scenario_keeps_planned_opportunity_stats(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            plan["projects"][0]["scenarios"] = [{
+                "id": "first", "brief": "Plan dependencies",
+                "external_attempt_budget": 4, "memory_kinds": ["M1"],
+            }]
+            self.reject_scenario = True
+            save(root / "input.json", plan)
+            result = self.invoke(root)
+            scene = result["projects"][0]["scenarios"][0]
+            self.assertEqual(scene["status"], "scenario_rejected")
+            self.assertEqual(scene["external_attempts"], {
+                "planned": 4, "started": 0, "candidate_groups": 0,
+                "accepted_facts": 0, "unused_or_rejected": 4,
+            })
+            self.assertEqual(scene["external_information_coverage"]["actual"], 0)
+            self.assertEqual(result["status"], "completed_with_warnings")
+
     def test_missing_receipt_retries_the_stage_before_marking_it_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -296,6 +341,9 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(Path(cfg["development_plan"]).name, "development-plan.json")
             if hasattr(self, "quality_mapping"):
                 self.assertEqual(cfg["dialogue_quality"], self.quality_mapping)
+            if getattr(self, "reject_scenario", False):
+                save(target / "budget.json", budget)
+                return 1
             save(target / "frozen/report.json", dict(status="candidate_pass", design={"memory_kinds": ["M1"]}))
             save(target / "frozen/scenario.json", {})
             save(target / "budget.json", budget)

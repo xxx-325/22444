@@ -391,17 +391,37 @@ def plan_external_information(projects):
                 if total != budget:
                     raise ValueError(
                         "external attempt distribution must sum to external_attempt_budget")
+            # This file is written before any repository is generated.  Keep
+            # it deliberately limited to opportunity metadata: the later
+            # scenario stage is the only place that can propose concrete
+            # facts after inspecting the actual repository and runtime.
             rows.append({
                 "project": project["id"],
                 "scenario": scenario["id"],
                 "attempt_budget": budget,
-                "expected_coverage": scenario.get("external_fact_target"),
                 "memory_kinds": list(kinds),
                 "distribution": distribution,
                 "opportunities": opportunities,
                 "status": "planned",
             })
     return {"schema": "external-information-plan-v2", "scenarios": rows}
+
+
+def _empty_external_attempts(scenario_plan):
+    """Return stable zeroed counters for a scenario before it starts.
+
+    Keeping these counters on the scene record even when the scenario stage
+    fails makes the collection report useful for partial runs: a missing
+    candidate is distinguishable from a missing statistic.
+    """
+    budget = scenario_plan.get("attempt_budget", 0)
+    return {
+        "planned": budget,
+        "started": 0,
+        "candidate_groups": 0,
+        "accepted_facts": 0,
+        "unused_or_rejected": budget,
+    }
 
 
 def _completed_pair(task):
@@ -839,6 +859,16 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     entry["scenarios"].append(record)
                 record["status"] = "running"
                 record["external_information_plan"] = scenario_plan
+                # Seed counters before invoking the scenario model.  A
+                # rejected stage must still report its planned opportunities
+                # and zero observed facts instead of dropping coverage data.
+                record["external_attempts"] = _empty_external_attempts(scenario_plan)
+                record["external_information_coverage"] = {
+                    "attempt_budget": scenario_plan.get("attempt_budget", 0),
+                    "actual": 0,
+                    "distribution": {kind: 0 for kind in EXTERNAL_MEMORY_KINDS},
+                }
+                persist()
                 target = scenario_root / "scenario"
                 designed = stage("scenario", target, upstream("simulator.openhands.prepare_scenario", cfg, target),
                     simulator, target / "frozen/report.json", {"completed", "candidate_pass"}, target / "budget.json")
@@ -851,7 +881,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 frozen_report = _read_if(target / "frozen/report.json")
                 attempt_stats = frozen_report.get("attempts", {})
                 record["external_attempts"] = {
-                    "planned": scenario_plan.get("attempt_budget", 0),
+                    **_empty_external_attempts(scenario_plan),
                     "started": attempt_stats.get("started", 0),
                     "candidate_groups": attempt_stats.get("candidate_groups", 0),
                     "accepted_facts": sum(
@@ -859,7 +889,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                         for value in designed.get("memory_counts", {}).values()
                         if isinstance(value, dict)
                     ),
-                    "unused_or_rejected": attempt_stats.get("unused_or_rejected", 0),
+                    "unused_or_rejected": attempt_stats.get(
+                        "unused_or_rejected", scenario_plan.get("attempt_budget", 0)),
                 }
                 current["scenario_file"] = str(target / "frozen/scenario.json")
                 save(cfg, current)
