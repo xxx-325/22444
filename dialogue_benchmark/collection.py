@@ -653,6 +653,22 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         if previous:
             if previous.get("identity") != stage_identity:
                 raise ValueError("Collection stage inputs changed: " + target)
+            # A dialogue can export a usable warning package after a
+            # transient provider failure.  Reuse that package on resume
+            # instead of sending the dialogue again.
+            if (name == "dialogue"
+                    and previous.get("status") in {"failed", "interrupted"}
+                    and not previous.get("terminal")):
+                recovered = _recover_receipt(receipt)
+                if _accepted_receipt(recovered, expected):
+                    previous["status"] = "completed"
+                    previous["outcome"] = recovered.get(
+                        "status", recovered.get("schema", "completed"))
+                    previous["output_ready"] = True
+                    previous["result"] = "completed_with_warnings"
+                    previous["usage"] = usage()
+                    persist()
+                    return recovered
             if previous["status"] == "completed" or (
                     previous["status"] == "failed" and previous.get("terminal")):
                 if previous.get("receipt_sha256") != _sha256(receipt):

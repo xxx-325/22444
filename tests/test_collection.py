@@ -514,6 +514,34 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(result["projects"][0]["scenarios"][0]["status"], "completed")
             self.assertEqual(result["status"], "completed_with_warnings")
 
+    def test_late_dialogue_manifest_is_reused_after_failed_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.always_fail_dialogue = True
+            first = self.invoke(root)
+            self.assertEqual(first["projects"][0]["scenarios"][0]["status"],
+                             "dialogue_incomplete")
+            budget = dict(attempts=1, prompt_tokens=10, completion_tokens=2)
+            for scenario in ("first", "second"):
+                package = root / "run" / "planner" / scenario / "dialogue-package"
+                save(package / "manifest.json", {
+                    "schema": "memory-episode-v1",
+                    "status": "completed_with_warnings",
+                })
+                save(package / "external-events.json", {"events": [{"memory_kind": "M1"}]})
+                save(package / "private/review.json", {"budget": budget})
+            del self.always_fail_dialogue
+            resumed = self.invoke(root, resume=True)
+            dialogue_calls = [
+                command for command in self.commands if Path(
+                    command[command.index("--output") + 1]).name == "dialogue"
+            ]
+            self.assertEqual(dialogue_calls, [])
+            self.assertEqual(resumed["status"], "completed_with_warnings")
+
     def test_truncated_receipt_retries_locally_and_preserves_failed_response(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
