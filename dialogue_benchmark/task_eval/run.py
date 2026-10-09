@@ -1157,9 +1157,11 @@ def main(argv=None):
         parser.error("Counts and budgets must be positive; revisions must be nonnegative")
     if task_budget < 1:
         parser.error("Task budget must be positive")
-    if args.qa_group_size is not None and args.qa_group_size < 1:
+    qa_source = getattr(args, "qa_source", "graph")
+    qa_group_size = getattr(args, "qa_group_size", None)
+    if qa_group_size is not None and qa_group_size < 1:
         parser.error("QA group size must be positive")
-    if args.qa_source == "external" and args.qa_group_size == 1:
+    if qa_source == "external" and qa_group_size == 1:
         parser.error("External requirements need at least two related QA")
     if args.preparation_feedback and not args.reuse_preparation:
         parser.error("--preparation-feedback requires --reuse-preparation")
@@ -1176,7 +1178,7 @@ def main(argv=None):
                       diagnostics=input_diagnostics)
     if not items:
         parser.error("No usable QA with saved generation inputs")
-    group_size = args.qa_group_size if args.qa_group_size is not None else (
+    group_size = qa_group_size if qa_group_size is not None else (
         2 if items[0].get("qa_source") == "external" else 1)
     if items[0].get("qa_source") == "external":
         group_size = max(2, group_size)
