@@ -14,7 +14,8 @@ from .task_eval.artifacts import read, save
 from .task_eval.metrics import cache_usage
 
 EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
-                           parallel_workers=6, task_workers=2, revisions=3,
+                           parallel_workers=6, task_workers=2, max_task_workers=3,
+                           revisions=3,
                            model_request_chars=96000, qa_only=False,
                            general_count=50, code_count=50)
 EXTERNAL_MEMORY_KINDS = ("M1", "M2", "M3", "M4", "M5", "M6")
@@ -316,39 +317,88 @@ def _terminal_collection_status(state):
 
 
 def plan_external_information(projects):
-    """Create the control-side information budget before repository work.
+    """Create the control-side opportunity budget before repository work.
 
-    This is deliberately deterministic.  It plans only the requested volume
-    and its distribution across the selected memory kinds; the concrete facts
-    still have to be proposed from the generated repository and reviewed by
-    the scenario stage.  The plan is therefore safe to create before the
-    project exists and cannot leak private facts into model-facing prompts.
+    The plan describes opportunities to try, not a required number of
+    accepted facts.  Concrete facts are still proposed from the generated
+    repository and retained only when they arise naturally and have a public
+    source.  This keeps the pre-repository plan useful without leaking private
+    answers into model-facing prompts.
     """
     rows = []
     for project in projects:
         for scenario in project.get("scenarios", []):
             kinds = tuple(scenario.get("memory_kinds", EXTERNAL_MEMORY_KINDS))
-            target = scenario.get("external_fact_target", 0)
-            if target is None:
-                target = 0
-            if type(target) is not int or target < 0:
-                raise ValueError("external_fact_target must be a nonnegative integer")
+            budget = scenario.get("external_attempt_budget")
+            if budget is None:
+                # Keep old configuration values as a soft expected coverage
+                # while the new field controls the opportunity budget.
+                budget = scenario.get("external_fact_target", 0) or 0
+            if type(budget) is not int or budget < 0:
+                raise ValueError("external_attempt_budget must be a nonnegative integer")
             if not kinds or any(kind not in EXTERNAL_MEMORY_KINDS for kind in kinds):
                 raise ValueError("memory_kinds must select M1..M6")
-            base, remainder = divmod(target, len(kinds))
-            distribution = {
-                kind: base + (index < remainder)
-                for index, kind in enumerate(kinds)
-            }
+            raw_distribution = scenario.get("external_attempt_distribution")
+            if raw_distribution is None:
+                base, remainder = divmod(budget, len(kinds))
+                distribution = {
+                    kind: base + (index < remainder)
+                    for index, kind in enumerate(kinds)
+                }
+                stages = max(1, int(project.get("increments", 1)))
+                stage_base, stage_remainder = divmod(budget, stages)
+                opportunities = [
+                    {
+                        "stage": index + 1,
+                        "behavior": str(scenario.get("brief", project.get("brief", ""))).strip(),
+                        "memory_kinds": list(kinds),
+                        "attempts": stage_base + (index < stage_remainder),
+                    }
+                    for index in range(stages)
+                    if stage_base + (index < stage_remainder)
+                ]
+            else:
+                if not isinstance(raw_distribution, list) or not raw_distribution:
+                    raise ValueError("external_attempt_distribution must be a nonempty list")
+                opportunities = []
+                distribution = {kind: 0 for kind in kinds}
+                total = 0
+                for row in raw_distribution:
+                    if not isinstance(row, dict):
+                        raise ValueError("external attempt distribution rows must be objects")
+                    allowed = row.get("memory_kinds", list(kinds))
+                    attempts = row.get("attempts")
+                    stage = row.get("stage")
+                    behavior = row.get("behavior")
+                    if (type(stage) is not int or stage < 1
+                            or type(attempts) is not int or attempts < 0
+                            or not isinstance(behavior, str) or not behavior.strip()
+                            or not isinstance(allowed, list) or not allowed
+                            or any(kind not in kinds for kind in allowed)):
+                        raise ValueError("invalid external attempt distribution row")
+                    opportunities.append({
+                        "stage": stage,
+                        "behavior": behavior.strip(),
+                        "memory_kinds": list(dict.fromkeys(allowed)),
+                        "attempts": attempts,
+                    })
+                    total += attempts
+                    for kind in dict.fromkeys(allowed):
+                        distribution[kind] += attempts
+                if total != budget:
+                    raise ValueError(
+                        "external attempt distribution must sum to external_attempt_budget")
             rows.append({
                 "project": project["id"],
                 "scenario": scenario["id"],
-                "target": target,
+                "attempt_budget": budget,
+                "expected_coverage": scenario.get("external_fact_target"),
                 "memory_kinds": list(kinds),
                 "distribution": distribution,
+                "opportunities": opportunities,
                 "status": "planned",
             })
-    return {"schema": "external-information-plan-v1", "scenarios": rows}
+    return {"schema": "external-information-plan-v2", "scenarios": rows}
 
 
 def _completed_pair(task):
@@ -441,6 +491,7 @@ def validate_plan(plan):
         scenarios = [_identifier(s.get("id")) for s in project["scenarios"]]
         if len(set(scenarios)) != len(scenarios):
             raise ValueError("Duplicate scenario id")
+    plan_external_information(plan["projects"])
 
 
 def run_collection(plan_path, output, simulator, env_file, python=sys.executable,
@@ -712,7 +763,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             root = output / project["id"]
             root.mkdir(exist_ok=resume)
             project_information_plan = {
-                "schema": "external-information-plan-v1",
+                "schema": "external-information-plan-v2",
                 "project": project["id"],
                 "scenarios": [row for row in plan_external_information([project])["scenarios"]],
             }
@@ -730,6 +781,9 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
             else:
                 config = copy.deepcopy(runtime)
                 config["project"] = dict(brief=project["brief"], increments=project.get("increments", 2))
+                config["project"]["behavior_goals"] = list(dict.fromkeys(
+                    row["behavior"] for scene in project_information_plan["scenarios"]
+                    for row in scene["opportunities"] if row["behavior"]))
                 cfg = root / "project-input.json"
                 save(cfg, config)
                 target = root / "project"
@@ -759,10 +813,19 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 current = copy.deepcopy(config)
                 current.pop("scenario_file", None)
                 current.pop("prepared_issues", None)
-                current["scenario_design"] = {k: v for k, v in scenario.items() if k != "id"}
-                # This is control-side planning data.  The scenario module
-                # reads only scenario_design for model prompts, so the
-                # internal budget never becomes dialogue content.
+                # Keep opportunity budgets and distributions control-side.  A
+                # scenario author receives the natural business brief, never
+                # the host's counters, IDs, or acceptance quotas.
+                private_keys = {
+                    "id", "external_fact_target", "external_attempt_budget",
+                    "external_attempt_distribution", "preplan_external_facts",
+                }
+                current["scenario_design"] = {
+                    k: v for k, v in scenario.items() if k not in private_keys
+                }
+                current["external_attempt_plan"] = scenario_plan
+                # Retain the artifact name used by existing reports, but it is
+                # a control-side plan and is not included in scenario_design.
                 current["external_information_plan"] = scenario_plan
                 cfg = scenario_root / "config.json"
                 if not (resume and cfg.is_file()):
@@ -782,6 +845,19 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     continue
                 record["requested_memory_kinds"] = designed.get("design", {}).get("memory_kinds", [])
                 record["designed_memory_counts"] = designed.get("memory_counts", {})
+                frozen_report = _read_if(target / "frozen/report.json")
+                attempt_stats = frozen_report.get("attempts", {})
+                record["external_attempts"] = {
+                    "planned": scenario_plan.get("attempt_budget", 0),
+                    "started": attempt_stats.get("started", 0),
+                    "candidate_groups": attempt_stats.get("candidate_groups", 0),
+                    "accepted_facts": sum(
+                        value.get("facts", 0)
+                        for value in designed.get("memory_counts", {}).values()
+                        if isinstance(value, dict)
+                    ),
+                    "unused_or_rejected": attempt_stats.get("unused_or_rejected", 0),
+                }
                 current["scenario_file"] = str(target / "frozen/scenario.json")
                 save(cfg, current)
                 target = scenario_root / "requirements"
@@ -802,14 +878,21 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                     continue
                 from .episode_input import load_episode_manifest
                 exported = load_episode_manifest(package / "manifest.json")
+                manifest_record = exported.get("manifest", {})
+                manifest_quality = manifest_record.get("quality", {})
+                quality_status = manifest_record.get("status")
+                record["quality_status"] = quality_status or "completed"
+                if quality_status == "completed_with_warnings":
+                    warning("dialogue_quality_warnings", project=project["id"],
+                            scenario=scenario["id"],
+                            warnings=manifest_quality.get("warnings", []))
                 events = read(exported["external_events"])["events"] if exported.get("external_events") else []
                 record["public_memory_counts"] = {kind: sum(e.get("memory_kind") == kind for e in events)
                                                    for kind in ("M1", "M2", "M3", "M4", "M5", "M6")}
                 actual = sum(record["public_memory_counts"].values())
                 record["external_information_coverage"] = {
-                    "target": scenario_plan["target"],
+                    "attempt_budget": scenario_plan.get("attempt_budget", 0),
                     "actual": actual,
-                    "shortfall": max(0, scenario_plan["target"] - actual),
                     "distribution": record["public_memory_counts"],
                 }
                 if dialogue_only:
@@ -840,6 +923,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                         command.append("--qa-only")
                     excluded = ({"qa_count", "group_budget"} if qa_source == "graph"
                                 else {"general_count", "code_count"})
+                    excluded.add("max_task_workers")
                     for key, value in options.items():
                         if key not in excluded:
                             command.extend(["--" + key.replace("_", "-"), str(value)])
@@ -928,17 +1012,21 @@ def write_collection_report(output, state):
                              for t in evaluated.get("tasks", []))
     lines += ["", "QA counts are reported per route. They are not added into a combined unique count."]
     lines += ["Targets and shortfalls describe output volume, not admission. A completed route has nonempty published QA and, unless QA-only, at least one complete terminal pair. These are run-completeness checks, not manual quality acceptance."]
-    lines += ["", "## Planned external information coverage", "",
-              "The plan is created before repository generation. Actual public facts are counted after dialogue export; a shortfall is retained as coverage data.",
-              "", "| Project | Scenario | Planned | Actual | Shortfall |", "|---|---|---:|---:|---:|"]
+    lines += ["", "## Planned external information opportunities", "",
+              "The opportunity budget is created before repository generation. Attempts and accepted facts are reported separately; a shortfall is retained as coverage data.",
+              "", "| Project | Scenario | Planned attempts | Started | Candidate groups | Accepted facts | Public facts | External QA | Unused / rejected |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for project in state["projects"]:
         for scenario in project["scenarios"]:
             coverage = scenario.get("external_information_coverage", {})
+            attempts = scenario.get("external_attempts", {})
             plan_row = scenario.get("external_information_plan", {})
-            lines.append("| %s | %s | %s | %s | %s |" % (
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
                 project["id"], scenario["id"],
-                coverage.get("target", plan_row.get("target", "—")),
-                coverage.get("actual", "—"), coverage.get("shortfall", "—")))
+                attempts.get("planned", plan_row.get("attempt_budget", "—")),
+                attempts.get("started", "—"), attempts.get("candidate_groups", "—"),
+                attempts.get("accepted_facts", "—"), coverage.get("actual", "—"),
+                scenario.get("evaluations", {}).get("external", {}).get("published_qa", "—"),
+                attempts.get("unused_or_rejected", "—")))
     totals = {}
     for project in state["projects"]:
         for scenario in project["scenarios"]:

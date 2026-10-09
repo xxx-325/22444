@@ -16,13 +16,34 @@ class CollectionTests(unittest.TestCase):
     def test_external_information_plan_is_created_before_repository_work(self):
         plan = plan_external_information([{
             "id": "support",
-            "scenarios": [{"id": "handoff", "external_fact_target": 7,
-                           "memory_kinds": ["M1", "M3"]}],
+            "increments": 3,
+            "brief": "Support handoff workflow",
+            "scenarios": [{"id": "handoff", "external_attempt_budget": 7,
+                           "memory_kinds": ["M1", "M3"],
+                           "external_attempt_distribution": [
+                               {"stage": 1, "behavior": "handoff", "memory_kinds": ["M1"], "attempts": 2},
+                               {"stage": 2, "behavior": "approval", "memory_kinds": ["M3"], "attempts": 3},
+                               {"stage": 3, "behavior": "handoff recovery", "memory_kinds": ["M1", "M3"], "attempts": 2},
+                           ]}],
         }])
         row = plan["scenarios"][0]
-        self.assertEqual(row["target"], 7)
-        self.assertEqual(row["distribution"], {"M1": 4, "M3": 3})
-        self.assertEqual(sum(row["distribution"].values()), row["target"])
+        self.assertEqual(row["attempt_budget"], 7)
+        self.assertEqual(row["distribution"], {"M1": 4, "M3": 5})
+        self.assertEqual(sum(row["opportunities"][i]["attempts"] for i in range(3)),
+                         row["attempt_budget"])
+        self.assertNotIn("target", row)
+
+    def test_external_attempt_budget_without_exact_fact_target_is_valid(self):
+        plan = plan_external_information([{
+            "id": "support",
+            "brief": "Support handoff workflow",
+            "scenarios": [{"id": "handoff", "external_attempt_budget": 4,
+                           "memory_kinds": ["M1", "M2"]}],
+        }])
+        row = plan["scenarios"][0]
+        self.assertEqual(row["attempt_budget"], 4)
+        self.assertIsNone(row["expected_coverage"])
+        self.assertEqual(sum(item["attempts"] for item in row["opportunities"]), 4)
 
     def test_receipt_left_in_atomic_temp_file_is_recovered(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -29,6 +29,13 @@ STAGES = ("repo", "qa", "task")
 DEPENDENCY = {"repo": None, "qa": "repo", "task": "qa"}
 TERMINAL = {"completed", "failed", "skipped", "needs_review"}
 _CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_RECOVERABLE_RESULTS = {"completed", "completed_with_warnings"}
+_HARD_FAILURE = re.compile(
+    r"collection_(?:authentication|input)_failed|\b(?:invalid_api_key|missing_api_key|"
+    r"authentication_error|credential_detected|source_closure_failed|identity_mismatch)\b|"
+    r"(?:input|snapshot|identity|source closure|credential|security|authentication)"
+    r"[^\n]{0,80}(?:corrupt|invalid|changed|mismatch|failed|failure|leak)|"
+    r"\b(?:unauthorized|forbidden)\b|\bHTTP\s*(?:401|403)\b", re.I)
 
 
 def _now() -> str:
@@ -263,6 +270,16 @@ class PipelineRunner:
                         and (not record.get("handoff_sha256")
                              or record["handoff_sha256"] == _file_sha256(handoff_path))
                     )
+                    if status in {"running", "failed", "needs_review"} and not handoff_path.exists():
+                        receipt = self._recoverable_receipt(record, paths, stage)
+                        if receipt is not None and input_sha:
+                            saved_handoff = self._write_handoff(
+                                case, stage, paths, input_sha, receipt,
+                                result="completed_with_warnings")
+                            self._record_completion(record, saved_handoff, handoff_path)
+                            record["recovered"] = True
+                            valid_handoff = True
+                            status = "completed"
                     if status == "completed" or (status == "running" and handoff_path.exists()):
                         if not valid_handoff:
                             raise ValueError("pipeline handoff is invalid: %s/%s" % (case["id"], stage))
@@ -307,7 +324,7 @@ class PipelineRunner:
                             record.get("reason", "")).startswith("dependency_"):
                         dependency = DEPENDENCY[stage]
                         if dependency and case["stages"][dependency].get("status") in {
-                                "pending", "running"}:
+                                "pending", "running", "completed"}:
                             record.update({"status": "pending", "recovered": True})
                             status = "pending"
             _atomic_json(self.state_path, state)
@@ -405,7 +422,47 @@ class PipelineRunner:
                 if not artifact_path.is_file() or artifact_sha != _file_sha256(artifact_path):
                     raise StageReceiptError("stage receipt artifact hash differs: %s" % artifact_path)
         return {"path": str(receipt_path), "sha256": _file_sha256(receipt_path),
-                "result": receipt.get("result", "completed")}
+                "result": receipt.get("result", "completed"),
+                "verified_artifacts": bool(artifacts)}
+
+    def _recoverable_receipt(self, record, paths, stage):
+        """Recover output only when saved artifacts prove completion, not an error."""
+        diagnostics = [str(record.get("last_error", ""))]
+        for pattern in ("attempt-*.stderr.log", "attempt-*.stdout.log"):
+            for log in Path(paths["output"]).glob(pattern):
+                diagnostics.append(log.read_text(encoding="utf-8", errors="replace"))
+        if _HARD_FAILURE.search("\n".join(diagnostics)):
+            return None
+        try:
+            receipt = self._validate_receipt(self._stage_config(
+                {"id": paths["case_id"]}, stage), paths)
+        except StageReceiptError:
+            return None
+        return (receipt if receipt and receipt["verified_artifacts"]
+                and receipt["result"] in _RECOVERABLE_RESULTS else None)
+
+    def _write_handoff(self, case, stage, paths, input_sha, receipt=None, *, result=None):
+        spec = self._stage_config(case, stage)
+        command = tuple(_replace_tokens(item, paths) for item in _command(spec["command"]))
+        handoff = {
+            "schema": SCHEMA, "case_id": case["id"], "stage": stage,
+            "status": "completed", "artifact_dir": str(Path(paths["output"]).relative_to(self.output)),
+            "input": paths["input"], "input_sha256": input_sha,
+            "command_digest": _digest(list(command)), "completed_at": _now(),
+        }
+        if receipt:
+            handoff.update(receipt=receipt["path"], receipt_sha256=receipt["sha256"],
+                           result=result or receipt["result"])
+        _atomic_json(Path(paths["output"]) / ".pipeline-handoff.json", handoff)
+        return handoff
+
+    @staticmethod
+    def _record_completion(record, handoff, path):
+        record.update(status="completed", finished_at=handoff["completed_at"],
+                      handoff=str(path), handoff_sha256=_file_sha256(path))
+        for key in ("receipt", "receipt_sha256", "result"):
+            if key in handoff:
+                record[key] = handoff[key]
 
     def _claim(self) -> Optional[Tuple[Dict[str, object], str]]:
         with self._lock:
@@ -466,36 +523,28 @@ class PipelineRunner:
         with self._lock:
             self.state["cases"][case_id]["stages"][stage]["input_sha256"] = input_sha
             self._save()
-        self.command_runner(command, cwd, environment, stdout_path, stderr_path)
+        failure = None
+        try:
+            self.command_runner(command, cwd, environment, stdout_path, stderr_path)
+        except Exception as error:
+            failure = error
         if input_sha != self._stage_input_sha256(case, stage):
             raise StageReceiptError("pipeline input changed during stage: %s/%s" % (case_id, stage))
-        receipt = self._validate_receipt(stage_spec, paths)
-        handoff = {
-            "schema": SCHEMA,
-            "case_id": case_id,
-            "stage": stage,
-            "status": "completed",
-            "artifact_dir": str(stage_dir.relative_to(self.output)),
-            "input": paths["input"],
-            "input_sha256": input_sha,
-            "command_digest": _digest(list(command)),
-            "completed_at": _now(),
-        }
-        if receipt:
-            handoff["receipt"] = receipt["path"]
-            handoff["receipt_sha256"] = receipt["sha256"]
-            handoff["result"] = receipt.get("result", "completed")
-        _atomic_json(stage_dir / ".pipeline-handoff.json", handoff)
-        handoff_sha256 = _file_sha256(stage_dir / ".pipeline-handoff.json")
+        if failure is not None:
+            receipt = self._recoverable_receipt({"last_error": str(failure)}, paths, stage)
+            if receipt is None:
+                raise failure
+        else:
+            receipt = self._validate_receipt(stage_spec, paths)
+        handoff = self._write_handoff(case, stage, paths, input_sha, receipt,
+                                     result="completed_with_warnings" if failure else None)
         with self._lock:
             record = self.state["cases"][case_id]["stages"][stage]
-            record.update({"status": "completed", "finished_at": handoff["completed_at"],
-                           "handoff": str(stage_dir / ".pipeline-handoff.json"),
-                           "handoff_sha256": handoff_sha256})
-            if receipt:
-                record.update({"receipt": receipt["path"],
-                               "receipt_sha256": receipt["sha256"],
-                               "result": receipt.get("result", "completed")})
+            self._record_completion(record, handoff, stage_dir / ".pipeline-handoff.json")
+            if failure:
+                record.setdefault("failures", []).append({"attempt": attempt,
+                    "error_type": type(failure).__name__, "detail": str(failure)})
+                record.update(recovered=True, last_error=str(failure))
             self._save()
 
     def _attempt(self, case_id: str, stage: str) -> int:

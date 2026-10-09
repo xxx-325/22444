@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import threading
@@ -15,6 +16,16 @@ def _config(case_ids):
         "cases": [{"id": case_id, "source": str(Path(__file__).resolve())}
                   for case_id in case_ids],
     }
+
+
+def _completed_receipt(output, *, result="completed"):
+    artifact = output / "artifact.txt"
+    artifact.write_text("valid output", encoding="utf-8")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    (output / "receipt.json").write_text(json.dumps({
+        "status": "completed", "result": result, "sha256": digest,
+        "artifacts": [{"path": "artifact.txt", "sha256": digest}],
+    }), encoding="utf-8")
 
 
 class PipelineRunnerTests(unittest.TestCase):
@@ -381,6 +392,113 @@ class PipelineRunnerTests(unittest.TestCase):
             resumed = PipelineRunner(config, output, resume=True, command_runner=run).run()
             self.assertEqual(resumed["cases"]["a"]["stages"]["repo"]["status"], "completed")
         self.assertEqual(calls, ["repo", "qa", "task"])
+
+    def test_command_failure_with_verified_completed_output_continues_without_retry(self):
+        for exception in (StageCommandError("command exited with status 1"),
+                          RuntimeError("usage ledger temporarily unavailable")):
+            with self.subTest(error=type(exception).__name__), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                config = _config(("a",))
+                config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+
+                def run(command, cwd, env, stdout, stderr):
+                    calls.append(command[1])
+                    if command[1] == "repo":
+                        _completed_receipt(Path(env["PIPELINE_OUTPUT"]))
+                        raise exception
+
+                report = PipelineRunner(config, Path(directory) / "run", command_runner=run).run()
+                record = report["cases"]["a"]["stages"]["repo"]
+                self.assertEqual(calls, ["repo", "qa", "task"])
+                self.assertEqual(record["status"], "completed")
+                self.assertEqual(record["result"], "completed_with_warnings")
+                self.assertEqual(record["failures"][0]["detail"], str(exception))
+                self.assertEqual(report["status"], "completed_with_warnings")
+
+    def test_failed_command_output_does_not_hide_hard_errors_or_noncompletion(self):
+        for result, error, tamper in (
+                ("routes_failed", "command exited with status 1", False),
+                ("skipped", "command exited with status 1", False),
+                ("completed", "collection_authentication_failed", False),
+                ("completed", "source closure failed", False),
+                ("completed", "command exited with status 1", True)):
+            with self.subTest(result=result, error=error, tamper=tamper), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                config = _config(("a",))
+                config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+
+                def run(command, cwd, env, stdout, stderr):
+                    calls.append(command[1])
+                    output = Path(env["PIPELINE_OUTPUT"])
+                    _completed_receipt(output, result=result)
+                    if tamper:
+                        (output / "artifact.txt").write_text("tampered", encoding="utf-8")
+                    raise StageCommandError(error)
+
+                report = PipelineRunner(config, Path(directory) / "run", command_runner=run,
+                                        max_attempts=1).run()
+                self.assertEqual(calls, ["repo"])
+                self.assertEqual(report["cases"]["a"]["stages"]["repo"]["status"], "failed")
+
+    def test_resume_recovers_verified_receipt_and_reopens_dependency_skipped_stages(self):
+        for prior_status in ("running", "failed", "needs_review"):
+            with self.subTest(status=prior_status), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                config = _config(("a",))
+                config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+
+                def run(command, cwd, env, stdout, stderr):
+                    calls.append(command[1])
+                    if command[1] == "repo":
+                        raise StageCommandError("temporary report failure")
+
+                output = Path(directory) / "run"
+                PipelineRunner(config, output, command_runner=run, max_attempts=1).run()
+                _completed_receipt(output / "cases/a/repo", result="completed_with_warnings")
+                state_path = output / "pipeline-state.json"
+                state = json.loads(state_path.read_text())
+                state["cases"]["a"]["stages"]["repo"]["status"] = prior_status
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                report = PipelineRunner(config, output, resume=True, command_runner=run,
+                                        max_attempts=1).run()
+                self.assertEqual(calls, ["repo", "qa", "task"])
+                self.assertEqual(report["cases"]["a"]["stages"]["repo"]["attempts"], 1)
+                self.assertTrue(all(row["status"] == "completed" for row in
+                                    report["cases"]["a"]["stages"].values()))
+
+    def test_resume_does_not_recover_receipt_after_authentication_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(("a",))
+            config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+            calls = []
+
+            def run(command, cwd, env, stdout, stderr):
+                calls.append(command[1])
+                raise StageCommandError("collection_authentication_failed")
+
+            output = Path(directory) / "run"
+            PipelineRunner(config, output, command_runner=run, max_attempts=1).run()
+            _completed_receipt(output / "cases/a/repo")
+            report = PipelineRunner(config, output, resume=True, command_runner=run,
+                                    max_attempts=1).run()
+            self.assertEqual(calls, ["repo"])
+            self.assertEqual(report["cases"]["a"]["stages"]["repo"]["status"], "failed")
+
+    def test_stdout_hard_error_does_not_get_hidden_by_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(("a",))
+            config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+
+            def run(command, cwd, env, stdout, stderr):
+                _completed_receipt(Path(env["PIPELINE_OUTPUT"]))
+                stdout.write_text("HTTP 401 invalid_api_key", encoding="utf-8")
+                raise StageCommandError("command exited with status 1")
+
+            report = PipelineRunner(config, Path(directory) / "run",
+                                    command_runner=run, max_attempts=1).run()
+            stages = report["cases"]["a"]["stages"]
+            self.assertEqual(stages["repo"]["status"], "failed")
+            self.assertEqual(stages["qa"]["status"], "skipped")
 
 
 if __name__ == "__main__":

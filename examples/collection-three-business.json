@@ -23,8 +23,15 @@
         {
           "id": "service-operations",
           "brief": "Continue the support team's product through several related operational changes. Let the user ask questions, inspect behavior, observe failed attempts, correct business expectations, and later rely on those decisions in another part of the workflow.",
-          "external_fact_target": 12,
-          "preplan_external_facts": true,
+          "external_attempt_budget": 18,
+          "external_attempt_distribution": [
+            {"stage": 1, "behavior": "customer records and ticket intake", "memory_kinds": ["M1", "M2"], "attempts": 3},
+            {"stage": 2, "behavior": "service levels and assignment", "memory_kinds": ["M1", "M3", "M4"], "attempts": 3},
+            {"stage": 3, "behavior": "escalation and pause handling", "memory_kinds": ["M2", "M4"], "attempts": 3},
+            {"stage": 4, "behavior": "service history and closure", "memory_kinds": ["M1", "M3", "M6"], "attempts": 3},
+            {"stage": 5, "behavior": "operational reporting", "memory_kinds": ["M2", "M5"], "attempts": 3},
+            {"stage": 6, "behavior": "cross-workflow support operations", "memory_kinds": ["M1", "M4", "M6"], "attempts": 3}
+          ],
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Only facts, corrections, failures, and environment observations made public during the conversation count as history."
         }
@@ -38,8 +45,15 @@
         {
           "id": "migration-operations",
           "brief": "Continue the migration tool through several real data-operations requests. Let implementation attempts, command results, user questions, corrections, and later reconciliation work shape the product naturally.",
-          "external_fact_target": 12,
-          "preplan_external_facts": true,
+          "external_attempt_budget": 18,
+          "external_attempt_distribution": [
+            {"stage": 1, "behavior": "source import and field mapping", "memory_kinds": ["M1", "M2"], "attempts": 3},
+            {"stage": 2, "behavior": "incremental migration and duplicates", "memory_kinds": ["M1", "M3", "M4"], "attempts": 3},
+            {"stage": 3, "behavior": "difference checks and reports", "memory_kinds": ["M2", "M4"], "attempts": 3},
+            {"stage": 4, "behavior": "resumable failure handling", "memory_kinds": ["M1", "M3", "M6"], "attempts": 3},
+            {"stage": 5, "behavior": "rollback and persisted run state", "memory_kinds": ["M2", "M5"], "attempts": 3},
+            {"stage": 6, "behavior": "cross-run reconciliation", "memory_kinds": ["M1", "M4", "M6"], "attempts": 3}
+          ],
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Count an environment difference only after it appears in a public command or test result."
         }
@@ -53,8 +67,15 @@
         {
           "id": "change-operations",
           "brief": "Continue the release workflow through several related changes. Let the user investigate current behavior, ask for explanations, run commands, report unexpected results, correct operating expectations, and later reuse earlier decisions.",
-          "external_fact_target": 12,
-          "preplan_external_facts": true,
+          "external_attempt_budget": 18,
+          "external_attempt_distribution": [
+            {"stage": 1, "behavior": "change planning and dependency checks", "memory_kinds": ["M1", "M2"], "attempts": 3},
+            {"stage": 2, "behavior": "staged rollout preparation", "memory_kinds": ["M1", "M3", "M4"], "attempts": 3},
+            {"stage": 3, "behavior": "pause and resume operations", "memory_kinds": ["M2", "M4"], "attempts": 3},
+            {"stage": 4, "behavior": "failure rollback", "memory_kinds": ["M1", "M3", "M6"], "attempts": 3},
+            {"stage": 5, "behavior": "audit trail and reporting", "memory_kinds": ["M2", "M5"], "attempts": 3},
+            {"stage": 6, "behavior": "cross-change release operations", "memory_kinds": ["M1", "M4", "M6"], "attempts": 3}
+          ],
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Only public differences, failures, and corrections become historical evidence."
         }
