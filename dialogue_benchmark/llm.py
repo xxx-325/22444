@@ -64,6 +64,46 @@ class ModelStageError(ValueError):
         self.details = details
 
 
+TRANSIENT_RETRY_LIMIT = 2
+
+
+def is_transient_model_error(error):
+    """Return whether one bounded retry may plausibly succeed.
+
+    Retries are deliberately limited to transport failures.  Validation,
+    protocol, authentication, request-budget, and source errors are
+    deterministic for the same input and must remain visible to the caller.
+    """
+    if not isinstance(error, ModelStageError):
+        return False
+    if error.code in {"timeout", "connection_error"}:
+        return True
+    status = error.details.get("http_status")
+    return error.code == "http_error" and (
+        status == 429
+        or isinstance(status, int) and 500 <= status < 600
+    )
+
+
+def retry_model_call(call, *, attempts=TRANSIENT_RETRY_LIMIT,
+                     sleep=time.sleep):
+    """Run a model call with at most ``attempts`` transient retries.
+
+    The callable owns its input/output receipts, so each attempt remains
+    auditable.  Backoff is short and deterministic; callers still retain
+    control of their stage-level checkpoint and concurrency limits.
+    """
+    if not isinstance(attempts, int) or attempts < 0:
+        raise ValueError("attempts must be a non-negative integer")
+    for retry in range(attempts + 1):
+        try:
+            return call()
+        except Exception as error:
+            if retry >= attempts or not is_transient_model_error(error):
+                raise
+            sleep(min(1.0, 0.25 * (2 ** retry)))
+
+
 def stage_error(stage, error):
     diagnostic = {"stage": stage, "error_type": type(error).__name__}
     if isinstance(error, ModelStageError):
@@ -2051,10 +2091,12 @@ def _ask_stage(client, prompt, data, stage, *, request_budget=None):
     usage = getattr(client, "usage", None)
     before = len(usage) if isinstance(usage, list) else 0
     try:
-        if request_budget is not None and isinstance(client, ChatClient):
-            document = client.ask(prompt, data, request_budget=request_budget)
-        else:
-            document = client.ask(prompt, data)
+        def call():
+            if request_budget is not None and isinstance(client, ChatClient):
+                return client.ask(prompt, data, request_budget=request_budget)
+            return client.ask(prompt, data)
+
+        document = retry_model_call(call)
         # This version is selected by the caller, not a semantic model judgment.
         if (stage in {"review_evidence", "review_evidence_supplement"}
                 and "review_contract: simple_v1" in prompt and isinstance(document, dict)):

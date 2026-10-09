@@ -7,7 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from .llm import ChatClient, DEFAULT_REQUEST_TIMEOUT, request_size
+from .llm import ChatClient, DEFAULT_REQUEST_TIMEOUT, request_size, retry_model_call
 from .task_eval.selection import _path, _query_from_text, query_evidence
 
 
@@ -220,7 +220,7 @@ def probe_candidate(question, repository, endpoint, model, key_env, output,
                        remaining_queries=max_steps - len(state["observations"]))
         _write_json(step_dir / "input.json", {"prompt": PROBE_PROMPT, "payload": payload})
         try:
-            response = client.ask(PROBE_PROMPT, payload)
+            response = retry_model_call(lambda: client.ask(PROBE_PROMPT, payload))
             _write_json(step_dir / "response.json", response)
             _write_json(step_dir / "usage.json", client.usage)
         except Exception as error:
