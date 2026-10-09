@@ -40,6 +40,9 @@ from .selection import (build_audit, select_approved, difficulty_balance,
 DEFAULT_GENERAL_TYPES = tuple(sorted(GENERAL_QA_TYPES))
 DEFAULT_CODE_TYPES = tuple(sorted(CODE_QA_TYPES))
 _USER_PATH = re.compile(r"(?<![A-Za-z0-9:/])(?:/(?:Users|home)/[^/\s`'\"<>，。]+|[A-Za-z]:[\\/]Users[\\/][^\\/\s`'\"<>，。]+)(?=[\\/\s`'\"<>，。]|$)")
+_RUNTIME_PATH = re.compile(
+    r"(?<![A-Za-z0-9:/])/(?:workspace|workdir)(?:[/\\][^/\\\s`'\"<>，。]+)*"
+)
 _INTERNAL_PUBLIC_ID = re.compile(
     r"(?<![A-Za-z0-9_])(?:e|f)\d+(?![A-Za-z0-9_.(])|"
     r"(?<![A-Za-z0-9_])(?:code|general|memory)_s\d+_c\d+_f\d+(?![A-Za-z0-9_])|"
@@ -1387,6 +1390,8 @@ def _redact_public_text(value, workspaces=()):
                                          "<workspace>", parts[index])
                 count += n
         parts[index], n = _USER_PATH.subn("~", parts[index])
+        count += n
+        parts[index], n = _RUNTIME_PATH.subn("<workspace>", parts[index])
         count += n
         parts[index], n = _INTERNAL_PUBLIC_ID.subn("该条记录", parts[index])
         count += n

@@ -225,6 +225,9 @@ class DualModeCliTests(unittest.TestCase):
         self.assertEqual(cli._redact_public_text(
             "/home/alice/project-other/a.py", ["/home/alice/project"])[0],
             "~/project-other/a.py")
+        self.assertEqual(cli._redact_public_text(
+            "/workspace/tool-output/openhands-code/*.status")[0],
+            "<workspace>")
 
     def test_projection_covers_public_fields_without_mutating_audit(self):
         original = "/Users/alice/project/src/a.py"
