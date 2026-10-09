@@ -37,15 +37,40 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _write_receipt(path: Path, artifacts: Iterable[Path], *, result="completed") -> None:
+def _path_sha256(path: Path) -> str:
+    """Hash a stage input without depending on directory metadata."""
+    path = Path(path)
+    if path.is_file():
+        return _sha256(path)
+    if path.is_dir():
+        digest = hashlib.sha256()
+        for item in sorted(item for item in path.rglob("*") if item.is_file()):
+            digest.update(str(item.relative_to(path)).encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(_sha256(item).encode("ascii"))
+        return digest.hexdigest()
+    raise ValueError("stage input does not exist: %s" % path)
+
+
+def _write_receipt(path: Path, artifacts: Iterable[Path], *, result="completed",
+                   input_path: Optional[Path] = None, warnings=None,
+                   retryable: bool = False) -> None:
     path = Path(path).resolve()
     paths = [Path(item).resolve() for item in artifacts if Path(item).is_file()]
     if not paths:
         raise RuntimeError("stage produced no artifacts")
     relative = [{"path": str(item.relative_to(path.parent)), "sha256": _sha256(item)}
                 for item in paths]
+    output_sha256 = hashlib.sha256(
+        json.dumps(relative, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     payload = {"status": "completed", "result": result,
-               "sha256": _sha256(paths[0]), "artifacts": relative}
+               "sha256": _sha256(paths[0]), "artifacts": relative,
+               "input_sha256": _path_sha256(Path(input_path).resolve())
+               if input_path is not None else None,
+               "output_sha256": output_sha256,
+               "warnings": list(warnings or []), "retryable": bool(retryable)}
     save(path, payload)
 
 
@@ -156,7 +181,8 @@ def _repo_stage(args) -> int:
     if external_information_plan.is_file():
         receipt_artifacts.append(external_information_plan)
     _write_receipt(output / "stage-receipt.json", receipt_artifacts,
-                   result="completed_with_warnings" if quality_warnings else "completed")
+                   result="completed_with_warnings" if quality_warnings else "completed",
+                   input_path=plan, warnings=quality_warnings)
     return 0
 
 
@@ -231,8 +257,10 @@ def _qa_stage(args) -> int:
         evaluation = plan.get("evaluation", {})
         target = (evaluation.get("qa_count", 40) if route == "external" else
                   evaluation.get("general_count", 40) + evaluation.get("code_count", 40))
+        usable_for_tasks = ready and bool(eligible)
         records[route] = {"returncode": outcomes[route],
                           "status": route_status, "output_ready": ready,
+                          "usable_for_tasks": usable_for_tasks,
                           "qualified": ready and approved,
                           "eligible": ready and eligible,
                           "provisional": ready and eligible and not approved,
@@ -241,14 +269,23 @@ def _qa_stage(args) -> int:
         artifacts.append(pipeline)
     save(output / "qa-summary.json", {"manifest": str(manifest), "routes": records})
     artifacts.append(output / "qa-summary.json")
+    qa_warnings = [
+        "%s_not_usable_for_tasks" % route for route, item in records.items()
+        if not item["usable_for_tasks"]
+    ]
+    qa_warnings.extend(
+        "%s_shortfall" % route for route, item in records.items() if item["shortfall"]
+    )
     if not any(item["output_ready"] for item in records.values()):
-        _write_receipt(output / "stage-receipt.json", artifacts, result="routes_failed")
+        _write_receipt(output / "stage-receipt.json", artifacts, result="routes_failed",
+                       input_path=input_root, warnings=qa_warnings, retryable=True)
         return 1
     _write_receipt(output / "stage-receipt.json", artifacts,
                    result="completed_with_warnings" if any(
                        not item["qualified"] or item["shortfall"] or item["returncode"]
                        or item["status"] != "completed"
-                       for item in records.values()) else "completed")
+                       for item in records.values()) else "completed",
+                   input_path=input_root, warnings=qa_warnings)
     return 0
 
 
@@ -281,9 +318,17 @@ def _task_stage(args) -> int:
         question.get("status") == "approved" for question in public["questions"]
     )
     allow_provisional = any(item.get("provisional") for item in eligible_items)
+    qa_summary = read(input_root / "qa-summary.json") if (input_root / "qa-summary.json").is_file() else {}
+    external_summary = qa_summary.get("routes", {}).get("external", {})
+    usable_for_tasks = external_summary.get("usable_for_tasks")
+    if not isinstance(usable_for_tasks, bool):
+        usable_for_tasks = bool(eligible_items)
+    if not usable_for_tasks:
+        eligible_items = []
+        allow_provisional = False
     qualified = (
         pipeline.get("status") not in {"failed", "blocked", "interrupted"}
-        and bool(eligible_items)
+        and usable_for_tasks
     )
     output.mkdir(parents=True, exist_ok=True)
     task_manifest = output / "tasks" / "manifest.json"
@@ -306,7 +351,10 @@ def _task_stage(args) -> int:
                              "shortfall": max(0, target - task_data.get("completed", 0)),
                              "tasks": task_data.get("tasks", [])})
         _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary,
-                       output / "tasks/report.md"], result="completed_with_warnings")
+                       output / "tasks/report.md"], result="completed_with_warnings",
+                       input_path=input_root,
+                       warnings=["external_qa_not_usable_for_tasks"],
+                       retryable=False)
         return 0
     qa_dir = output / "qa"
     qa_ready = all((qa_dir / name).is_file() for name in ("manifest.json", "qa-public.json"))
@@ -337,7 +385,9 @@ def _task_stage(args) -> int:
                          "completed": task_data.get("completed", 0),
                          "shortfall": task_data.get("shortfall", 0),
                          "provisional_completed": task_data.get("provisional_completed", 0)})
-    _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary], result=result)
+    _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary], result=result,
+                   input_path=input_root,
+                   warnings=(["task_shortfall"] if result != "completed" else []))
     return 0
 
 

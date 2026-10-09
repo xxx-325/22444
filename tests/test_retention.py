@@ -163,6 +163,24 @@ class RetentionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 compact_run(root)
 
+    def test_compaction_accepts_completed_with_warnings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save(root / "pipeline.json", {"status": "completed_with_warnings"})
+            save(root / "tasks/manifest.json", {"tasks": []})
+            save(root / "baseline/a.py", "baseline")
+            save(root / "baseline.json", {"content_sha256": fingerprint(root / "baseline")})
+            save(root / "qa/qa-public.json", {"questions": []})
+            save(root / "qa/evidence-groups.json", [])
+            (root / "qa/stages").mkdir(parents=True)
+            with patch("dialogue_benchmark.task_eval.retention.code_versions", return_value=[]), \
+                 patch("dialogue_benchmark.task_eval.retention.docker_inventory",
+                       return_value={"containers": [], "volumes": [], "networks": []}), \
+                 patch("dialogue_benchmark.task_eval.retention.release_docker",
+                       return_value={"errors": []}):
+                receipt = compact_run(root)
+            self.assertEqual(receipt["status"], "completed")
+
     def test_clarification_audit_shares_context_and_preserves_exact_rounds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

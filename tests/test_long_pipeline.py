@@ -201,6 +201,15 @@ class LongPipelineTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             receipt = json.loads((root / "qa/stage-receipt.json").read_text())
             self.assertEqual(receipt["result"], "completed_with_warnings")
+            self.assertTrue(receipt["input_sha256"])
+            self.assertTrue(receipt["output_sha256"])
+            self.assertIn("external_not_usable_for_tasks", receipt["warnings"])
+            self.assertFalse(receipt["retryable"])
+            summary = json.loads((root / "qa/qa-summary.json").read_text())
+            self.assertTrue(summary["routes"]["graph"]["output_ready"])
+            self.assertFalse(summary["routes"]["graph"]["usable_for_tasks"])
+            self.assertTrue(summary["routes"]["external"]["output_ready"])
+            self.assertFalse(summary["routes"]["external"]["usable_for_tasks"])
             args.input, args.output = root / "qa", root / "task"
             with patch("dialogue_benchmark.long_pipeline._run_logged") as run:
                 self.assertEqual(_task_stage(args), 0)
@@ -210,6 +219,30 @@ class LongPipelineTests(unittest.TestCase):
             self.assertEqual(summary["shortfall"], 3)
             self.assertTrue((root / "task/tasks/report.md").is_file())
             self.assertTrue((root / "task/tasks/report.html").is_file())
+
+    def test_task_stage_honors_qa_usable_for_tasks_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            input_root = root / "qa"
+            external = input_root / "external"
+            output = root / "task"
+            repo.mkdir(parents=True)
+            save(repo / "manifest-path.json", {"manifest": str(root / "episode.json"),
+                                                "plan": str(root / "plan.json")})
+            save(root / "episode.json", {"placeholder": True})
+            save(root / "plan.json", {"evaluation": {"task_count": 1}})
+            save(external / "pipeline.json", {"status": "completed"})
+            self.save_qa(external / "qa")
+            save(input_root / "qa-summary.json", {"routes": {
+                "external": {"output_ready": True, "usable_for_tasks": False}
+            }})
+            args = SimpleNamespace(input=input_root, output=output)
+            with patch("dialogue_benchmark.long_pipeline._run_logged") as run:
+                self.assertEqual(_task_stage(args), 0)
+            run.assert_not_called()
+            summary = json.loads((output / "task-stage.json").read_text())
+            self.assertEqual(summary["reason"], "external_qa_not_qualified")
 
     def test_unavailable_qa_preserves_existing_requirements(self):
         with tempfile.TemporaryDirectory() as directory:

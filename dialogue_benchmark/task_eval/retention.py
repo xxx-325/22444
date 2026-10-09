@@ -221,7 +221,8 @@ def compact_clarifications(agent):
 def compact_run(root):
     """Compact a completed run in place after preserving every agreed artifact."""
     root = Path(root).resolve()
-    if read(root / "pipeline.json").get("status") != "completed":
+    if read(root / "pipeline.json").get("status") not in {
+            "completed", "completed_with_warnings"}:
         raise ValueError("Only a completed episode can be compacted")
     if (root / "retention.json").exists() and read(root / "retention.json").get("status") == "completed":
         return read(root / "retention.json")
