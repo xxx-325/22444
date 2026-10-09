@@ -277,32 +277,6 @@ def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
-def _git_provenance(root):
-    """Capture code identity without copying source or untracked contents."""
-    root = Path(root).resolve()
-    result = {"commit": None, "dirty": False, "diff_sha256": None}
-    try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=root, text=True,
-            capture_output=True, check=False,
-        )
-        status = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
-            cwd=root, text=True, capture_output=True, check=False,
-        )
-        diff = subprocess.run(
-            ["git", "diff", "--binary", "HEAD", "--"],
-            cwd=root, capture_output=True, check=False,
-        )
-    except OSError:
-        return result
-    result["commit"] = head.stdout.strip() if head.returncode == 0 else None
-    result["dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
-    if diff.returncode == 0:
-        result["diff_sha256"] = hashlib.sha256(diff.stdout).hexdigest()
-    return result
-
-
 def _accepted_receipt(result, expected):
     status = result.get("status")
     if status in {"blocked", "failed", "rejected"}:
@@ -598,16 +572,11 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
     for role in ("user", "code", "judge", "decomposer"):
         if isinstance(runtime.get(role), dict):
             runtime[role]["max_output_tokens"] = None
-    provenance = {
-        "benchmark": _git_provenance(Path(__file__).resolve().parents[1]),
-        "simulator": _git_provenance(simulator),
-    }
     identity = dict(plan_sha256=_sha256(plan_path), runtime_sha256=_sha256(runtime_path),
                     simulator=str(simulator), python=str(python),
                     dialogue_only=bool(dialogue_only or plan.get("dialogue_only", False)),
                     prepared_configs={p["id"]: _sha256((plan_path.parent / p["prepared_config"]).resolve())
-                                      for p in plan["projects"] if p.get("prepared_config")},
-                    code_provenance=provenance)
+                                      for p in plan["projects"] if p.get("prepared_config")})
     if resume:
         state = read(output / "collection.json")
         if state.get("identity") != identity:
@@ -628,7 +597,6 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         information_plan = plan_external_information(plan["projects"])
         save(output / "external-information-plan.json", information_plan)
         state["external_information_plan"] = "external-information-plan.json"
-        state["code_provenance"] = provenance
     state["status"] = "running"
     dialogue_only = bool(dialogue_only or state.get("dialogue_only", False))
     state["dialogue_only"] = dialogue_only
@@ -679,8 +647,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         target = str(folder.relative_to(output))
         # The config file is enriched as upstream stages complete; command and
         # workspace identity remain stable across that expected mutation.
-        stage_identity = dict(command=command, cwd=str(cwd),
-                              code_provenance=provenance)
+        stage_identity = dict(command=command, cwd=str(cwd))
         previous = next((s for s in reversed(state["stages"])
                          if s.get("target", s["path"]) == target), None)
         if previous:

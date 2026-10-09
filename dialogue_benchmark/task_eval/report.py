@@ -80,8 +80,8 @@ def write_report(output, manifest):
                 _cell(trial.get("judge_status", "not saved")),
                 "[Execution result](%s)" % receipt.relative_to(output) if receipt.is_file() else "not saved"))
     lines += ["", "## Aggregate execution costs", "",
-              "| Condition | Trials | Passed / failed / uncertain | Pass rate | History questions | Clarifications | Development tools | File views | Reads/searches | Solver tokens | Responder tokens | Injection tokens | Cache hit / rate |",
-              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+              "| Condition | Trials | Passed / failed / uncertain | Pass rate | History questions | Clarifications | Development tools | File views | Reads/searches | Solver prompt | Solver completion | Solver total | Responder tokens | Injection tokens | Cache hit / rate |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     rates = {}
     for condition in ("without_memory", "with_memory"):
         trials = [t["comparison"][condition] for t in tasks if condition in t.get("comparison", {})]
@@ -99,7 +99,7 @@ def write_report(output, manifest):
                       sum(t["metrics"]["cache_observed_prompt_tokens"] for t in trials)
                       if cache_complete and sum(t["metrics"]["cache_observed_prompt_tokens"] for t in trials) else None)
         injection = total("injection_tokens")
-        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             condition, len(trials),
             "/".join(str(sum(t["result"] == v for t in trials)) for v in ("passed", "failed", "uncertain")),
             "%.1f%%" % (100 * rates[condition]) if trials else "—",
@@ -108,6 +108,7 @@ def write_report(output, manifest):
              else "not saved"),
             sum(clarification_counts) if trials and all(isinstance(v, int) for v in clarification_counts) else "not saved",
             total("tool_calls"), total("file_view_calls"), total("shell_read_or_search_calls"),
+            total("prompt_tokens"), total("completion_tokens"),
             str(total("solver_tokens")) + ("" if all(t.get("metrics", {}).get("usage_complete") for t in trials) else " (incomplete)"),
             sum(r["tokens"] for r in responder) if trials and all(r and r.get("usage_complete") for r in responder) else "not saved",
             injection,
@@ -121,13 +122,14 @@ def write_report(output, manifest):
               "Differences are with memory minus without memory. Raw costs are retained even when one arm "
               "fails; comparable costs are shown only when both arms pass. Token differences cover the "
               "solver; responder tokens are listed separately above.",
-              "", "| Task | Both passed | History questions | Raw tools | Raw views | Raw reads | Raw tokens | Comparable tools | Comparable views | Comparable reads | Comparable tokens |",
-              "|---|---|---|---|---|---|---|---|---|---|---|"]
+              "", "| Task | Pair class | Both passed | Efficiency comparable | History questions | Raw tools | Raw views | Raw reads | Raw tokens | Comparable tools | Comparable views | Comparable reads | Comparable tokens |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for task in tasks:
         pair = compare_trials(task.get("comparison", {}))
         raw, delta = pair["raw_cost_differences"], pair["comparable_cost_differences"]
-        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
-            task["task"], pair["both_passed"], pair["history_question_difference"],
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            task["task"], pair.get("pair_class", "not saved"), pair["both_passed"],
+            pair.get("efficiency_comparable", False), pair["history_question_difference"],
             *(raw[k] for k in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens")),
             *(delta[k] for k in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"))))
     successful = [compare_trials(t.get("comparison", {})) for t in tasks
@@ -137,6 +139,19 @@ def write_report(output, manifest):
         values = [p["cost_differences"][metric] for p in successful]
         delta = sum(values) if values and all(v is not None for v in values) else "not available"
         lines.append("- %s: total paired difference %s" % (metric, delta))
+    lines += ["", "## No-memory, no-followup diagnostic", "",
+              "This diagnostic is separate from the main pair and does not change pass rates.",
+              "", "| Task | Result | Solver status | Judge status | Tokens |",
+              "|---|---|---|---|---|"]
+    for task in tasks:
+        diagnostic = output / task["task"] / "diagnostic-no-memory-no-followup/result.json"
+        if not diagnostic.is_file():
+            continue
+        row = json.loads(diagnostic.read_text())
+        lines.append("| %s | %s | %s | %s | %s |" % (
+            task["task"], row.get("result", "not saved"), row.get("solver_status", "not saved"),
+            row.get("judge_status", "not saved"),
+            row.get("metrics", {}).get("total_tokens", "not saved")))
     lines += ["", "## Frozen acceptance and historical rules", ""]
     for task in tasks:
         for condition, trial in task.get("comparison", {}).items():

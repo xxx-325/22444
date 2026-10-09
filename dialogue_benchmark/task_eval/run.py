@@ -82,6 +82,95 @@ def injected_answer(item, spec):
     return read(path)["answer"] if path.is_file() else answer_text(item["qa"])
 
 
+def external_clarification_history(item):
+    """Build a private responder-only history for an external QA.
+
+    The solver still receives no public dialogue contract.  The controlled
+    responder needs only the approved answer points and their disclosed source
+    records so that a ``HISTORY_QUESTION`` can be answered without inventing
+    facts or silently turning the full dialogue into solver context.
+    """
+    qa = item.get("qa", {})
+    points = list(qa.get("answer_points", []))
+    global_agreements = list(item.get("global_agreements", []))
+    source_ids = {
+        source for point in points
+        for source in (point.get("sources", []) if isinstance(point, dict) else [])
+        if isinstance(source, str) and source.strip()
+    }
+    source_ids.update(
+        source for row in global_agreements
+        for source in row.get("sources", [])
+        if isinstance(source, str) and source.strip()
+    )
+    records = item.get("public_records") or []
+    events = []
+    available = set()
+    for record in records:
+        record_ids = {record.get("id"), record.get("original_id")}
+        for source in source_ids:
+            base = source.partition("#fragment-")[0]
+            if source in record_ids or base in record_ids:
+                # Preserve the exact source spelling used by the QA contract;
+                # the text remains the public record, not private metadata.
+                events.append({
+                    "id": source,
+                    "original_id": record.get("original_id", record.get("id")),
+                    "order": record.get("order", len(events)),
+                    "kind": record.get("kind", "message"),
+                    "role": record.get("role"),
+                    "text": record.get("text", ""),
+                })
+                available.add(source)
+                break
+    if source_ids - available:
+        return None
+    by_source = {event["id"]: event for event in events}
+    contracts = []
+    for index, point in enumerate(points, 1):
+        text = point if isinstance(point, str) else point.get("text", point.get("claim", ""))
+        refs = [source for source in (point.get("sources", []) if isinstance(point, dict) else [])
+                if source in by_source]
+        if not text.strip() or not refs:
+            continue
+        contracts.append({
+            "id": "external-rule-%d" % index,
+            "statement": text,
+            "scope": "该外部事实公开披露的适用范围",
+            "behavior": "该事实影响的后续业务判断",
+            "sources": refs,
+            "supersedes": [],
+            "order": max(by_source[source]["order"] for source in refs),
+            "active": True,
+            "repository": "external",
+        })
+    for index, row in enumerate(global_agreements, len(contracts) + 1):
+        text = row.get("text", "")
+        refs = [source for source in row.get("sources", []) if source in by_source]
+        if not text.strip() or not refs:
+            continue
+        contracts.append({
+            "id": "global-agreement-%d" % index,
+            "statement": text,
+            "scope": row.get("context") or "适用于相关后续需求",
+            "behavior": "项目范围约定",
+            "sources": refs,
+            "supersedes": [],
+            "order": max(by_source[source]["order"] for source in refs),
+            "active": True,
+            "repository": "external",
+        })
+    if not contracts:
+        return None
+    return {
+        "cutoff_event_id": max((event["id"] for event in events), default=None),
+        "contracts": contracts,
+        "events": events,
+        "oracle_answer": available_answer(item),
+        "reference_information": "approved external QA answer and disclosed sources",
+    }
+
+
 def memory_injection(task, answer, cutoff_event_id=None):
     """Build the replaceable oracle-memory payload for one solver arm."""
     text = answer if isinstance(answer, str) else ""
@@ -130,15 +219,18 @@ def _static_repository_recovery(baseline, answer):
         for line in answer.splitlines() if line.strip()
     ]
     phrases = [phrase for phrase in phrases if len(phrase) >= 8]
-    literals = set(re.findall(
-        r"(?:\b\d[\d./:-]*\b|`[^`]+`|"
-        r"\b[A-Z][A-Za-z0-9_-]{2,}\b|"
-        r"\b[a-z][a-z0-9_-]{7,}\b)",
-        answer,
-    ))
-    distinctive = [value.casefold() for value in literals if len(value.strip("`")) >= 3]
     if phrases and all(phrase in text for phrase in phrases):
         return True
+    # A common number or English word is not evidence that the repository
+    # contains the historical rule.  Only keep literals whose spelling is
+    # itself distinctive (dates, namespaced values, or enum-like identifiers).
+    literals = set(re.findall(
+        r"`[^`]+`|"
+        r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[T ][\d:Z.+-]+)?\b|"
+        r"\b[A-Za-z][A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)+\b",
+        answer,
+    ))
+    distinctive = [value.casefold() for value in literals if len(value.strip("`")) >= 4]
     return bool(distinctive) and all(value in text for value in distinctive)
 
 
@@ -261,8 +353,8 @@ def admission(validation, baseline_checks, reference_checks, baseline_acceptance
                     and validation.get("MUTATIONS") in {"caught", "unavailable"})
     # M1/M3 are the hard admission boundary: a repository-only probe must not
     # solve them without history.  A failed probe is evidence for review.
-    if probe is not None and task_type in {"M1", "M3"}:
-        if probe.get("status") == "needs_review":
+    if task_type in {"M1", "M3"}:
+        if not probe or probe.get("status") != "pass":
             return False
         if probe.get("recoverable") or probe.get("static_recovery"):
             return False
@@ -277,20 +369,18 @@ def repository_design_probe(root, baseline, spec, config, agent_options, answer=
               "Do not use conversation history or ask a follow-up question.\n\n" +
               (Path(spec) / "task.md").read_text(encoding="utf-8"))
     try:
-        try:
-            outcome = run_agent(probe_root, config, "code", prompt,
-                                history=None, no_history=True, no_followup=True,
-                                **agent_options)
-        except TypeError:
-            outcome = run_agent(probe_root, config, "code", prompt,
-                                history=None, **agent_options)
+        outcome = run_agent(probe_root, config, "code", prompt,
+                            history=None, no_history=True, no_followup=True,
+                            **agent_options)
         checks = run_checks(probe_root / "workspace/candidate", spec,
                             probe_root / "checks", config["execution_image"],
                             candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         finished = agent_finished(outcome)
         recoverable = finished and checks.get("status") == "passed"
         static_recovery = _static_repository_recovery(baseline, answer)
-        return {"status": "pass", "recoverable": recoverable,
+        status = ("needs_review" if not finished or checks.get("status") in {"error", "unavailable"}
+                  else "pass")
+        return {"status": status, "recoverable": recoverable,
                 "static_recovery": static_recovery, "checks": checks,
                 "solver_status": outcome.get("status")}
     except Exception as error:
@@ -1003,9 +1093,11 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record["reason"] = "historical_mutation_not_verified"
         if baseline_already_satisfies:
             record["reason"] = "baseline_already_satisfies_task"
+        kinds = _task_memory_kinds(item)
         probe = None
-        if design_probe:
-            kinds = _task_memory_kinds(item)
+        # High-risk external kinds always receive the repository-only probe.
+        # The flag remains a diagnostic opt-in for other kinds.
+        if kinds.intersection({"M1", "M3"}) or design_probe:
             if kinds.intersection({"M1", "M3"}):
                 probe = repository_design_probe(
                     run, baseline, final_spec or spec, config, agent_options,
@@ -1016,7 +1108,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                              baseline, available_answer(item)),
                          "memory_kinds": sorted(kinds)}
             record["design_probe"] = probe
-        kinds = _task_memory_kinds(item)
         task_type = next((kind for kind in ("M1", "M3") if kind in kinds),
                          next(iter(sorted(kinds)), None))
         admitted = admission(record["validation"], baseline_checks, reference_checks,
@@ -1077,6 +1168,9 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *,
     task = (spec / "task.md").read_text()
     items = read(spec / "acceptance.json")
     history = read(spec / "history.json") if (spec / "history.json").exists() else None
+    clarification_history = (
+        external_clarification_history(item)
+        if item.get("qa_source") == "external" else history)
     result = read(root / "comparison.json") if resume and (root / "comparison.json").is_file() else {}
     order = ("without_memory", "with_memory") if index % 2 == 0 else ("with_memory", "without_memory")
     for slot, condition in enumerate(order, 1):
@@ -1109,11 +1203,12 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *,
             save(trial / "memory-injection.json", {
                 "source": injection["source"] if condition == "with_memory" else "none",
                 "token_count": injection["token_count"] if condition == "with_memory" else 0,
+                "token_count_kind": "cl100k_base_estimate" if condition == "with_memory" else "not_applicable",
                 "cutoff_event_id": injection["cutoff_event_id"],
             })
             message = solver_input(
                 task, injection["text"] if condition == "with_memory" else None)
-            if history:
+            if history or clarification_history:
                 message += prompts.HISTORY_REQUEST
             print(root.name, "evaluation", condition, flush=True)
             def record_round(number, outcome):
@@ -1167,7 +1262,8 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *,
                                max_rounds=2, on_round=record_round,
                                injection_tokens=(injection["token_count"]
                                                  if condition == "with_memory" else 0),
-                               **({"history": history} if history else {}))
+                               **({"history": history} if history else {}),
+                               clarification_history=clarification_history)
         candidate = trial / "workspace/candidate"
         completed_rounds = sorted(trial.glob("round-*/result.json"))
         if solved.get("clarification_unresolved") and not completed_rounds:
@@ -1605,8 +1701,7 @@ def main(argv=None):
         manifest = dict(expected_manifest, tasks=[])
         save(output / "manifest.json", manifest)
     agent_options = {"max_requests": args.agent_requests, "max_tokens": args.agent_tokens,
-                     "max_seconds": args.agent_seconds or 1200,
-                     "request_timeout": request_timeout}
+                     "max_seconds": args.agent_seconds or 1200}
 
     # A construction directory is an append-only attempt.  Keep its record
     # and give an unfinished construction a fresh task directory on resume;

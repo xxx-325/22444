@@ -658,7 +658,7 @@ def public_reply(events):
 def run_agent(root, config, role, message, *, system=None, reference=None,
               max_requests=80, max_tokens=1500000, max_seconds=1200, history=None,
               max_rounds=1, on_round=None, no_history=False, no_followup=False,
-              injection_tokens=None):
+              injection_tokens=None, clarification_history=None):
     from simulator.openhands.budget import Budget
     from simulator.openhands.container import SDKContainer
 
@@ -673,6 +673,12 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
     root = Path(root)
     if no_history:
         history = None
+        clarification_history = None
+    # A task may deliberately hide the public history from the solver while
+    # still allowing the controlled customer responder to answer an explicit
+    # historical question.  This keeps the responder useful without turning
+    # the external QA source dialogue into solver context.
+    responder_history = clarification_history or history
     responder_cost = {"requests": 0, "tokens": 0, "usage_complete": True}
     exchanges = []
     clarification_turns = []
@@ -717,7 +723,7 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
             responder_cost["requests"] += 1
             try:
                 decision = answer_clarification(
-                    question, history, exchanges[:-1], config, review_dir)
+                    question, responder_history, exchanges[:-1], config, review_dir)
             except Exception as error:
                 decision = {"status": "unavailable", "kind": "none",
                             "sources": [], "reply": "none",
@@ -744,7 +750,7 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                 return decision["reply"]
             return None
 
-        if history and max_rounds == 1 and not no_followup:
+        if responder_history and max_rounds == 1 and not no_followup:
             # A one-round caller still gets a complete clarification exchange
             # before its single scored code round.  Keep asking only when the
             # agent emits another explicit marker; ordinary completion prose
@@ -778,7 +784,7 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
             current["metrics"]["attempted_requests"] = budget.data["attempts"]
             current["metrics"]["usage_complete"] &= not budget.data.get("usage_missing", False)
             question = None
-            if history and not no_followup:
+            if responder_history and not no_followup:
                 from .history import historical_question
                 question = historical_question(current["final"])
             if question is not None:
@@ -839,14 +845,18 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
     outcome["metrics"]["usage_complete"] &= not budget.data.get("usage_missing", False)
     outcome["metrics"]["attempted_requests"] = budget.data["attempts"]
     if max_rounds > 1:
-        if outcome["status"] == "error" and len(rounds) < max_rounds:
+        # A failed responder/clarification turn is not a solver round.  Keep
+        # its raw error in the clarification exchange and let the pair record
+        # the unresolved status without manufacturing a Judge input.
+        if (outcome["status"] == "error" and len(rounds) < max_rounds
+                and not (outcome.get("clarification_unresolved") and not rounds)):
             failed = dict(outcome, round=len(rounds) + 1)
             rounds.append(failed)
             save(root / "rounds.json", rounds)
             if on_round is not None:
                 on_round(failed["round"], failed)
         outcome["rounds"] = rounds
-    if history:
+    if responder_history:
         outcome["clarifications"] = exchanges
         outcome["clarification_count"] = len(exchanges)
         outcome["clarification_turns"] = len(exchanges)

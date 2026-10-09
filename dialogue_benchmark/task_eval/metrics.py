@@ -148,20 +148,46 @@ def compare_trials(comparison):
     left, right = (comparison.get(k, {}) for k in ("without_memory", "with_memory"))
     complete = all(trial.get("result") in {"passed", "failed", "uncertain"} for trial in (left, right))
     both = left.get("result") == right.get("result") == "passed"
-    result = {"both_passed": both, "completion_difference":
+    if not complete:
+        pair_class = "incomplete"
+    elif both:
+        pair_class = "both_passed"
+    elif right.get("result") == "passed":
+        pair_class = "memory_capability_gain"
+    elif left.get("result") == "passed":
+        pair_class = "memory_harm_candidate"
+    else:
+        pair_class = "both_failed"
+    solver_usage_complete = all(
+        trial.get("metrics", {}).get("usage_complete") is True
+        for trial in (left, right))
+    responder_trials = [trial.get("responder_cost") for trial in (left, right)]
+    responder_usage_complete = (
+        not any(responder_trials)
+        or all(cost and cost.get("usage_complete") is True for cost in responder_trials))
+    efficiency_ready = both and solver_usage_complete and responder_usage_complete
+    result = {"both_passed": both, "pair_class": pair_class,
+              "efficiency_comparable": efficiency_ready,
+              "completion_difference":
               int(right.get("result") == "passed") - int(left.get("result") == "passed") if complete else None,
               "raw_cost_differences": {}, "comparable_cost_differences": {}}
     for key in ("tool_calls", "file_view_calls", "shell_read_or_search_calls",
-                "total_tokens", "solver_tokens", "responder_tokens", "injection_tokens"):
+                "prompt_tokens", "completion_tokens", "cache_hit_tokens",
+                "cache_miss_tokens", "total_tokens", "solver_tokens",
+                "responder_tokens", "injection_tokens"):
         a, b = left.get("metrics", {}).get(key), right.get("metrics", {}).get(key)
         raw_valid = isinstance(a, (int, float)) and isinstance(b, (int, float))
-        if key in {"total_tokens", "solver_tokens", "responder_tokens", "injection_tokens"}:
+        if key in {"prompt_tokens", "completion_tokens", "total_tokens", "solver_tokens"}:
+            raw_valid = raw_valid and solver_usage_complete
+        elif key in {"cache_hit_tokens", "cache_miss_tokens"}:
             raw_valid = raw_valid and all(
-                (t.get("metrics", {}).get("usage_complete") if key in {"total_tokens", "solver_tokens"}
-                 else True) for t in (left, right))
+                t.get("metrics", {}).get("cache_usage_complete") is True
+                for t in (left, right))
+        elif key == "responder_tokens":
+            raw_valid = raw_valid and responder_usage_complete
         raw = b - a if raw_valid else None
         result["raw_cost_differences"][key] = raw
-        result["comparable_cost_differences"][key] = raw if both else None
+        result["comparable_cost_differences"][key] = raw if efficiency_ready else None
     # Keep the old key as the fair, both-passed-only view for existing reports
     # and callers.  New consumers should use the explicit names above.
     result["cost_differences"] = dict(result["comparable_cost_differences"])

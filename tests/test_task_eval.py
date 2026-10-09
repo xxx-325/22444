@@ -19,7 +19,10 @@ from dialogue_benchmark.task_eval.runtime import (configure, preflight_openhands
 from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_pollution,
                                                main as run_tasks,
                                                reference_solver_answer,
-                                               solver_input, unchanged, validated_spec)
+                                               solver_input, unchanged, validated_spec,
+                                               _static_repository_recovery,
+                                               external_clarification_history,
+                                               repository_design_probe)
 
 
 class TaskEvaluationTests(unittest.TestCase):
@@ -512,9 +515,67 @@ class TaskEvaluationTests(unittest.TestCase):
                 "with_memory": {"result": "failed", "metrics": {"tool_calls": 1}}}
         self.assertIsNone(compare_trials(pair)["cost_differences"]["tool_calls"])
         self.assertEqual(compare_trials(pair)["raw_cost_differences"]["tool_calls"], -9)
-        pair["with_memory"]["result"] = "passed"
+        pair["without_memory"]["metrics"]["usage_complete"] = True
+        pair["with_memory"].update(result="passed", metrics={"tool_calls": 1, "usage_complete": True})
         self.assertEqual(compare_trials(pair)["cost_differences"]["tool_calls"], -9)
         self.assertEqual(compare_trials(pair)["comparable_cost_differences"]["tool_calls"], -9)
+        self.assertEqual(compare_trials(pair)["pair_class"], "both_passed")
+
+    def test_pair_class_keeps_capability_and_failure_categories(self):
+        base = {"metrics": {"usage_complete": True}}
+        self.assertEqual(compare_trials({
+            "without_memory": dict(base, result="failed"),
+            "with_memory": dict(base, result="passed")})["pair_class"],
+                         "memory_capability_gain")
+        self.assertEqual(compare_trials({
+            "without_memory": dict(base, result="passed"),
+            "with_memory": dict(base, result="failed")})["pair_class"],
+                         "memory_harm_candidate")
+        self.assertEqual(compare_trials({
+            "without_memory": dict(base, result="failed"),
+            "with_memory": dict(base, result="uncertain")})["pair_class"],
+                         "both_failed")
+
+    def test_repository_recovery_does_not_treat_common_number_as_leak(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "config.py").write_text("DEFAULT_TIMEOUT = 600\n")
+            self.assertFalse(_static_repository_recovery(
+                root, "The operation waits 600 seconds and does not read history."))
+
+    def test_external_responder_history_does_not_replace_solver_history(self):
+        item = {
+            "qa_source": "external",
+            "qa": {"answer_points": [{"text": "SMS is disabled.", "sources": ["e1"]}]},
+            "public_records": [{"id": "e1", "original_id": "e1", "order": 3,
+                                "kind": "message", "role": "user",
+                                "text": "The provider disabled SMS."}],
+        }
+        history = external_clarification_history(item)
+        self.assertEqual(history["contracts"][0]["sources"], ["e1"])
+        self.assertEqual(history["events"][0]["text"], "The provider disabled SMS.")
+
+    def test_repository_probe_error_stays_needs_review_and_m1_requires_probe(self):
+        validation = {"BASELINE": "unmet", "REFERENCE": "pass", "VERDICT": "accept",
+                      "TESTS": "unavailable", "MUTATIONS": "unavailable", "COVERAGE": "complete"}
+        self.assertFalse(admission(validation, {"status": "unavailable"},
+                                   {"status": "unavailable"}, task_type="M1"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            spec = root / "spec"
+            spec.mkdir()
+            (spec / "task.md").write_text("Implement the task.")
+            with patch("dialogue_benchmark.task_eval.run.run_agent",
+                       return_value={"status": "error", "error_type": "timeout"}), \
+                 patch("dialogue_benchmark.task_eval.run.run_checks",
+                       return_value={"status": "error"}):
+                probe = repository_design_probe(
+                    root / "task", baseline, spec,
+                    {"execution_image": "image", "code": {}},
+                    {"max_requests": 1, "max_tokens": 10, "max_seconds": 1})
+            self.assertEqual(probe["status"], "needs_review")
 
     def test_raw_token_delta_requires_complete_usage_but_other_costs_survive_failure(self):
         pair = {
