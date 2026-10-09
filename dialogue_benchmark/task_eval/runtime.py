@@ -657,7 +657,8 @@ def public_reply(events):
 
 def run_agent(root, config, role, message, *, system=None, reference=None,
               max_requests=80, max_tokens=1500000, max_seconds=1200, history=None,
-              max_rounds=1, on_round=None):
+              max_rounds=1, on_round=None, no_history=False, no_followup=False,
+              injection_tokens=None):
     from simulator.openhands.budget import Budget
     from simulator.openhands.container import SDKContainer
 
@@ -670,8 +671,11 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
             return super().before(role, body, call_id)
 
     root = Path(root)
+    if no_history:
+        history = None
     responder_cost = {"requests": 0, "tokens": 0, "usage_complete": True}
     exchanges = []
+    clarification_turns = []
     private = root / "private"
     private.mkdir(parents=True, exist_ok=True)
     install_candidate_fixture(root / "workspace/checks")
@@ -681,6 +685,11 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                                   "max_seconds": max_seconds})
     worker = None
     outcome = {"status": "running"}
+    # Keep an explicit terminal clarification state even when the agent never
+    # asks a historical question.  Reports and older callers can distinguish
+    # "no question" from an unavailable responder without inferring it from
+    # an absent list.
+    clarification_status = "no_question"
     rounds = []
     try:
         if reference is not None:
@@ -691,69 +700,116 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                               readonly_candidate=role == "judge", condenser_max_size=120)
         worker.start()
         outcome = worker.turn(message)
-        while history and max_rounds == 1 and str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}:
-            from .history import answer_clarification, historical_question
-            last = historical_question(public_reply(worker.events()))
-            if last is None:
-                outcome["clarification_status"] = "no_question"
-                break
-            entry = {"question": last, "delivered": False, "kind": "historical_reask"}
+        def deliver_clarification(question):
+            from .history import answer_clarification
+
+            entry = {"question": question, "delivered": False,
+                     "kind": "historical_reask"}
             exchanges.append(entry)
             if (budget.data["attempts"] + responder_cost["requests"] >= max_requests
-                    or budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens
+                    or budget.data["prompt_tokens"] + budget.data["completion_tokens"]
+                    + responder_cost["tokens"] >= max_tokens
                     or time.monotonic() >= budget.deadline):
-                outcome["clarification_status"] = "budget_exhausted"
                 entry["status"] = "budget_exhausted"
                 save(root / "clarifications.json", exchanges)
-                break
+                return None
             review_dir = root / "clarification" / str(len(exchanges))
             responder_cost["requests"] += 1
             try:
-                decision = answer_clarification(last, history, exchanges[:-1], config, review_dir)
+                decision = answer_clarification(
+                    question, history, exchanges[:-1], config, review_dir)
             except Exception as error:
-                decision = {"status": "unavailable", "kind": "none", "sources": [],
-                            "reply": "none", "error": type(error).__name__}
-            finally:
-                usage_path = review_dir / "usage.json"
-                usage = read(usage_path) if usage_path.exists() else []
-                responder_cost["usage_complete"] &= bool(usage) and all(
-                    "total_tokens" in u or ("prompt_tokens" in u and "completion_tokens" in u)
-                    for u in usage)
-                responder_cost["tokens"] += sum(
-                    u.get("total_tokens", u.get("prompt_tokens", 0) + u.get("completion_tokens", 0))
-                    for u in usage)
+                decision = {"status": "unavailable", "kind": "none",
+                            "sources": [], "reply": "none",
+                            "error": type(error).__name__}
+            usage_path = review_dir / "usage.json"
+            usage = read(usage_path) if usage_path.exists() else []
+            responder_cost["usage_complete"] &= bool(usage) and all(
+                "total_tokens" in u or ("prompt_tokens" in u and "completion_tokens" in u)
+                for u in usage)
+            responder_cost["tokens"] += sum(
+                u.get("total_tokens", u.get("prompt_tokens", 0)
+                      + u.get("completion_tokens", 0))
+                for u in usage)
             entry.update(decision)
-            can_continue = (budget.data["attempts"] + responder_cost["requests"] < max_requests
-                            and budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] < max_tokens
-                            and time.monotonic() < budget.deadline)
-            if decision["status"] == "answer" and can_continue:
-                entry["delivered"] = True
+            can_continue = (
+                budget.data["attempts"] + responder_cost["requests"] < max_requests
+                and budget.data["prompt_tokens"] + budget.data["completion_tokens"]
+                + responder_cost["tokens"] < max_tokens
+                and time.monotonic() < budget.deadline)
+            delivered = decision.get("status") == "answer" and can_continue
+            entry["delivered"] = delivered
             save(root / "clarifications.json", exchanges)
-            outcome["clarification_status"] = decision["status"]
-            if decision["status"] != "answer":
-                break
-            if not can_continue:
-                outcome["clarification_status"] = "budget_exhausted"
-                break
-            outcome = worker.turn(decision["reply"])
-        for number in range(1, max_rounds + 1):
+            if delivered:
+                return decision["reply"]
+            return None
+
+        if history and max_rounds == 1 and not no_followup:
+            # A one-round caller still gets a complete clarification exchange
+            # before its single scored code round.  Keep asking only when the
+            # agent emits another explicit marker; ordinary completion prose
+            # ends the clarification phase with ``no_question``.
+            from .history import historical_question
+            while str(outcome.get("status")) in {
+                    "finished", "ConversationExecutionStatus.FINISHED"}:
+                last = historical_question(public_reply(worker.events()))
+                if last is None:
+                    clarification_status = "no_question"
+                    outcome["clarification_status"] = clarification_status
+                    break
+                clarification_turns.append({
+                    "round": 0, "final": public_reply(worker.events()),
+                    "question": last,
+                })
+                reply = deliver_clarification(last)
+                outcome["clarification_status"] = (
+                    "answer" if reply is not None else "unavailable")
+                clarification_status = outcome["clarification_status"]
+                if reply is None:
+                    outcome["clarification_unresolved"] = True
+                    break
+                outcome = worker.turn(reply)
+
+        scored_rounds = 0
+        while scored_rounds < max_rounds:
             events = worker.events()
             current = dict(outcome, final=public_reply(events),
                            metrics=measure(events, private / "agent/provider.jsonl"))
             current["metrics"]["attempted_requests"] = budget.data["attempts"]
             current["metrics"]["usage_complete"] &= not budget.data.get("usage_missing", False)
-            current["round"] = number
+            question = None
+            if history and not no_followup:
+                from .history import historical_question
+                question = historical_question(current["final"])
+            if question is not None:
+                clarification_turns.append({
+                    "round": scored_rounds + 1, "final": current["final"],
+                    "question": question,
+                })
+                reply = deliver_clarification(question)
+                outcome["clarification_status"] = (
+                    "answer" if reply is not None else "unavailable")
+                clarification_status = outcome["clarification_status"]
+                if reply is None:
+                    outcome["clarification_unresolved"] = True
+                    break
+                outcome = worker.turn(reply)
+                continue
+
+            scored_rounds += 1
+            current["round"] = scored_rounds
             rounds.append(current)
             save(root / "rounds.json", rounds)
             stop_after_round = False
             if on_round is not None:
-                callback = on_round(number, current)
+                callback = on_round(scored_rounds, current)
                 # A scorer may explicitly stop after a successful round.  The
                 # default remains bounded continuation when no decision is
                 # returned, preserving existing callers.
                 stop_after_round = callback is False or (
                     isinstance(callback, dict) and callback.get("continue") is False)
-            if (number == max_rounds or str(outcome.get("status")) not in
+            if (scored_rounds == max_rounds or no_followup
+                    or str(outcome.get("status")) not in
                     {"finished", "ConversationExecutionStatus.FINISHED"}
                     or budget.data["attempts"] + responder_cost["requests"] >= max_requests
                     or budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens
@@ -762,35 +818,6 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                 break
             followup = ("请再核对原始需求和你已交付的结果，复用仓库已有测试验证并修正遗漏。"
                         "沿用本会话的信息和业务范围，完成后报告实际结果。")
-            if history:
-                from .history import answer_clarification, historical_question
-                question = historical_question(public_reply(events))
-                if question is not None:
-                    review_dir = root / "clarification" / str(len(exchanges) + 1)
-                    responder_cost["requests"] += 1
-                    try:
-                        decision = answer_clarification(question, history, exchanges, config, review_dir)
-                    except Exception as error:
-                        decision = dict(status="unavailable", kind="none", sources=[], reply="none",
-                                        error=type(error).__name__)
-                    usage_path = review_dir / "usage.json"
-                    usage = read(usage_path) if usage_path.exists() else []
-                    responder_cost["usage_complete"] &= bool(usage) and all(
-                        "total_tokens" in row or ("prompt_tokens" in row and "completion_tokens" in row)
-                        for row in usage)
-                    responder_cost["tokens"] += sum(row.get("total_tokens", row.get("prompt_tokens", 0)
-                                                                          + row.get("completion_tokens", 0))
-                                                    for row in usage)
-                    can_continue = (budget.data["attempts"] + responder_cost["requests"] < max_requests
-                                    and budget.data["prompt_tokens"] + budget.data["completion_tokens"]
-                                    + responder_cost["tokens"] < max_tokens and time.monotonic() < budget.deadline)
-                    delivered = decision["status"] == "answer" and can_continue
-                    exchanges.append(dict(question=question, delivered=delivered, **decision))
-                    save(root / "clarifications.json", exchanges)
-                    outcome["clarification_status"] = decision["status"] if can_continue else "budget_exhausted"
-                    if not delivered:
-                        break
-                    followup = decision["reply"]
             outcome = worker.turn(followup)
     except Exception as error:
         outcome = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}
@@ -823,11 +850,17 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
         outcome["clarifications"] = exchanges
         outcome["clarification_count"] = len(exchanges)
         outcome["clarification_turns"] = len(exchanges)
+        outcome["clarification_turn_records"] = clarification_turns
+        outcome["clarification_status"] = clarification_status
+        save(root / "clarification-turns.json", clarification_turns)
         outcome["responder_cost"] = responder_cost
         # Keep solver and responder ledgers separate; the latter may be
         # partial when the clarification provider fails.
         outcome["metrics"]["solver_tokens"] = outcome["metrics"].get("total_tokens")
         outcome["metrics"]["responder_tokens"] = responder_cost["tokens"]
+        outcome["metrics"]["injection_tokens"] = injection_tokens
+    elif injection_tokens is not None:
+        outcome["metrics"]["injection_tokens"] = injection_tokens
         outcome["metrics"]["total_tokens_with_responder"] = outcome["metrics"]["total_tokens"] + responder_cost["tokens"]
     save(root / "result.json", outcome)
     # Judge sees observable actions and outputs, not memory injection or model reasoning.

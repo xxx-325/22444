@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import Mock
+import urllib.error
 
-from dialogue_benchmark.llm import ModelStageError, retry_model_call
+from dialogue_benchmark.llm import ModelStageError, _retry_after_seconds, retry_model_call
 
 
 class TransientRetryTests(unittest.TestCase):
@@ -12,7 +13,10 @@ class TransientRetryTests(unittest.TestCase):
             {"questions": []},
         ])
         sleep = Mock()
-        self.assertEqual(retry_model_call(call, sleep=sleep), {"questions": []})
+        self.assertEqual(
+            retry_model_call(call, sleep=sleep, random_fn=lambda: 0.0),
+            {"questions": []},
+        )
         self.assertEqual(call.call_count, 3)
         self.assertEqual([c.args[0] for c in sleep.call_args_list], [0.25, 0.5])
 
@@ -20,7 +24,7 @@ class TransientRetryTests(unittest.TestCase):
         error = ModelStageError("http_error", http_status=503)
         call = Mock(side_effect=error)
         with self.assertRaises(ModelStageError) as caught:
-            retry_model_call(call, sleep=Mock())
+            retry_model_call(call, sleep=Mock(), random_fn=lambda: 0.0)
         self.assertIs(caught.exception, error)
         self.assertEqual(call.call_count, 3)
 
@@ -36,9 +40,27 @@ class TransientRetryTests(unittest.TestCase):
             with self.subTest(error=error):
                 call, sleep = Mock(side_effect=error), Mock()
                 with self.assertRaises(type(error)):
-                    retry_model_call(call, sleep=sleep)
+                    retry_model_call(call, sleep=sleep, random_fn=lambda: 0.0)
                 call.assert_called_once()
                 sleep.assert_not_called()
+
+    def test_retry_after_hint_wins_over_exponential_delay(self):
+        call = Mock(side_effect=[
+            ModelStageError("http_error", http_status=429, retry_after=4.5),
+            {"ok": True},
+        ])
+        sleep = Mock()
+        self.assertEqual(
+            retry_model_call(call, sleep=sleep, random_fn=lambda: 0.0),
+            {"ok": True},
+        )
+        sleep.assert_called_once_with(4.5)
+
+    def test_retry_after_http_header_accepts_seconds(self):
+        error = urllib.error.HTTPError(
+            "https://example.invalid", 429, "busy",
+            {"Retry-After": "7"}, None)
+        self.assertEqual(_retry_after_seconds(error), 7.0)
 
 
 if __name__ == "__main__":

@@ -77,6 +77,8 @@ def main(argv=None):
     parser.add_argument("--source-event", action="append", default=[])
     parser.add_argument("--source-object", action="append", default=[])
     parser.add_argument("--design-probe", action="store_true")
+    parser.add_argument("--clarification-diagnostic", action="store_true",
+                        help="Save a no-memory, no-clarification diagnostic outside the main pair")
     parser.add_argument("--qa-only", action="store_true",
                         help="Finish after QA extraction without creating or evaluating repository tasks")
     parser.add_argument("--qa-count", type=int, help="External QA target (default: 40)")
@@ -316,6 +318,8 @@ def main(argv=None):
             task_args += ["--control-config", str(package["control_config"])]
         if args.design_probe:
             task_args += ["--design-probe"]
+        if args.clarification_diagnostic:
+            task_args += ["--clarification-diagnostic"]
         if provisional:
             task_args += ["--allow-provisional"]
         status = run_tasks(task_args)

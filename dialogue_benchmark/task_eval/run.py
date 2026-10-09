@@ -7,6 +7,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 import shutil
 import time
+import re
 
 from . import prompts
 from .artifacts import (copy_tree, fingerprint, labels, qa_fingerprint, qa_inputs,
@@ -79,6 +80,66 @@ def available_answer(item):
 def injected_answer(item, spec):
     path = Path(spec) / "oracle-answer.json"
     return read(path)["answer"] if path.is_file() else answer_text(item["qa"])
+
+
+def memory_injection(task, answer, cutoff_event_id=None):
+    """Build the replaceable oracle-memory payload for one solver arm."""
+    text = answer if isinstance(answer, str) else ""
+    token_count = None
+    try:
+        import tiktoken
+        token_count = len(tiktoken.get_encoding("cl100k_base").encode(
+            text, disallowed_special=()))
+    except (ImportError, OSError, ValueError):
+        pass
+    return {
+        "text": text,
+        "token_count": token_count,
+        "cutoff_event_id": cutoff_event_id,
+        "source": "oracle-memory-calibration",
+    }
+
+
+def _task_memory_kinds(item):
+    value = item.get("qa", {})
+    kinds = set()
+    for key in ("memory_kind", "type", "category"):
+        if isinstance(value.get(key), str):
+            kinds.add(value[key].upper())
+    for key in ("memory_kinds",):
+        if isinstance(value.get(key), (list, tuple)):
+            kinds.update(kind.upper() for kind in value[key] if isinstance(kind, str))
+    return kinds
+
+
+def _static_repository_recovery(baseline, answer):
+    """Conservatively detect distinctive answer literals in the baseline."""
+    root = Path(baseline)
+    corpus = []
+    for path in root.rglob("*"):
+        if (path.is_file() and ".git" not in path.parts
+                and path.suffix not in {".pyc", ".sqlite", ".db"}):
+            try:
+                corpus.append(path.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                continue
+    text = "\n".join(corpus).casefold()
+    answer = str(answer or "")
+    phrases = [
+        re.sub(r"\s+", " ", line.strip(" -*\t")).casefold()
+        for line in answer.splitlines() if line.strip()
+    ]
+    phrases = [phrase for phrase in phrases if len(phrase) >= 8]
+    literals = set(re.findall(
+        r"(?:\b\d[\d./:-]*\b|`[^`]+`|"
+        r"\b[A-Z][A-Za-z0-9_-]{2,}\b|"
+        r"\b[a-z][a-z0-9_-]{7,}\b)",
+        answer,
+    ))
+    distinctive = [value.casefold() for value in literals if len(value.strip("`")) >= 3]
+    if phrases and all(phrase in text for phrase in phrases):
+        return True
+    return bool(distinctive) and all(value in text for value in distinctive)
 
 
 def save_task_progress(root, stage, **details):
@@ -208,7 +269,7 @@ def admission(validation, baseline_checks, reference_checks, baseline_acceptance
     return accepted
 
 
-def repository_design_probe(root, baseline, spec, config, agent_options):
+def repository_design_probe(root, baseline, spec, config, agent_options, answer=""):
     """Run a repository-only, no-history probe and classify leakage risk."""
     probe_root = Path(root) / "design-probe"
     prepare(probe_root, baseline)
@@ -228,8 +289,9 @@ def repository_design_probe(root, baseline, spec, config, agent_options):
                             candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
         finished = agent_finished(outcome)
         recoverable = finished and checks.get("status") == "passed"
+        static_recovery = _static_repository_recovery(baseline, answer)
         return {"status": "pass", "recoverable": recoverable,
-                "static_recovery": False, "checks": checks,
+                "static_recovery": static_recovery, "checks": checks,
                 "solver_status": outcome.get("status")}
     except Exception as error:
         return {"status": "needs_review", "recoverable": False,
@@ -943,11 +1005,23 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record["reason"] = "baseline_already_satisfies_task"
         probe = None
         if design_probe:
-            probe = repository_design_probe(run, baseline, final_spec or spec, config, agent_options)
+            kinds = _task_memory_kinds(item)
+            if kinds.intersection({"M1", "M3"}):
+                probe = repository_design_probe(
+                    run, baseline, final_spec or spec, config, agent_options,
+                    available_answer(item))
+            else:
+                probe = {"status": "not_required", "recoverable": False,
+                         "static_recovery": _static_repository_recovery(
+                             baseline, available_answer(item)),
+                         "memory_kinds": sorted(kinds)}
             record["design_probe"] = probe
+        kinds = _task_memory_kinds(item)
+        task_type = next((kind for kind in ("M1", "M3") if kind in kinds),
+                         next(iter(sorted(kinds)), None))
         admitted = admission(record["validation"], baseline_checks, reference_checks,
                              baseline_acceptance, reference_acceptance, probe,
-                             item.get("qa", {}).get("type", item.get("qa", {}).get("category")))
+                             task_type)
         record["validation_accepted"] = (not baseline_already_satisfies
                                          and agent_finished(solved) and agent_finished(validated)
                                          and final_spec is not None
@@ -995,7 +1069,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
     return None
 
 
-def evaluate(item, root, baseline, receipt, config, agent_options, index, *, resume=False):
+def evaluate(item, root, baseline, receipt, config, agent_options, index, *,
+             resume=False, clarification_diagnostic=False):
     if "qa_sha256" in receipt and receipt["qa_sha256"] != qa_fingerprint(item["qa"]):
         raise ValueError("Frozen QA changed before evaluation")
     spec = root / "frozen"
@@ -1028,7 +1103,16 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
         if not saved_solver:
             prepare(trial, baseline)
             oracle = history["oracle_answer"] if history else injected_answer(item, spec)
-            message = solver_input(task, oracle if condition == "with_memory" else None)
+            injection = memory_injection(
+                task, oracle if condition == "with_memory" else "",
+                history.get("cutoff_event_id") if history else None)
+            save(trial / "memory-injection.json", {
+                "source": injection["source"] if condition == "with_memory" else "none",
+                "token_count": injection["token_count"] if condition == "with_memory" else 0,
+                "cutoff_event_id": injection["cutoff_event_id"],
+            })
+            message = solver_input(
+                task, injection["text"] if condition == "with_memory" else None)
             if history:
                 message += prompts.HISTORY_REQUEST
             print(root.name, "evaluation", condition, flush=True)
@@ -1081,9 +1165,32 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
                 return {"continue": status != "passed"}
             solved = run_agent(trial, config, "code", message, **agent_options,
                                max_rounds=2, on_round=record_round,
+                               injection_tokens=(injection["token_count"]
+                                                 if condition == "with_memory" else 0),
                                **({"history": history} if history else {}))
         candidate = trial / "workspace/candidate"
         completed_rounds = sorted(trial.glob("round-*/result.json"))
+        if solved.get("clarification_unresolved") and not completed_rounds:
+            changed = write_diff(baseline, candidate, trial / "changes.patch")
+            result[condition] = {
+                "result": "uncertain",
+                "solver_status": solved.get("status", "uncertain"),
+                "judge_status": "not_run",
+                "metrics": solved.get("metrics", {}),
+                "history_available": history is not None,
+                "information_condition": (
+                    "no_memory_clarification_unresolved"
+                    if condition == "without_memory" else "oracle_history"),
+                "history_question_count": solved.get("clarification_count", 0),
+                "clarifications": solved.get("clarifications", []),
+                "responder_cost": solved.get("responder_cost"),
+                "changed_files": changed,
+                "trial": trial.name,
+                "detail": "Clarification was requested but no answer reached a scored solver round",
+            }
+            save(root / "comparison.json", result)
+            save(root / "paired-differences.json", compare_trials(result))
+            continue
         final_round_root = completed_rounds[-1].parent if completed_rounds else None
         changed = (read(trial / "version.json")["changed_files"]
                    if saved_solver and (trial / "version.json").is_file()
@@ -1133,9 +1240,18 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             # Keep the functional result visible, but do not count a delivery
             # that changed its frozen tests/fixtures as an ordinary pass.
             status = "uncertain"
+        clarifications = solved.get("clarifications", [])
+        delivered_clarifications = sum(
+            bool(row.get("delivered")) for row in clarifications)
         information_condition = (
-            "memory_not_required" if condition == "without_memory" and status == "passed"
-            else "oracle_history" if condition == "with_memory" and history else condition
+            "memory_not_required"
+            if condition == "without_memory" and status == "passed"
+            and delivered_clarifications == 0
+            else "no_memory_passed_after_clarification"
+            if condition == "without_memory" and status == "passed"
+            and delivered_clarifications > 0
+            else "oracle_history"
+            if condition == "with_memory" and history else condition
         )
         result[condition] = {"result": status, "solver_status": solved["status"],
                              "judge_status": judged["status"],
@@ -1156,6 +1272,7 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             exchanges = solved.get("clarifications", [])
             result[condition].update(history_application=application,
                 history_question_count=len(exchanges),
+                clarification_count=solved.get("clarification_count", len(exchanges)),
                 information_condition=information_condition,
                 clarifications=exchanges, responder_cost=solved.get("responder_cost"),
                 clarification_status=solved.get("clarification_status", "unavailable"),
@@ -1165,6 +1282,61 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             raise ValueError("Frozen inputs changed during evaluation")
         save(root / "comparison.json", result)
         save(root / "paired-differences.json", compare_trials(result))
+    if clarification_diagnostic:
+        diagnostic_root = root / "diagnostic-no-memory-no-followup"
+        diagnostic_result = diagnostic_root / "result.json"
+        if not (resume and diagnostic_result.is_file()):
+            prepare(diagnostic_root, baseline)
+            message = solver_input(task, None)
+            solved = run_agent(
+                diagnostic_root, config, "code", message,
+                **agent_options, max_rounds=2, no_history=True, no_followup=True,
+                injection_tokens=0)
+            candidate = diagnostic_root / "workspace/candidate"
+            try:
+                checks = run_checks(
+                    candidate, spec, diagnostic_root / "checks",
+                    config["execution_image"],
+                    candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+            except Exception as error:
+                checks = {"status": "error", "cases": [],
+                          "error_type": type(error).__name__, "detail": str(error)}
+                save(diagnostic_root / "checks/result.json", checks)
+            judged = {"status": "not_run"}
+            review_path, roots = None, {
+                "/workspace/candidate": diagnostic_root / "judge/workspace/candidate",
+                "/workspace/checks": diagnostic_root / "judge/workspace/checks",
+                "/workspace/experiments": diagnostic_root / "judge/workspace/experiments",
+            }
+            if checks.get("status") != "error":
+                try:
+                    judged, review_path, roots = inspect_acceptance(
+                        candidate, spec, items, checks, diagnostic_root, config, agent_options)
+                except Exception as error:
+                    judged = {"status": "error", "error_type": type(error).__name__,
+                              "detail": str(error)}
+                    save(diagnostic_root / "judge/result.json", judged)
+            acceptance = assess_acceptance(items, checks, review_path, roots)
+            changed = write_diff(baseline, candidate, diagnostic_root / "changes.patch")
+            pollution = implementation_pollution(changed)
+            status = "uncertain" if pollution and acceptance["status"] == "passed" else acceptance["status"]
+            save(diagnostic_root / "result.json", {
+                "condition": "without_memory_no_followup",
+                "result": status,
+                "solver_status": solved.get("status"),
+                "judge_status": judged.get("status"),
+                "metrics": solved.get("metrics", {}),
+                "clarification_count": 0,
+                "checks": checks,
+                "acceptance": acceptance,
+                "changed_files": changed,
+                "implementation_pollution": pollution,
+                "judge_evidence": (
+                    (diagnostic_root / "judge/workspace/checks/verdict.txt").read_text()
+                    if (diagnostic_root / "judge/workspace/checks/verdict.txt").is_file()
+                    else ""),
+                "diagnostic": True,
+            })
     return result
 
 
@@ -1263,7 +1435,9 @@ def main(argv=None):
     parser.add_argument("--control-config", type=Path,
                         help="Independent non-secret runtime configuration")
     parser.add_argument("--design-probe", action="store_true",
-                        help="Run a separate no-memory design probe; never an admission gate")
+                        help="Run a repository-only leakage probe for high-risk history types")
+    parser.add_argument("--clarification-diagnostic", action="store_true",
+                        help="Save a no-memory, no-clarification diagnostic outside the main pair")
     parser.add_argument("--selection-only", action="store_true",
                         help="Stop after controlled selection, draft and qualification; no OpenHands execution")
     parser.add_argument("--reuse-preparation", type=Path,
@@ -1406,6 +1580,7 @@ def main(argv=None):
                               "agent_seconds": args.agent_seconds or 1200,
                               "judge_request_timeout": request_timeout,
                               "design_probe": args.design_probe,
+                              "clarification_diagnostic": args.clarification_diagnostic,
                               "reuse_preparation": str(args.reuse_preparation.resolve()) if args.reuse_preparation else None,
                               "preparation_feedback": str(args.preparation_feedback.resolve()) if args.preparation_feedback else None},
                 "comparison": "Historical answer injection; no memory retriever",
@@ -1479,7 +1654,9 @@ def main(argv=None):
         if args.resume and prior and (root / "frozen.json").is_file() and not args.selection_only:
             try:
                 receipt = read(root / "frozen.json")
-                comparison = evaluate(item, root, baseline, receipt, config, agent_options, index, resume=True)
+                comparison = evaluate(
+                    item, root, baseline, receipt, config, agent_options, index,
+                    resume=True, clarification_diagnostic=args.clarification_diagnostic)
                 interrupted = any(trial.get("execution_status") == "interrupted"
                                   for trial in comparison.values())
                 return {"task": root.name, "status": "interrupted" if interrupted else "evaluated",
@@ -1504,7 +1681,9 @@ def main(argv=None):
             if args.selection_only:
                 return {"task": root.name, "status": "qualified", "qa_id": item["qa"]["id"],
                         "type": item["qa"]["type"]}
-            comparison = evaluate(item, root, baseline, receipt, config, agent_options, index)
+            comparison = evaluate(
+                item, root, baseline, receipt, config, agent_options, index,
+                clarification_diagnostic=args.clarification_diagnostic)
             return {"task": root.name, "status": "evaluated", "qa_id": item["qa"]["id"],
                     "type": item["qa"]["type"],
                     "comparison": comparison, "paired_differences": compare_trials(comparison)}

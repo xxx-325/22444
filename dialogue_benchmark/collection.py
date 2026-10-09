@@ -18,7 +18,8 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=6, task_workers=2, max_task_workers=3,
                            revisions=3,
                            model_request_chars=96000, qa_only=False,
-                           general_count=50, code_count=50,
+                           general_count=50, code_count=50, design_probe=True,
+                           clarification_diagnostic=True,
                            request_timeout=600, agent_seconds=1200)
 EXTERNAL_MEMORY_KINDS = ("M1", "M2", "M3", "M4", "M5", "M6")
 # Keep one bounded retry for a model-authored stage.  The checkpoint-aware
@@ -274,6 +275,32 @@ def _restore_archived_dialogue_checkpoint(collection):
 
 def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def _git_provenance(root):
+    """Capture code identity without copying source or untracked contents."""
+    root = Path(root).resolve()
+    result = {"commit": None, "dirty": False, "diff_sha256": None}
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True,
+            capture_output=True, check=False,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, text=True, capture_output=True, check=False,
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=root, capture_output=True, check=False,
+        )
+    except OSError:
+        return result
+    result["commit"] = head.stdout.strip() if head.returncode == 0 else None
+    result["dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
+    if diff.returncode == 0:
+        result["diff_sha256"] = hashlib.sha256(diff.stdout).hexdigest()
+    return result
 
 
 def _accepted_receipt(result, expected):
@@ -571,11 +598,16 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
     for role in ("user", "code", "judge", "decomposer"):
         if isinstance(runtime.get(role), dict):
             runtime[role]["max_output_tokens"] = None
+    provenance = {
+        "benchmark": _git_provenance(Path(__file__).resolve().parents[1]),
+        "simulator": _git_provenance(simulator),
+    }
     identity = dict(plan_sha256=_sha256(plan_path), runtime_sha256=_sha256(runtime_path),
                     simulator=str(simulator), python=str(python),
                     dialogue_only=bool(dialogue_only or plan.get("dialogue_only", False)),
                     prepared_configs={p["id"]: _sha256((plan_path.parent / p["prepared_config"]).resolve())
-                                      for p in plan["projects"] if p.get("prepared_config")})
+                                      for p in plan["projects"] if p.get("prepared_config")},
+                    code_provenance=provenance)
     if resume:
         state = read(output / "collection.json")
         if state.get("identity") != identity:
@@ -596,9 +628,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         information_plan = plan_external_information(plan["projects"])
         save(output / "external-information-plan.json", information_plan)
         state["external_information_plan"] = "external-information-plan.json"
-        for label, repo in (("qa", Path(__file__).resolve().parents[1]), ("simulator", simulator)):
-            result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True)
-            state[label + "_revision"] = result.stdout.strip() if result.returncode == 0 else None
+        state["code_provenance"] = provenance
     state["status"] = "running"
     dialogue_only = bool(dialogue_only or state.get("dialogue_only", False))
     state["dialogue_only"] = dialogue_only
@@ -649,7 +679,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         target = str(folder.relative_to(output))
         # The config file is enriched as upstream stages complete; command and
         # workspace identity remain stable across that expected mutation.
-        stage_identity = dict(command=command, cwd=str(cwd))
+        stage_identity = dict(command=command, cwd=str(cwd),
+                              code_provenance=provenance)
         previous = next((s for s in reversed(state["stages"])
                          if s.get("target", s["path"]) == target), None)
         if previous:
@@ -1019,10 +1050,15 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                         command.append("--qa-only")
                     excluded = ({"qa_count", "group_budget"} if qa_source == "graph"
                                 else {"general_count", "code_count"})
-                    excluded.add("max_task_workers")
+                    excluded.update({"max_task_workers", "design_probe",
+                                     "clarification_diagnostic"})
                     for key, value in options.items():
                         if key not in excluded:
                             command.extend(["--" + key.replace("_", "-"), str(value)])
+                    if options.get("design_probe"):
+                        command.append("--design-probe")
+                    if options.get("clarification_diagnostic"):
+                        command.append("--clarification-diagnostic")
                     completed = stage("evaluation", target, command, Path(__file__).resolve().parents[1],
                                       target / "pipeline.json", {"completed"}, target / "usage.json")
                     evaluated.update(status=completed.get("stop_reason", completed.get("status", "completed")) if completed else "evaluation_failed",

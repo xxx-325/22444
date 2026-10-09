@@ -5,6 +5,7 @@ import json
 import math
 from copy import deepcopy
 import os
+import random
 import re
 import socket
 import threading
@@ -12,6 +13,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .normalize import source_kind_for
@@ -67,6 +70,26 @@ class ModelStageError(ValueError):
 TRANSIENT_RETRY_LIMIT = 2
 
 
+def _retry_after_seconds(error):
+    """Read a bounded provider retry hint without retaining response headers."""
+    headers = getattr(error, "headers", None)
+    value = headers.get("Retry-After") if headers is not None else None
+    if value is None:
+        return None
+    try:
+        delay = float(str(value).strip())
+        return delay if math.isfinite(delay) and delay >= 0 else None
+    except (TypeError, ValueError):
+        pass
+    try:
+        target = parsedate_to_datetime(str(value))
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        return max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def is_transient_model_error(error):
     """Return whether one bounded retry may plausibly succeed.
 
@@ -86,12 +109,13 @@ def is_transient_model_error(error):
 
 
 def retry_model_call(call, *, attempts=TRANSIENT_RETRY_LIMIT,
-                     sleep=time.sleep):
+                     sleep=time.sleep, random_fn=random.random):
     """Run a model call with at most ``attempts`` transient retries.
 
     The callable owns its input/output receipts, so each attempt remains
-    auditable.  Backoff is short and deterministic; callers still retain
-    control of their stage-level checkpoint and concurrency limits.
+    auditable.  A provider ``Retry-After`` hint takes precedence over the
+    bounded exponential delay.  A small jitter avoids synchronized retries
+    when several QA groups hit the same rate limit.
     """
     if not isinstance(attempts, int) or attempts < 0:
         raise ValueError("attempts must be a non-negative integer")
@@ -101,7 +125,13 @@ def retry_model_call(call, *, attempts=TRANSIENT_RETRY_LIMIT,
         except Exception as error:
             if retry >= attempts or not is_transient_model_error(error):
                 raise
-            sleep(min(1.0, 0.25 * (2 ** retry)))
+            retry_after = error.details.get("retry_after")
+            if isinstance(retry_after, (int, float)) and math.isfinite(retry_after):
+                delay = min(30.0, max(0.0, float(retry_after)))
+            else:
+                delay = min(30.0, 0.25 * (2 ** retry))
+            jitter = min(0.25, max(0.0, float(random_fn())) * 0.25)
+            sleep(delay + jitter)
 
 
 def stage_error(stage, error):
@@ -2037,7 +2067,11 @@ class ChatClient:
                     raise ModelStageError("response_size_limit")
         except urllib.error.HTTPError as error:
             receipt.update(status="http_error", http_status=error.code)
-            raise ModelStageError("http_error", http_status=error.code) from None
+            retry_after = _retry_after_seconds(error)
+            details = {"http_status": error.code}
+            if retry_after is not None:
+                details["retry_after"] = retry_after
+            raise ModelStageError("http_error", **details) from None
         except (TimeoutError, socket.timeout):
             receipt["status"] = "timeout"
             raise ModelStageError("timeout") from None
