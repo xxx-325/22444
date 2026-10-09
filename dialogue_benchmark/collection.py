@@ -17,10 +17,10 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=6, task_workers=2, revisions=3,
                            model_request_chars=96000, qa_only=False,
                            general_count=50, code_count=50)
-# Keep one extra construction retry available for a model-authored scenario
-# whose accepted prefix is already reusable.  The checkpoint-aware path below
-# never discards that prefix.
-MAX_STAGE_RETRIES = 3
+# Keep a small bounded retry allowance for a model-authored stage.  The
+# checkpoint-aware path below never discards an accepted prefix, and the extra
+# slot also lets a repaired parser recover a valid saved response.
+MAX_STAGE_RETRIES = 4
 
 
 def sum_usage(rows):
