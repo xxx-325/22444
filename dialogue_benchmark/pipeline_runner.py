@@ -298,11 +298,12 @@ class PipelineRunner:
                         except StageReceiptError as error:
                             raise ValueError("pipeline cached artifact is invalid: %s/%s: %s" %
                                              (case["id"], stage, error)) from error
-                    if status == "running":
-                        if valid_handoff:
+                    if status in {"running", "failed", "needs_review"}:
+                        if valid_handoff and saved_handoff.get("result", "completed") in _RECOVERABLE_RESULTS:
                             # The process may have written its handoff just
-                            # before the host crashed. Promote it instead of
-                            # repeating the stage side effect.
+                            # before the host crashed or before its error was
+                            # persisted. Promote it instead of repeating the
+                            # stage side effect.
                             record.update({
                                 "status": "completed",
                                 "recovered": True,
@@ -313,7 +314,7 @@ class PipelineRunner:
                                 "result": saved_handoff.get("result", "completed"),
                             })
                             status = "completed"
-                        else:
+                        elif status == "running":
                             record.update({"status": "pending", "recovered": True})
                             status = "pending"
                     if status == "failed" and int(

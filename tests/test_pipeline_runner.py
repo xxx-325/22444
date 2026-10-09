@@ -466,6 +466,36 @@ class PipelineRunnerTests(unittest.TestCase):
                 self.assertTrue(all(row["status"] == "completed" for row in
                                     report["cases"]["a"]["stages"].values()))
 
+    def test_resume_promotes_warning_handoff_after_failed_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(("a",))
+            config["stages"]["repo"]["receipt"] = "{output}/receipt.json"
+            calls = []
+
+            def run(command, cwd, env, stdout, stderr):
+                calls.append(command[1])
+                if command[1] == "repo":
+                    _completed_receipt(Path(env["PIPELINE_OUTPUT"]),
+                                        result="completed_with_warnings")
+
+            output = Path(directory) / "run"
+            first = PipelineRunner(config, output, command_runner=run).run()
+            self.assertEqual(calls, ["repo", "qa", "task"])
+            state_path = output / "pipeline-state.json"
+            state = json.loads(state_path.read_text())
+            state["cases"]["a"]["stages"]["repo"]["status"] = "failed"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            def should_not_run(*args):
+                raise AssertionError("a valid warning handoff should be reused")
+
+            report = PipelineRunner(config, output, resume=True,
+                                    command_runner=should_not_run).run()
+            self.assertEqual(report["status"], "completed_with_warnings")
+            self.assertEqual(report["cases"]["a"]["stages"]["repo"]["status"], "completed")
+            self.assertEqual(report["cases"]["a"]["stages"]["repo"]["result"],
+                             "completed_with_warnings")
+
     def test_resume_does_not_recover_receipt_after_authentication_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             config = _config(("a",))
