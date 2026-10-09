@@ -1176,14 +1176,18 @@ def main(argv=None):
     input_diagnostics = []
     items = qa_inputs(args.qa_run, include_provisional=args.allow_provisional,
                       diagnostics=input_diagnostics)
-    if not items:
-        parser.error("No usable QA with saved generation inputs")
+    qa_source = (items[0].get("qa_source") if items else
+                 read(args.qa_run / "manifest.json").get("qa_source", "graph")
+                 if (args.qa_run / "manifest.json").is_file() else "graph")
     group_size = qa_group_size if qa_group_size is not None else (
-        2 if items[0].get("qa_source") == "external" else 1)
-    if items[0].get("qa_source") == "external":
+        2 if qa_source == "external" else 1)
+    if qa_source == "external":
         group_size = max(2, group_size)
     grouping_diagnostics = []
+    usable_count = len(items)
     items = group_qa_inputs(items, group_size, diagnostics=grouping_diagnostics)
+    if not items and existing_manifest and existing_manifest.get("tasks"):
+        raise ValueError("Resume task selection changed: no usable QA groups")
     save(output / "qa-grouping.json", {"group_size": group_size,
          "groups": [{"qa_id": item["qa"]["id"], "qa_ids": item.get("qa_ids", [item["qa"]["id"]]),
                      "source_ids": item.get("source_ids", []),
@@ -1194,6 +1198,21 @@ def main(argv=None):
                      "provisional": item.get("provisional", False)}
                     for item in items],
          "rejected_inputs": input_diagnostics, "ungrouped": grouping_diagnostics})
+    if not items:
+        stop_reason = "no_related_external_qa" if usable_count else "no_eligible_qa"
+        manifest = {"source_run": str(args.source_run.resolve()), "qa_run": str(args.qa_run.resolve()),
+                    "target": args.count, "task_budget": task_budget, "selection_only": args.selection_only,
+                    "tasks": [], "completed": 0, "accepted": 0, "shortfall": args.count,
+                    "status": "incomplete",
+                    "stop_reason": stop_reason,
+                    "notes": ["%s. Completed tasks: 0; target: %d; shortfall: %d."
+                              % (stop_reason, args.count, args.count)],
+                    "qa_group_size": group_size, "selected_qa_ids": [],
+                    "qa_input_diagnostics": input_diagnostics,
+                    "qa_grouping_diagnostics": grouping_diagnostics}
+        save(output / "manifest.json", manifest)
+        write_report(output, manifest)
+        return 0
     if args.reuse_preparation:
         source_qa = read(args.reuse_preparation.parent / "author-reference/qa.json")
         items = [item for item in items if item["qa"] == source_qa]

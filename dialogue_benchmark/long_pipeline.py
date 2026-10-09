@@ -22,6 +22,7 @@ from .collection import run_collection
 from .episode_input import load_episode_manifest
 from .pipeline_runner import PipelineRunner
 from .task_eval.artifacts import has_eligible_qa, read, save, qa_inputs
+from .task_eval.report import write_report
 from .task_eval.runtime import preflight_openhands_runtime
 
 
@@ -37,6 +38,7 @@ def _sha256(path: Path) -> str:
 
 
 def _write_receipt(path: Path, artifacts: Iterable[Path], *, result="completed") -> None:
+    path = Path(path).resolve()
     paths = [Path(item).resolve() for item in artifacts if Path(item).is_file()]
     if not paths:
         raise RuntimeError("stage produced no artifacts")
@@ -81,12 +83,10 @@ def _manifest_from_collection(root: Path):
         check = checks.get(hard_check, {})
         if check and check.get("passed") is not True:
             raise RuntimeError("dialogue manifest failed %s" % hard_check)
-    # Long cases require fifty source-grounded code rounds. Newer manifests
-    # expose an explicit check; older manifests can still be counted from the
-    # exported public rows without treating tool calls as rounds.
+    # Use the configured number of complete user/code exchanges.
     required_rounds = profile.get("min_user_code_rounds")
     if required_rounds:
-        rounds = checks.get("user_code_rounds", {})
+        rounds = checks.get("complete_user_code_rounds", {})
         actual = rounds.get("actual")
         if actual is None:
             dialogue = [json.loads(line) for line in loaded["dialogue"].read_text().splitlines()]
@@ -189,7 +189,14 @@ def _qa_stage(args) -> int:
     def run(route):
         route_dir = output / route
         qa_dir = route_dir / "qa"
-        ready = all((qa_dir / name).is_file() for name in ("manifest.json", "qa-public.json"))
+        ready = _qa_output_ready(qa_dir)
+        pipeline = route_dir / "pipeline.json"
+        if ready and pipeline.is_file():
+            try:
+                if read(pipeline).get("status") in {"completed", "completed_with_warnings"}:
+                    return route, 0
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
         if not ready:
             _archive_incomplete(qa_dir)
         command = _route_command(route, manifest, route_dir, args, plan)
@@ -207,27 +214,52 @@ def _qa_stage(args) -> int:
         if not pipeline.is_file():
             save(pipeline, {"status": "failed", "reason": "route_command_failed",
                             "route": route, "returncode": outcomes[route]})
-        public = read(route_dir / "qa/qa-public.json") if (route_dir / "qa/qa-public.json").is_file() else {}
+        ready = _qa_output_ready(route_dir / "qa")
+        public = read(route_dir / "qa/qa-public.json") if ready else {}
         try:
             eligible = has_eligible_qa(route_dir / "qa", include_provisional=True)
         except (OSError, KeyError, TypeError, ValueError):
             eligible = False
-        approved = bool(public.get("questions")) and all(
+        approved = eligible and bool(public.get("questions")) and all(
             q.get("status") == "approved" for q in public["questions"])
+        try:
+            route_status = read(pipeline).get("status")
+        except (OSError, KeyError, TypeError, ValueError, AttributeError):
+            route_status, ready = "invalid_output", False
+        ready = ready and route_status not in {"failed", "blocked", "interrupted"}
+        evaluation = plan.get("evaluation", {})
+        target = (evaluation.get("qa_count", 40) if route == "external" else
+                  evaluation.get("general_count", 40) + evaluation.get("code_count", 40))
         records[route] = {"returncode": outcomes[route],
-                          "status": read(pipeline).get("status"),
-                          "qualified": outcomes[route] == 0 and approved,
-                          "eligible": outcomes[route] == 0 and eligible,
-                          "provisional": outcomes[route] == 0 and eligible and not approved}
+                          "status": route_status, "output_ready": ready,
+                          "qualified": ready and approved,
+                          "eligible": ready and eligible,
+                          "provisional": ready and eligible and not approved,
+                          "published_qa": len(public.get("questions", [])),
+                          "target": target, "shortfall": max(0, target - len(public.get("questions", [])))}
         artifacts.append(pipeline)
     save(output / "qa-summary.json", {"manifest": str(manifest), "routes": records})
     artifacts.append(output / "qa-summary.json")
-    if not any(item["qualified"] or item["eligible"] for item in records.values()):
+    if not any(item["output_ready"] for item in records.values()):
         _write_receipt(output / "stage-receipt.json", artifacts, result="routes_failed")
         return 1
     _write_receipt(output / "stage-receipt.json", artifacts,
-                   result="completed_with_route_warning" if not all(item["qualified"] for item in records.values()) else "completed")
+                   result="completed_with_warnings" if any(
+                       not item["qualified"] or item["shortfall"] or item["returncode"]
+                       or item["status"] != "completed"
+                       for item in records.values()) else "completed")
     return 0
+
+
+def _qa_output_ready(qa_dir):
+    try:
+        manifest = read(qa_dir / "manifest.json")
+        public = read(qa_dir / "qa-public.json")
+        return (isinstance(manifest, dict) and isinstance(public, dict)
+                and isinstance(public.get("questions"), list)
+                and public.get("status") not in {"blocked", "interrupted"})
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def _task_stage(args) -> int:
@@ -240,35 +272,40 @@ def _task_stage(args) -> int:
     public_path = external / "qa/qa-public.json"
     public = read(public_path) if public_path.is_file() else {}
     pipeline = read(external / "pipeline.json") if (external / "pipeline.json").is_file() else {}
-    candidates_path = external / "qa/qa-candidates.json"
-    candidates = read(candidates_path) if candidates_path.is_file() else {}
     try:
         eligible_items = qa_inputs(external / "qa", include_provisional=True)
     except (OSError, KeyError, TypeError, ValueError):
         eligible_items = []
-    provisional = [
-        question for question in candidates.get("questions", [])
-        if isinstance(question, dict)
-        and question.get("status") in {"needs_review", "provisional"}
-    ]
     all_approved = bool(public.get("questions")) and all(
         question.get("status") == "approved" for question in public["questions"]
     )
-    allow_provisional = bool(provisional) or public.get("status") == "needs_review"
+    allow_provisional = any(item.get("provisional") for item in eligible_items)
     qualified = (
-        pipeline.get("status") not in {"failed", "interrupted"}
+        pipeline.get("status") not in {"failed", "blocked", "interrupted"}
         and bool(eligible_items)
-        and (all_approved or allow_provisional)
     )
     output.mkdir(parents=True, exist_ok=True)
     task_manifest = output / "tasks" / "manifest.json"
     stage_summary = output / "task-stage.json"
     if not qualified:
-        save(task_manifest, {"status": "skipped", "reason": "external_qa_not_qualified",
-                             "tasks": []})
-        save(stage_summary, {"status": "skipped", "reason": "external_qa_not_qualified",
-                             "tasks": []})
-        _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary], result="skipped")
+        target = plan.get("evaluation", {}).get("task_count", 1)
+        task_data = read(task_manifest) if task_manifest.is_file() else {}
+        if not task_data.get("tasks"):
+            task_data = {
+                "status": "completed_with_warnings", "reason": "external_qa_not_qualified",
+                "stop_reason": "external_qa_not_qualified", "tasks": [],
+                "target": target, "completed": 0, "shortfall": target,
+                "notes": ["No source-validated external QA was available for requirements."],
+            }
+            save(task_manifest, task_data)
+        write_report(output / "tasks", task_data)
+        save(stage_summary, {"status": "completed_with_warnings",
+                             "reason": "external_qa_not_qualified", "target": target,
+                             "completed": task_data.get("completed", 0),
+                             "shortfall": max(0, target - task_data.get("completed", 0)),
+                             "tasks": task_data.get("tasks", [])})
+        _write_receipt(output / "stage-receipt.json", [task_manifest, stage_summary,
+                       output / "tasks/report.md"], result="completed_with_warnings")
         return 0
     qa_dir = output / "qa"
     qa_ready = all((qa_dir / name).is_file() for name in ("manifest.json", "qa-public.json"))

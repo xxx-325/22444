@@ -6,13 +6,41 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from dialogue_benchmark.long_pipeline import (_qa_stage, _route_command, _task_stage,
-                                               build_config)
+from dialogue_benchmark.long_pipeline import (_manifest_from_collection, _qa_stage,
+                                               _route_command, _task_stage, _write_receipt, build_config)
 from dialogue_benchmark.pipeline_runner import PipelineRunner
 from dialogue_benchmark.task_eval.artifacts import save
 
 
 class LongPipelineTests(unittest.TestCase):
+    def save_qa(self, directory, *, route="external", provisional=False, empty=False,
+                public_status=None):
+        questions = [] if empty else [{
+            "id": "q1", "type": "M1" if route == "external" else "constraint_followthrough",
+            "status": "needs_review" if provisional else "approved",
+            "question": "Which agreement applies to the customer export?",
+            "answer_points": [{"text": "Preserve explicitly empty fields.", "sources": ["e1"]}],
+        }]
+        save(directory / "manifest.json", {"qa_source": route})
+        save(directory / "qa-public.json", {"status": public_status,
+                                             "questions": [] if provisional else questions})
+        save(directory / "qa-candidates.json", {"questions": questions})
+        save(directory / "stages/group-raw-candidates.json", {"questions": questions})
+        save(directory / "stages/group-qa-input.json", {
+            "payload": {"scope": {"dialogue": [{"id": "e1", "text": "Preserve explicitly empty fields."}]}}})
+
+    def test_manifest_uses_exported_complete_round_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "dialogue-package/manifest.json"
+            save(manifest, {"placeholder": True})
+            loaded = {"manifest": {"quality": {
+                "passed": True, "profile": {"min_user_code_rounds": 30},
+                "checks": {"complete_user_code_rounds": {"actual": 30}},
+            }}}
+            with patch("dialogue_benchmark.long_pipeline.load_episode_manifest", return_value=loaded):
+                self.assertEqual(_manifest_from_collection(root), (manifest, []))
+
     def test_route_command_forwards_parallel_workers(self):
         args = SimpleNamespace(
             python=Path(os.sys.executable), simulator_path=Path("sim"), env_file=Path(".env"),
@@ -109,14 +137,7 @@ class LongPipelineTests(unittest.TestCase):
             save(root / "episode.json", {"placeholder": True})
             save(root / "plan.json", {"evaluation": {"qa_count": 12}})
             save(external / "pipeline.json", {"status": "completed_with_warnings"})
-            save(external / "qa/qa-public.json", {
-                "status": "needs_review",
-                "questions": [],
-            })
-            save(external / "qa/qa-candidates.json", {
-                "questions": [{"id": "q1", "status": "needs_review"}],
-            })
-            save(external / "qa/manifest.json", {"input_sha256": "test"})
+            self.save_qa(external / "qa", provisional=True)
             args = SimpleNamespace(
                 input=input_root, output=output, python=Path(os.sys.executable),
                 simulator_path=root / "sim", env_file=root / ".env",
@@ -129,6 +150,170 @@ class LongPipelineTests(unittest.TestCase):
 
             with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_run):
                 self.assertEqual(_task_stage(args), 0)
+
+    def test_failed_qa_aggregate_keeps_source_validated_approved_task_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save(root / "repo/manifest-path.json", {"manifest": str(root / "episode.json"),
+                                                     "plan": str(root / "plan.json")})
+            save(root / "plan.json", {"evaluation": {"qa_count": 1, "general_count": 1,
+                                                       "code_count": 0, "task_count": 1}})
+            args = SimpleNamespace(input=root / "repo", output=root / "qa", python=Path(os.sys.executable),
+                                   simulator_path=root / "sim", env_file=root / ".env")
+            def fake_qa(command, cwd, stdout, stderr):
+                target = Path(command[command.index("--output") + 1])
+                route = command[command.index("--qa-source") + 1]
+                save(target / "pipeline.json", {"status": "completed_with_warnings"})
+                self.save_qa(target / "qa", route=route, public_status="failed")
+                return 0
+            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_qa):
+                self.assertEqual(_qa_stage(args), 0)
+            receipt = json.loads((root / "qa/stage-receipt.json").read_text())
+            self.assertEqual(receipt["result"], "completed_with_warnings")
+            args.input, args.output = root / "qa", root / "task"
+            def fake_tasks(command, cwd, stdout, stderr):
+                save(root / "task/tasks/manifest.json", {"status": "complete", "completed": 1,
+                                                          "tasks": []})
+                return 0
+            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_tasks) as run:
+                self.assertEqual(_task_stage(args), 0)
+            run.assert_called_once()
+
+    def test_empty_qa_outputs_produce_warning_and_empty_requirement_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save(root / "repo/manifest-path.json", {"manifest": str(root / "episode.json"),
+                                                     "plan": str(root / "plan.json")})
+            save(root / "plan.json", {"evaluation": {"task_count": 3}})
+            args = SimpleNamespace(input=root / "repo", output=root / "qa", python=Path(os.sys.executable),
+                                   simulator_path=root / "sim", env_file=root / ".env")
+            calls = []
+            def fake_run(command, cwd, stdout, stderr):
+                calls.append(command)
+                target = Path(command[command.index("--output") + 1])
+                route = command[command.index("--qa-source") + 1]
+                save(target / "pipeline.json", {"status": "completed_with_warnings"})
+                self.save_qa(target / "qa", route=route, empty=True, public_status="failed")
+                return 0
+            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_run):
+                self.assertEqual(_qa_stage(args), 0)
+                self.assertEqual(_qa_stage(args), 0)
+            self.assertEqual(len(calls), 2)
+            receipt = json.loads((root / "qa/stage-receipt.json").read_text())
+            self.assertEqual(receipt["result"], "completed_with_warnings")
+            args.input, args.output = root / "qa", root / "task"
+            with patch("dialogue_benchmark.long_pipeline._run_logged") as run:
+                self.assertEqual(_task_stage(args), 0)
+            run.assert_not_called()
+            summary = json.loads((root / "task/task-stage.json").read_text())
+            self.assertEqual(summary["completed"], 0)
+            self.assertEqual(summary["shortfall"], 3)
+            self.assertTrue((root / "task/tasks/report.md").is_file())
+            self.assertTrue((root / "task/tasks/report.html").is_file())
+
+    def test_unavailable_qa_preserves_existing_requirements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save(root / "repo/manifest-path.json", {"manifest": str(root / "episode.json"),
+                                                     "plan": str(root / "plan.json")})
+            save(root / "plan.json", {"evaluation": {"task_count": 3}})
+            self.save_qa(root / "qa/external/qa", empty=True)
+            save(root / "qa/external/pipeline.json", {"status": "completed"})
+            existing = {"status": "complete", "completed": 1,
+                        "tasks": [{"task": "task-01", "status": "evaluated"}]}
+            path = root / "task/tasks/manifest.json"
+            save(path, existing)
+            before = path.read_bytes()
+            args = SimpleNamespace(input=root / "qa", output=root / "task")
+            self.assertEqual(_task_stage(args), 0)
+            self.assertEqual(path.read_bytes(), before)
+            summary = json.loads((root / "task/task-stage.json").read_text())
+            self.assertEqual(summary["completed"], 1)
+            self.assertEqual(summary["shortfall"], 2)
+
+    def test_unavailable_qa_records_shortfall_for_existing_empty_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save(root / "repo/manifest-path.json", {"manifest": str(root / "episode.json"),
+                                                     "plan": str(root / "plan.json")})
+            save(root / "plan.json", {"evaluation": {"task_count": 3}})
+            self.save_qa(root / "qa/external/qa", empty=True)
+            save(root / "qa/external/pipeline.json", {"status": "completed_with_warnings"})
+            path = root / "task/tasks/manifest.json"
+            save(path, {"status": "skipped", "tasks": []})
+            args = SimpleNamespace(input=root / "qa", output=root / "task")
+            self.assertEqual(_task_stage(args), 0)
+            manifest = json.loads(path.read_text())
+            self.assertEqual(manifest["status"], "completed_with_warnings")
+            self.assertEqual(manifest["completed"], 0)
+            self.assertEqual(manifest["shortfall"], 3)
+
+    def test_three_case_warning_dry_run_continues_and_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "plan.json"
+            save(source, {"evaluation": {"task_count": 3}})
+            config = {
+                "cases": [{"id": name, "source": str(source)}
+                          for name in ("support", "migration", "release")],
+                "stages": {stage: {"command": ["fake", stage],
+                                   "receipt": "{output}/stage-receipt.json"}
+                           for stage in ("repo", "qa", "task")},
+            }
+            calls = []
+            route_calls = []
+            def fake_route(command, cwd, stdout, stderr):
+                target = Path(command[command.index("--output") + 1])
+                route = command[command.index("--qa-source") + 1]
+                name = next(name for name in ("support", "migration", "release") if name in target.parts)
+                route_calls.append((name, route))
+                if name == "release" or (name == "migration" and route == "graph"):
+                    save(target / "pipeline.json", {"status": "failed"})
+                    return 1
+                save(target / "pipeline.json", {"status": "completed_with_warnings"})
+                self.save_qa(target / "qa", route=route, empty=True, public_status="failed")
+                return 0
+            def fake_worker(command, cwd, env, stdout, stderr):
+                name, stage = env["PIPELINE_CASE_ID"], env["PIPELINE_STAGE"]
+                calls.append((name, stage))
+                output = Path(env["PIPELINE_OUTPUT"])
+                output.mkdir(parents=True, exist_ok=True)
+                if stage == "repo":
+                    info = output / "manifest-path.json"
+                    save(info, {"manifest": str(root / "episode.json"), "plan": str(source)})
+                    quality = output / "quality-summary.json"
+                    save(quality, {"status": "completed_with_warnings", "warnings": ["external_events_shortfall"],
+                                   "checks": {"external_event_closure": {"passed": True}}})
+                    _write_receipt(output / "stage-receipt.json", [info, quality],
+                                   result="completed_with_warnings")
+                    return
+                args = SimpleNamespace(input=Path(env["PIPELINE_INPUT"]), output=output,
+                                       python=Path(os.sys.executable), simulator_path=root / "sim",
+                                       env_file=root / ".env")
+                code = (_qa_stage if stage == "qa" else _task_stage)(args)
+                if code:
+                    raise RuntimeError("Local QA route failed")
+            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_route):
+                runner = PipelineRunner(config, root / "run", command_runner=fake_worker, max_attempts=1)
+                report = runner.run()
+                self.assertEqual(report["status"], "completed_with_warnings")
+                state = json.loads((root / "run/pipeline-state.json").read_text())
+                for name in ("support", "migration"):
+                    self.assertEqual(state["cases"][name]["stages"]["task"]["status"], "completed")
+                    self.assertTrue((root / "run/cases" / name / "task/tasks/report.md").is_file())
+                self.assertNotEqual(state["cases"]["release"]["stages"]["qa"]["status"], "completed")
+                summary = json.loads((root / "run/cases/migration/qa/qa-summary.json").read_text())
+                self.assertFalse(summary["routes"]["graph"]["output_ready"])
+                self.assertTrue(summary["routes"]["external"]["output_ready"])
+                self.assertEqual(len(route_calls), 6)
+                completed_calls = [call for call in calls if call[0] != "release"]
+                calls.clear()
+                route_calls.clear()
+                PipelineRunner(config, root / "run", resume=True, command_runner=fake_worker,
+                               max_attempts=1).run()
+                self.assertEqual([call for call in calls if call[0] != "release"], [])
+                self.assertEqual(route_calls, [])
+                self.assertEqual(len(completed_calls), 6)
 
     def test_config_expands_three_absolute_inputs(self):
         source = Path(__file__).parents[1] / "examples/collection-five/long-dialogue-three.json"

@@ -10,18 +10,54 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from dialogue_benchmark.llm import _ask_stage
-from dialogue_benchmark.task_eval.artifacts import qa_inputs, group_qa_inputs, generation_request
+from dialogue_benchmark.task_eval.artifacts import qa_inputs, group_qa_inputs, generation_request, save
 from dialogue_benchmark.task_eval.checks import pytest_result, _test_write_violations
 from dialogue_benchmark.task_eval.metrics import compare_trials, measure
 from dialogue_benchmark.task_eval.runtime import (configure, preflight_openhands_runtime,
                                                    readable_reference, release_completed_execution,
                                                    run_agent, shared_task_slot)
 from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_pollution,
+                                               main as run_tasks,
                                                reference_solver_answer,
                                                solver_input, unchanged, validated_spec)
 
 
 class TaskEvaluationTests(unittest.TestCase):
+    def test_empty_external_groups_save_shortfall_before_provider_or_runtime(self):
+        for question_count in (0, 2):
+            with self.subTest(question_count=question_count), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                qa_run = root / "qa"
+                questions = [{"id": "q%d" % index, "type": "M1", "status": "approved",
+                              "question": "Question %d" % index,
+                              "answer_points": [{"text": "Rule %d" % index, "sources": ["e%d" % index]}]}
+                             for index in range(question_count)]
+                save(qa_run / "qa-public.json", {"status": "approved", "questions": questions})
+                save(qa_run / "manifest.json", {"qa_source": "external"})
+                save(qa_run / "stages/group-raw-candidates.json", {"questions": questions})
+                save(qa_run / "stages/group-qa-input.json", {"payload": {"scope": {
+                    "dialogue": [{"id": "e%d" % index} for index in range(question_count)]}}})
+                args = ["--simulator-path", str(root), "--source-run", str(root / "source"),
+                        "--qa-run", str(qa_run), "--env-file", str(root / ".env"),
+                        "--output", str(root / "tasks"), "--count", "3"]
+                with patch("dialogue_benchmark.task_eval.run.configure") as provider, \
+                     patch("dialogue_benchmark.task_eval.run.preflight_openhands_runtime") as runtime:
+                    self.assertEqual(run_tasks(args), 0)
+                    provider.assert_not_called()
+                    runtime.assert_not_called()
+                    manifest = json.loads((root / "tasks/manifest.json").read_text())
+                    self.assertEqual((manifest["status"], manifest["completed"], manifest["shortfall"]),
+                                     ("incomplete", 0, 3))
+                    self.assertEqual(manifest["stop_reason"],
+                                     "no_related_external_qa" if question_count else "no_eligible_qa")
+                    self.assertTrue((root / "tasks/qa-grouping.json").is_file())
+                    self.assertTrue((root / "tasks/report.md").is_file())
+                    manifest["tasks"] = [{"task": "task-01", "status": "evaluated"}]
+                    save(root / "tasks/manifest.json", manifest)
+                    with self.assertRaisesRegex(ValueError, "Resume task selection changed"):
+                        run_tasks(args + ["--resume"])
+                    self.assertEqual(json.loads((root / "tasks/manifest.json").read_text()), manifest)
+
     def test_task_slots_are_shared_between_processes_and_released_after_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

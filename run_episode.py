@@ -18,6 +18,7 @@ from dialogue_benchmark.task_eval.report import write_report
 from render_run import render
 from dialogue_benchmark.episode_input import load_episode_manifest
 from dialogue_benchmark.collection import episode_usage
+from dialogue_benchmark.selection import globally_blocked
 
 
 MAX_QA_REQUEST_TIMEOUT = 600
@@ -31,18 +32,13 @@ def _usable_qa(public, *, provisional=False, qa_root=None):
     questions.  With ``provisional`` the caller may also use the review pool;
     those questions remain marked as provisional in task artifacts.
     """
-    if public.get("status") in {"failed", "disabled", "completed_no_questions"}:
-        return False
-    if qa_root is not None and (Path(qa_root) / "stages").exists():
-        try:
-            return has_eligible_qa(qa_root, include_provisional=provisional)
-        except (OSError, KeyError, TypeError, ValueError):
-            return False
+    if qa_root is not None:
+        return has_eligible_qa(qa_root, include_provisional=provisional)
     questions = public.get("questions")
     allowed = {"approved"}
     if provisional:
         allowed.update({"needs_review", "provisional"})
-    return bool(questions) and all(
+    return bool(questions) and any(
         isinstance(question, dict) and question.get("status") in allowed
         for question in questions
     )
@@ -217,6 +213,7 @@ def main(argv=None):
             qa_args += ["--source-event", event_id]
         for name in args.source_object:
             qa_args += ["--source-object", name]
+        qa_exit_status = 0
         if args.resume_tasks:
             if read(root / "qa/manifest.json")["input_sha256"] != conversion["output_sha256"]:
                 raise ValueError("Completed QA belongs to a different converted dialogue")
@@ -225,26 +222,50 @@ def main(argv=None):
             if args.qa_source == "external" and read(root / "qa/manifest.json").get("qa_mode") != "memory":
                 raise ValueError("External QA must use the unified memory types; regenerate QA")
         else:
-            status = generate_qa(qa_args)
-            if status:
+            qa_exit_status = generate_qa(qa_args)
+            if qa_exit_status and not all((root / "qa" / name).exists()
+                                  for name in ("manifest.json", "qa-public.json", "stages")):
+                state["stop_reason"] = "qa_generation_failed"
                 raise RuntimeError("QA generation did not complete; see qa/error.json")
         render(root)
         qa_result = read(root / "qa/qa-public.json")
-        if qa_result.get("status") == "failed":
-            state["stop_reason"] = "qa_generation_failed"
-            raise RuntimeError("QA generation failed; see qa/qa-audit.json")
-        provisional = bool(args.allow_provisional or qa_result.get("status") == "needs_review")
+        audit_path = root / "qa/qa-audit.json"
+        qa_errors = read(audit_path).get("stage_errors", []) if audit_path.is_file() else []
+        if globally_blocked(qa_errors):
+            blocker = next(error for error in qa_errors if globally_blocked([error]))
+            code = ("total_budget_exhausted" if blocker.get("http_status") == 402
+                    else blocker.get("error_code") or "authentication_error")
+            state["stop_reason"] = code
+            raise RuntimeError(code)
+        provisional = bool((args.allow_provisional or qa_result.get("status") == "needs_review")
+                           and qa_result.get("status") != "failed"
+                           and not qa_exit_status)
         usable = _usable_qa(qa_result, provisional=provisional, qa_root=root / "qa")
-        if not usable and not provisional:
+        if (not usable and not provisional and qa_result.get("status") != "failed"
+                and not qa_exit_status):
             # An aggregate warning must not hide individually usable review
             # candidates.  The hard source/credential checks live in
             # ``qa_inputs`` rather than in this stage wrapper.
             provisional = _has_provisional_candidates(root)
             if provisional:
                 usable = _usable_qa(qa_result, provisional=True, qa_root=root / "qa")
+        if qa_exit_status and not usable:
+            state["stop_reason"] = "qa_generation_failed"
+            raise RuntimeError("QA generation failed; see qa/qa-audit.json")
+        if qa_exit_status or qa_result.get("status") not in {None, "approved", "static_only", "completed_no_questions"}:
+            state["warnings"] = [{"code": "qa_stage_warning", "qa_status": qa_result.get("status"),
+                                  "exit_code": qa_exit_status}]
         if args.qa_only or not usable:
             if not args.qa_only:
+                previous_tasks = root / "tasks/manifest.json"
+                if args.resume_tasks and previous_tasks.is_file() and read(previous_tasks).get("tasks"):
+                    raise ValueError("Resume task selection changed: no eligible QA")
+                state.setdefault("warnings", []).append({"code": "no_eligible_qa"})
                 task_manifest = {"target": args.task_count, "tasks": [],
+                                 "status": "incomplete", "completed": 0, "accepted": 0,
+                                 "shortfall": args.task_count,
+                                 "notes": ["No eligible QA. Completed tasks: 0; target: %d; shortfall: %d."
+                                           % (args.task_count, args.task_count)],
                                  "stop_reason": "no_eligible_qa",
                                  "qa_status": qa_result.get("status"),
                                  "provisional": provisional}
@@ -252,8 +273,7 @@ def main(argv=None):
                 write_report(root / "tasks", task_manifest)
             state.update(
                 status=("completed" if (
-                    args.qa_only or qa_result.get("status") in
-                    {None, "completed_no_questions", "approved", "static_only"}
+                    not state.get("warnings")
                 ) else "completed_with_warnings"),
                 stop_reason=("qa_only" if args.qa_only and qa_result.get("questions")
                              else "no_eligible_qa"))
@@ -281,7 +301,15 @@ def main(argv=None):
             task_args += ["--allow-provisional"]
         status = run_tasks(task_args)
         render(root)
-        state["status"] = "completed" if status == 0 else "completed_with_warnings"
+        task_manifest = read(root / "tasks/manifest.json") if (root / "tasks/manifest.json").is_file() else {}
+        task_warning = task_manifest.get("status") not in {None, "complete"}
+        if task_warning:
+            state.setdefault("warnings", []).append({"code": "task_stage_incomplete",
+                                                      "reason": task_manifest.get("stop_reason")})
+        state["status"] = ("completed_with_warnings" if status or state.get("warnings") or task_warning
+                           else "completed")
+        if task_manifest.get("stop_reason"):
+            state["stop_reason"] = task_manifest["stop_reason"]
         if status:
             state["stop_reason"] = "task_stage_failed"
         phase("complete")
