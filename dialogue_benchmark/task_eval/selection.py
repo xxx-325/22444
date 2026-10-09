@@ -31,6 +31,7 @@ class SelectionBudget:
         self.max_requests = options.get("max_requests", 80)
         self.max_tokens = options.get("max_tokens", 1500000)
         self.agent_seconds = options.get("max_seconds", 1200)
+        self.request_timeout = options.get("request_timeout", MAX_SELECTION_REQUEST_SECONDS)
         self.requests = self.prompt_tokens = self.completion_tokens = 0
         self.usage_complete = True
         self._cache_rows = []
@@ -73,7 +74,7 @@ class SelectionBudget:
         try:
             return ask_model(prompt, payload,
                              bounded_model_config(config, min(self.agent_seconds,
-                                                               MAX_SELECTION_REQUEST_SECONDS)),
+                                                               self.request_timeout)),
                              output)
         except Exception as exc:
             error = exc

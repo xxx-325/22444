@@ -1,5 +1,8 @@
 import unittest
 from copy import deepcopy
+import json
+import tempfile
+from pathlib import Path
 
 from dialogue_benchmark.cli import _publication_view
 from dialogue_benchmark.selection import replenish, build_audit
@@ -115,6 +118,36 @@ class ReplenishmentTests(unittest.TestCase):
         receipt = result["progress"]["batches"][0]
         self.assertEqual(receipt["duplicate_decisions"], 1)
         self.assertEqual(receipt["dedup_errors"][0]["error_code"], "dedup_error")
+
+    def test_resume_skips_groups_in_completed_batch_checkpoint(self):
+        first = question("code0")
+        seen = []
+
+        def run(batch):
+            seen.extend(task[2]["id"] for task in batch)
+            rows = [question(task[2]["id"]) for task in batch]
+            return {"questions": rows, "all_questions": rows,
+                    "all_candidates": rows}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "batch-001.json").write_text(json.dumps({
+                "batch": 1, "group_ids": ["code0"], "attempted": {"code": 1},
+                "counts": {"code": 1}, "targets": {"code": 2},
+            }))
+            (root / "batch-001-audit.json").write_text(json.dumps({
+                "all_candidates": [first], "all_questions": [first],
+                "questions": [first], "rejected": [], "usage": [],
+                "stage_errors": [], "review_warnings": [], "stage_status": [],
+                "revisions": [], "duplicate_decisions": [], "dedup_errors": [],
+            }))
+            result = replenish(
+                [(0, "code", {"id": "code0"}), (1, "code", {"id": "code1"})],
+                {"code": 2}, {"code": 2}, 1, run, _publication_view,
+                resume_dir=root)
+        self.assertEqual(seen, ["code1"])
+        self.assertEqual([row["id"] for row in result["questions"]], ["code0", "code1"])
+        self.assertEqual(result["progress"]["attempted"]["code"], 2)
 
     def test_publication_applies_reviewed_duplicate_without_mutating_outcomes(self):
         left = question("left", text="same")

@@ -377,7 +377,10 @@ class EpisodeRunnerTests(unittest.TestCase):
             self.assertEqual(main(args), 0)
             tasks.assert_not_called()
             probe.assert_not_called()
-            self.assertEqual(transport.return_value.open.call_count, 0 if expected_error == "request_budget" else 1)
+            expected_calls = 0 if expected_error == "request_budget" else (
+                3 if expected_error == "http_error" else 1
+            )
+            self.assertEqual(transport.return_value.open.call_count, expected_calls)
         return root / "run"
 
     def test_successful_empty_external_facts_complete_without_tasks(self):

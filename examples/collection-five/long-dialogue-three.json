@@ -64,6 +64,8 @@
     "task_budget": 12,
     "task_workers": 3,
     "parallel_workers": 8,
-    "revisions": 5
+    "revisions": 5,
+    "request_timeout": 600,
+    "agent_seconds": 1200
   }
 }

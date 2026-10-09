@@ -361,6 +361,21 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(seen[0]["judge"]["request_timeout"], 600)
         self.assertEqual(config["judge"]["request_timeout"], 1800)
 
+    def test_selection_uses_explicit_request_timeout_cap(self):
+        seen = []
+
+        def ask(prompt, payload, config, output):
+            seen.append(config)
+            save(output / "usage.json", [{"prompt_tokens": 1, "completion_tokens": 1}])
+            return {"reviews": []}
+
+        config = {"judge": {"request_timeout": 1800, "model": "judge"}}
+        budget = SelectionBudget(self.root, {"max_seconds": 1200,
+                                             "request_timeout": 900})
+        with patch("dialogue_benchmark.task_eval.selection.ask_model", side_effect=ask):
+            budget.call("review", {}, config, self.root / "explicit-timeout")
+        self.assertEqual(seen[0]["judge"]["request_timeout"], 900)
+
     def test_missing_usage_and_request_errors_preserve_pending(self):
         for error in (TimeoutError("timeout"), None):
             with self.subTest(error=error):

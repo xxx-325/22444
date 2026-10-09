@@ -86,13 +86,19 @@ def main(argv=None):
     parser.add_argument("--task-count", type=int, default=12)
     parser.add_argument("--task-budget", type=int, default=24)
     parser.add_argument("--parallel-workers", type=int, default=10)
+    parser.add_argument("--request-timeout", type=float,
+                        help="QA provider request timeout cap in seconds; defaults to the stage policy")
     parser.add_argument("--model-request-chars", type=int, default=32000,
                         help="Maximum serialized QA and task-construction request size, including evidence and prompt")
     parser.add_argument("--task-workers", type=int, default=3)
+    parser.add_argument("--agent-seconds", type=int,
+                        help="Maximum seconds allowed for each Code-agent task")
     parser.add_argument("--revisions", type=int, default=5)
     parser.add_argument("--reuse-facts", type=Path)
     parser.add_argument("--resume-tasks", action="store_true",
                         help="Reuse completed QA and resume saved repository tasks")
+    parser.add_argument("--resume-qa", action="store_true",
+                        help="Resume a partial QA directory from saved group checkpoints")
     parser.add_argument("--allow-provisional", action="store_true",
                         help="Continue task construction from needs_review QA candidates")
     # Collection resume uses the short form when it re-enters an existing
@@ -108,6 +114,10 @@ def main(argv=None):
     for name in ("qa_count", "group_budget", "general_count", "code_count", "model_request_chars"):
         if getattr(args, name) is not None and getattr(args, name) <= 0:
             parser.error("--%s must be positive" % name.replace("_", "-"))
+    if args.request_timeout is not None and args.request_timeout <= 0:
+        parser.error("--request-timeout must be positive")
+    if args.agent_seconds is not None and args.agent_seconds <= 0:
+        parser.error("--agent-seconds must be positive")
     package = load_episode_manifest(args.episode_manifest) if args.episode_manifest else None
     packaged_events = package.get("external_events") if package else None
     if args.qa_source == "external" and args.external_events is None:
@@ -124,7 +134,8 @@ def main(argv=None):
     snapshot_path = package["snapshot"] if package else source_run / "workspace/candidate"
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not args.resume_tasks and ((root / "tasks").exists() or (root / "qa").exists()):
+    if (not args.resume_tasks and not args.resume_qa
+            and ((root / "tasks").exists() or (root / "qa").exists())):
         parser.error("Use an output without QA/task results; previous runs are retained")
     if args.resume_tasks and not all((root / "qa" / name).is_file()
                                      for name in ("manifest.json", "qa-public.json")):
@@ -132,7 +143,7 @@ def main(argv=None):
     if args.resume_tasks and (root / "tasks").exists() and not (root / "tasks/manifest.json").is_file():
         parser.error("Resuming existing tasks requires a saved task manifest")
     parameters = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
-                  if k != "resume_tasks"}
+                  if k not in {"resume_tasks", "resume_qa"}}
     identity = {"dialogue_sha256": hashlib.sha256(dialogue_path.read_bytes()).hexdigest(),
                 "snapshot_sha256": fingerprint(snapshot_path),
                 "external_sha256": (hashlib.sha256(args.external_events.read_bytes()).hexdigest()
@@ -179,20 +190,24 @@ def main(argv=None):
         endpoint = model["base_url"].rstrip("/")
         if not endpoint.endswith("/chat/completions"):
             endpoint += "/chat/completions"
-        phase("qa_reused" if args.resume_tasks else "qa")
+        phase("qa_reused" if args.resume_tasks else "qa_resume" if args.resume_qa else "qa")
+        configured_timeout = model.get("request_timeout", DEFAULT_REQUEST_TIMEOUT)
+        request_timeout = min(
+            configured_timeout,
+            args.request_timeout if args.request_timeout is not None else MAX_QA_REQUEST_TIMEOUT,
+        )
         qa_args = [
             str(root / "input/dialogue.json"), "--output", str(root / "qa"),
             "--parallel-workers", str(args.parallel_workers), "--chunk-chars", "24000",
             "--model-request-chars", str(args.model_request_chars),
             "--allow-network",
             "--endpoint", endpoint, "--model", model["model"], "--key-env", model["key_env"],
-            "--request-timeout", str(min(
-                model.get("request_timeout", DEFAULT_REQUEST_TIMEOUT),
-                MAX_QA_REQUEST_TIMEOUT,
-            )),
+            "--request-timeout", str(request_timeout),
         ]
         if args.reuse_facts:
             qa_args += ["--reuse-facts", str(args.reuse_facts)]
+        if args.resume_qa:
+            qa_args += ["--resume-output"]
         if model.get("reasoning_effort"):
             qa_args += ["--reasoning-effort", model["reasoning_effort"]]
         if args.qa_source == "external":
@@ -291,6 +306,10 @@ def main(argv=None):
             "--workers", str(args.task_workers), "--revisions", str(args.revisions),
             "--model-request-chars", str(args.model_request_chars),
         ]
+        if args.request_timeout is not None:
+            task_args += ["--request-timeout", str(args.request_timeout)]
+        if args.agent_seconds is not None:
+            task_args += ["--agent-seconds", str(args.agent_seconds)]
         if args.resume_tasks and (root / "tasks" / "manifest.json").is_file():
             task_args += ["--resume"]
         if package:

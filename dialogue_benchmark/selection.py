@@ -2,6 +2,8 @@
 
 from collections import Counter, deque
 from copy import deepcopy
+import json
+from pathlib import Path
 import re
 
 
@@ -801,7 +803,8 @@ def balance_group_tasks(tasks):
 
 
 def replenish(tasks, limits, budgets, workers, run_batch, project, checkpoint=None,
-              initial_errors=(), initial_request_count=0, after_batch=None):
+              initial_errors=(), initial_request_count=0, after_batch=None,
+              resume_dir=None):
     """Process new groups in bounded batches; extraction and transport stay outside."""
     tasks = balance_group_tasks(tasks)
     pools = {mode: deque(t for t in tasks if t[1] == mode) for mode in limits}
@@ -814,6 +817,54 @@ def replenish(tasks, limits, budgets, workers, run_batch, project, checkpoint=No
     blocked = globally_blocked(initial_errors)
     next_mode = 0
     modes = list(limits)
+
+    # A batch checkpoint is cumulative: the audit saved beside the latest
+    # receipt contains every candidate seen so far.  Restore that one snapshot
+    # and remove only its completed group IDs from the work pools.  This keeps
+    # a resumed QA run from sending already successful groups again.
+    if resume_dir is not None:
+        resume_dir = Path(resume_dir)
+        receipts = sorted(resume_dir.glob("batch-*.json"))
+        valid = []
+        for receipt_path in receipts:
+            try:
+                receipt = json.loads(receipt_path.read_text())
+                number = receipt.get("batch")
+                audit_path = resume_dir / ("batch-%03d-audit.json" % int(number))
+                audit = json.loads(audit_path.read_text())
+                if (not isinstance(receipt, dict) or not isinstance(audit, dict)
+                        or not isinstance(receipt.get("group_ids"), list)):
+                    continue
+                valid.append((int(number), receipt, audit))
+            except (OSError, ValueError, TypeError):
+                continue
+        if valid:
+            _, latest_receipt, latest_audit = max(valid, key=lambda row: row[0])
+            for key in merged:
+                value = latest_audit.get(key)
+                if isinstance(value, list):
+                    merged[key] = list(value)
+            completed_ids = {
+                group_id for _, receipt, _ in valid
+                for group_id in receipt.get("group_ids", [])
+                if isinstance(group_id, str)
+            }
+            for mode, queue in pools.items():
+                pools[mode] = deque(
+                    task for task in queue
+                    if task[2].get("id") not in completed_ids
+                )
+            batches = [receipt for _, receipt, _ in sorted(valid)]
+            attempted_ids = [
+                group_id for receipt in batches
+                for group_id in receipt.get("group_ids", [])
+                if isinstance(group_id, str)
+            ]
+            attempted = Counter(latest_receipt.get("attempted", {}))
+            restored = project(merged["all_questions"], limits)
+            counts = restored["counts"]
+            blocked = globally_blocked(merged["stage_errors"])
+
     while not blocked:
         batch = []
         for _ in range(workers):

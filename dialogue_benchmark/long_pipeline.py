@@ -54,7 +54,8 @@ def _path_sha256(path: Path) -> str:
 
 def _write_receipt(path: Path, artifacts: Iterable[Path], *, result="completed",
                    input_path: Optional[Path] = None, warnings=None,
-                   retryable: bool = False) -> None:
+                   retryable: bool = False, usable_for_downstream=None,
+                   checkpoint=None, failure=None) -> None:
     path = Path(path).resolve()
     paths = [Path(item).resolve() for item in artifacts if Path(item).is_file()]
     if not paths:
@@ -65,12 +66,20 @@ def _write_receipt(path: Path, artifacts: Iterable[Path], *, result="completed",
         json.dumps(relative, ensure_ascii=False, sort_keys=True,
                    separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    output_ready = result in {"completed", "completed_with_warnings"}
+    if usable_for_downstream is None:
+        usable_for_downstream = output_ready
     payload = {"status": "completed", "result": result,
                "sha256": _sha256(paths[0]), "artifacts": relative,
                "input_sha256": _path_sha256(Path(input_path).resolve())
                if input_path is not None else None,
                "output_sha256": output_sha256,
-               "warnings": list(warnings or []), "retryable": bool(retryable)}
+               "output_ready": bool(output_ready),
+               "usable_for_downstream": bool(usable_for_downstream),
+               "retryable": bool(retryable),
+               "checkpoint": checkpoint,
+               "warnings": list(warnings or []),
+               "failure": failure}
     save(path, payload)
 
 
@@ -193,6 +202,8 @@ def _route_command(route: str, manifest: Path, output: Path, args, plan: dict):
                "--parallel-workers", str(evaluation.get("parallel_workers", 10))]
     if evaluation.get("model_request_chars") is not None:
         command += ["--model-request-chars", str(evaluation["model_request_chars"])]
+    if evaluation.get("request_timeout") is not None:
+        command += ["--request-timeout", str(evaluation["request_timeout"])]
     if route == "external":
         command += ["--qa-count", str(evaluation.get("qa_count", 40))]
         if evaluation.get("group_budget") is not None:
@@ -230,10 +241,13 @@ def _qa_stage(args) -> int:
             except (OSError, ValueError, TypeError, AttributeError):
                 pass
         if checkpointed and not ready:
-            route_dir.mkdir(parents=True, exist_ok=True)
-            save(pipeline, {"status": "retryable", "retryable": True,
-                            "reason": "qa_checkpoint_pending", "route": route})
-            return route, 1
+            # Re-enter the same output directory.  The QA command restores
+            # completed batch/group checkpoints and only requests remaining
+            # work; do not archive a valid prefix or start from zero.
+            command = _route_command(route, manifest, route_dir, args, plan)
+            command.append("--resume-qa")
+            return route, _run_logged(command, ROOT, route_dir / "stdout.log",
+                                      route_dir / "stderr.log")
         if not ready:
             _archive_incomplete(qa_dir)
         command = _route_command(route, manifest, route_dir, args, plan)
@@ -403,6 +417,10 @@ def _task_stage(args) -> int:
                "--task-workers", str(evaluation.get("task_workers", 2)),
                "--revisions", str(evaluation.get("revisions", 3)),
                "--model-request-chars", str(evaluation.get("model_request_chars", 96000))]
+    if evaluation.get("request_timeout") is not None:
+        command += ["--request-timeout", str(evaluation["request_timeout"])]
+    if evaluation.get("agent_seconds") is not None:
+        command += ["--agent-seconds", str(evaluation["agent_seconds"])]
     if allow_provisional and not all_approved:
         command.append("--allow-provisional")
     code = _run_logged(command, ROOT, output / "stdout.log", output / "stderr.log")

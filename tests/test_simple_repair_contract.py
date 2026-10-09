@@ -383,9 +383,9 @@ END_QA"""])
         for error in (ModelStageError("http_error", http_status=503),
                       ModelStageError("credential_guard")):
             with self.subTest(error=error.code):
-                client = ScriptedClient([
-                    atomicity_review("A1=single;F1=compound"), error,
-                ])
+                responses = [atomicity_review("A1=single;F1=compound")]
+                responses.extend([error] * (3 if error.code == "http_error" else 1))
+                client = ScriptedClient(responses)
                 result = review_candidates(
                     self.scope, self.facts, [self.candidate], client,
                     qa_mode="general", review_mode="simple", allow_repair=True,

@@ -30,6 +30,9 @@ class LongPipelineTests(unittest.TestCase):
             self.assertEqual(receipt["input_sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
             self.assertEqual(receipt["warnings"], ["qa_shortfall"])
             self.assertFalse(receipt["retryable"])
+            self.assertTrue(receipt["output_ready"])
+            self.assertTrue(receipt["usable_for_downstream"])
+            self.assertIsNone(receipt["failure"])
             previous_hash = receipt["output_sha256"]
             save(artifacts[1], {"name": "changed"})
             _write_receipt(receipt_path, artifacts, input_path=source)
@@ -67,11 +70,13 @@ class LongPipelineTests(unittest.TestCase):
         args = SimpleNamespace(
             python=Path(os.sys.executable), simulator_path=Path("sim"), env_file=Path(".env"),
         )
-        plan = {"evaluation": {"parallel_workers": 7}}
+        plan = {"evaluation": {"parallel_workers": 7, "request_timeout": 900}}
         for route in ("graph", "external"):
             command = _route_command(route, Path("manifest.json"), Path("output"), args, plan)
             index = command.index("--parallel-workers")
             self.assertEqual(command[index + 1], "7")
+            timeout = command.index("--request-timeout")
+            self.assertEqual(command[timeout + 1], "900")
 
     def test_qa_stage_uses_configured_sources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -159,11 +164,14 @@ class LongPipelineTests(unittest.TestCase):
                 simulator_path=root / "sim", env_file=root / ".env",
             )
             with patch("dialogue_benchmark.long_pipeline._run_logged") as run:
+                run.return_value = 1
                 self.assertEqual(_qa_stage(args), 1)
-            run.assert_not_called()
+            run.assert_called_once()
+            command = run.call_args.args[0]
+            self.assertIn("--resume-qa", command)
             self.assertTrue((output / "graph/qa/batch-001.json").is_file())
             self.assertEqual(json.loads((output / "graph/pipeline.json").read_text())["status"],
-                             "retryable")
+                             "failed")
 
     def test_task_stage_archives_tasks_without_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

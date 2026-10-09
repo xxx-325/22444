@@ -18,7 +18,8 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=6, task_workers=2, max_task_workers=3,
                            revisions=3,
                            model_request_chars=96000, qa_only=False,
-                           general_count=50, code_count=50)
+                           general_count=50, code_count=50,
+                           request_timeout=600, agent_seconds=1200)
 EXTERNAL_MEMORY_KINDS = ("M1", "M2", "M3", "M4", "M5", "M6")
 # Keep one bounded retry for a model-authored stage.  The checkpoint-aware
 # path below never discards an accepted prefix.
@@ -533,6 +534,11 @@ def validate_plan(plan):
         if key == "qa_only":
             if type(value) is not bool:
                 raise ValueError("qa_only must be a boolean")
+            continue
+        if key in {"request_timeout", "agent_seconds"}:
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or value <= 0):
+                raise ValueError(key + " must be positive")
             continue
         if type(value) is not int or value <= 0:
             raise ValueError(key + " must be positive")

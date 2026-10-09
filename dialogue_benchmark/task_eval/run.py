@@ -1252,6 +1252,10 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--agent-requests", type=int, default=80)
     parser.add_argument("--agent-tokens", type=int, default=1500000)
+    parser.add_argument("--agent-seconds", type=int,
+                        help="Maximum seconds allowed for each Code-agent task")
+    parser.add_argument("--request-timeout", type=float,
+                        help="Provider request timeout cap for task construction and review")
     parser.add_argument("--model-request-chars", type=int, default=60000,
                         help="Maximum serialized task-construction request size, including evidence and prompt")
     args = parser.parse_args(argv)
@@ -1259,6 +1263,10 @@ def main(argv=None):
     if min(args.count, args.workers, args.agent_requests, args.agent_tokens,
            args.model_request_chars) < 1 or args.revisions < 0:
         parser.error("Counts and budgets must be positive; revisions must be nonnegative")
+    if args.agent_seconds is not None and args.agent_seconds < 1:
+        parser.error("--agent-seconds must be positive")
+    if args.request_timeout is not None and args.request_timeout <= 0:
+        parser.error("--request-timeout must be positive")
     if task_budget < 1:
         parser.error("Task budget must be positive")
     qa_source = getattr(args, "qa_source", "graph")
@@ -1324,7 +1332,8 @@ def main(argv=None):
     # Keep a stalled provider response from holding the whole task batch past
     # the stage budget; code-agent workers retain their separate execution
     # deadline and cumulative request/token budgets.
-    config = bounded_model_config(config, 600)
+    request_timeout = args.request_timeout if args.request_timeout is not None else 600
+    config = bounded_model_config(config, request_timeout)
     preflight_openhands_runtime(args.simulator_path)
     config["model_request_chars"] = args.model_request_chars
     baseline = (Path(existing_manifest["baseline"]).resolve() if args.resume
@@ -1361,7 +1370,9 @@ def main(argv=None):
                 "simulator_version": source_version(args.simulator_path, "simulator"),
                 "execution": {"workers": args.workers, "revisions": args.revisions,
                               "agent_requests": args.agent_requests, "agent_tokens": args.agent_tokens,
-                              "agent_seconds": 1200, "design_probe": args.design_probe,
+                              "agent_seconds": args.agent_seconds or 1200,
+                              "judge_request_timeout": request_timeout,
+                              "design_probe": args.design_probe,
                               "reuse_preparation": str(args.reuse_preparation.resolve()) if args.reuse_preparation else None,
                               "preparation_feedback": str(args.preparation_feedback.resolve()) if args.preparation_feedback else None},
                 "comparison": "Historical answer injection; no memory retriever",
@@ -1385,7 +1396,9 @@ def main(argv=None):
     else:
         manifest = dict(expected_manifest, tasks=[])
         save(output / "manifest.json", manifest)
-    agent_options = {"max_requests": args.agent_requests, "max_tokens": args.agent_tokens}
+    agent_options = {"max_requests": args.agent_requests, "max_tokens": args.agent_tokens,
+                     "max_seconds": args.agent_seconds or 1200,
+                     "request_timeout": request_timeout}
 
     # A construction directory is an append-only attempt.  Keep its record
     # and give an unfinished construction a fresh task directory on resume;

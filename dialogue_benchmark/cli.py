@@ -50,6 +50,7 @@ CHUNK_EVIDENCE_FIELDS = (
     "cutoff", "dialogue", "events", "versions", "edges",
     "historical_edges", "stages",
 )
+_ALLOW_OUTPUT_OVERWRITE = False
 
 
 def save(directory, name, data):
@@ -59,7 +60,7 @@ def save(directory, name, data):
             raise FileExistsError(path)
         save_projection(path, data)
         return
-    with path.open("x", encoding="utf-8") as output:
+    with path.open("w" if _ALLOW_OUTPUT_OVERWRITE else "x", encoding="utf-8") as output:
         os.chmod(path, 0o600)
         json.dump(data, output, ensure_ascii=False, indent=2)
         output.write("\n")
@@ -151,6 +152,8 @@ def _build_parser():
                         help="Model request timeout in seconds (default: 90)")
     parser.add_argument("--reuse-facts", type=Path,
                         help="Reuse saved facts/errors from identical normalized input and chunks; extract missing chunks")
+    parser.add_argument("--resume-output", action="store_true",
+                        help="Resume a partial QA output directory from saved group/batch checkpoints")
     parser.add_argument("--repository", type=Path,
                         help="Final repository snapshot for the read-only recoverability probe")
     parser.add_argument("--qa-source", choices=("graph", "external"), default="graph",
@@ -1559,6 +1562,8 @@ def _prepare_code_scopes(graph, records, cutoff, args, candidate_limit=None):
 
 
 def main(argv=None):
+    global _ALLOW_OUTPUT_OVERWRITE
+    _ALLOW_OUTPUT_OVERWRITE = False
     parser = _build_parser()
     args = parser.parse_args(argv)
     options = _parse_options(args, parser)
@@ -1581,11 +1586,17 @@ def main(argv=None):
         public_input = all(r.get("input_schema") == "model-visible-dialogue-v1" for r in records)
         if args.seed and public_input:
             seed_sources.update(resolve_source_objects(records, [args.seed]))
-        if args.reuse_facts and json.loads((args.reuse_facts / "normalized.json").read_text()) != records:
+        reuse_source = args.reuse_facts or (args.output if args.resume_output else None)
+        if reuse_source and json.loads((reuse_source / "normalized.json").read_text()) != records:
             raise ValueError("Saved facts belong to a different normalized input")
-        args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
+        if args.output.exists():
+            if not args.resume_output or not args.output.is_dir():
+                raise FileExistsError(args.output)
+        else:
+            args.output.mkdir(mode=0o700, parents=True)
         created = True
         os.chmod(args.output, 0o700)
+        _ALLOW_OUTPUT_OVERWRITE = bool(args.resume_output)
         external_mode = options["qa_source"] == "external"
         tracks = ("memory",) if external_mode else ("general", "code")
         if external_mode:
@@ -1723,7 +1734,7 @@ def main(argv=None):
             unique_chunk_count = sum(1 for item in chunk_summaries
                                      if item.get("task_index") is not None)
             save(args.output, "chunks.json", chunk_summaries)
-            if args.reuse_facts and json.loads((args.reuse_facts / "chunks.json").read_text()) != chunk_summaries:
+            if reuse_source and json.loads((reuse_source / "chunks.json").read_text()) != chunk_summaries:
                 raise ValueError("Saved facts use a different chunk layout")
             # Report missing evidence per enabled track.  A healthy other
             # track must not hide a scope failure in this one.
@@ -1744,15 +1755,15 @@ def main(argv=None):
                 pass
             else:
                 checkpoint_dir = args.output / "stages"
-                checkpoint_dir.mkdir(mode=0o700)
-                fact_options = {"reuse_dir": args.reuse_facts} if args.reuse_facts else {}
+                checkpoint_dir.mkdir(mode=0o700, exist_ok=True)
+                fact_options = {"reuse_dir": reuse_source} if reuse_source else {}
                 facts_result = _run_fact_tasks(
                     fact_tasks, args.endpoint, args.model, args.key_env,
                     args.parallel_workers, checkpoint_dir,
                     external_only=external_mode, request_timeout=args.request_timeout,
                     reasoning_effort=args.reasoning_effort, **fact_options)
                 save(args.output, "fact-extraction.json", {
-                    "reused_from": str(args.reuse_facts) if args.reuse_facts else None,
+                    "reused_from": str(reuse_source) if reuse_source else None,
                     "usage": facts_result["usage"], "stage_errors": facts_result["stage_errors"],
                     "stage_status": facts_result["stage_status"],
                 })
@@ -1990,7 +2001,8 @@ def main(argv=None):
                         recoverability_workers=args.parallel_workers),
                     checkpoint=batch_checkpoint, initial_errors=result["stage_errors"],
                     initial_request_count=sum(u.get("request_count", 1) for u in result["usage"]),
-                    after_batch=adjudicate_duplicates)
+                    after_batch=adjudicate_duplicates,
+                    resume_dir=args.output if args.resume_output else None)
                 recoverability_state = _ordered_recoverability_state(
                     recoverability_state, qa_result["all_questions"])
                 # Attach probe results to control-side candidate records so
