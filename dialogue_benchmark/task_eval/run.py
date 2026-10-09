@@ -1002,11 +1002,38 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             def record_round(number, outcome):
                 round_root = trial / ("round-%02d" % number)
                 candidate = trial / "workspace/candidate"
+                # The candidate snapshot and the solver receipt are the
+                # authoritative record for this round.  Persist them before
+                # running any host-side checks or Judge so a failed scorer
+                # cannot erase the solver's completed round.
                 copy_tree(candidate, round_root / "candidate")
-                checks = run_checks(candidate, spec, round_root / "checks", config["execution_image"],
-                                    candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
-                judged, review_path, roots = inspect_acceptance(
-                    candidate, spec, items, checks, round_root, config, agent_options)
+                save(round_root / "result.json", {
+                    "result": "uncertain", "solver_status": outcome.get("status"),
+                    "metrics": outcome.get("metrics", {}), "judge_status": "pending"})
+                try:
+                    checks = run_checks(
+                        candidate, spec, round_root / "checks", config["execution_image"],
+                        candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+                    save(round_root / "checks/result.json", checks)
+                except Exception as error:
+                    checks = {"status": "error", "cases": [],
+                              "error_type": type(error).__name__, "detail": str(error)}
+                    save(round_root / "checks/result.json", checks)
+                judged = {"status": "not_run"}
+                review_path, roots = None, {
+                    "/workspace/candidate": round_root / "candidate",
+                    "/workspace/checks": round_root / "checks",
+                    "/workspace/experiments": round_root / "experiments",
+                }
+                if checks.get("status") != "error":
+                    try:
+                        judged, review_path, roots = inspect_acceptance(
+                            candidate, spec, items, checks, round_root, config, agent_options)
+                    except Exception as error:
+                        # A Judge failure is an evaluation failure.  Keep the
+                        # solver receipt and candidate status independent.
+                        judged = {"status": "error", "error_type": type(error).__name__,
+                                  "detail": str(error)}
                 save(round_root / "judge/result.json", judged)
                 acceptance = assess_acceptance(items, checks, review_path, roots)
                 changed = write_diff(baseline, candidate, round_root / "changes.patch")
@@ -1047,8 +1074,18 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
         else:
             if saved_solver and (trial / "judge-reference").exists():
                 inspection = trial / "resume-inspection"
-            judged, review_path, roots = inspect_acceptance(
-                candidate, spec, items, checks, inspection, config, agent_options)
+            try:
+                judged, review_path, roots = inspect_acceptance(
+                    candidate, spec, items, checks, inspection, config, agent_options)
+            except Exception as error:
+                judged = {"status": "error", "error_type": type(error).__name__,
+                          "detail": str(error)}
+                review_path, roots = None, {
+                    "/workspace/candidate": inspection / "candidate",
+                    "/workspace/checks": inspection / "checks",
+                    "/workspace/experiments": inspection / "experiments",
+                }
+                save(inspection / "judge/result.json", judged)
             judge = inspection / "judge"
         verdict_path = judge / "workspace/checks/verdict.txt"
         verdict = verdict_path.read_text() if verdict_path.exists() else ""
@@ -1059,10 +1096,15 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             # Keep the functional result visible, but do not count a delivery
             # that changed its frozen tests/fixtures as an ordinary pass.
             status = "uncertain"
+        information_condition = (
+            "memory_not_required" if condition == "without_memory" and status == "passed"
+            else "oracle_history" if condition == "with_memory" and history else "without_memory"
+        )
         result[condition] = {"result": status, "solver_status": solved["status"],
                              "judge_status": judged["status"],
                              "metrics": solved["metrics"], "checks": checks,
                              "history_available": history is not None,
+                             "information_condition": information_condition,
                              "acceptance": acceptance, "changed_files": changed,
                              "implementation_pollution": polluted,
                              "judge_evidence": verdict, "trial": trial.name}
@@ -1077,7 +1119,7 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             exchanges = solved.get("clarifications", [])
             result[condition].update(history_application=application,
                 history_question_count=len(exchanges),
-                information_condition="oracle_history" if condition == "with_memory" else "without_memory",
+                information_condition=information_condition,
                 clarifications=exchanges, responder_cost=solved.get("responder_cost"),
                 clarification_status=solved.get("clarification_status", "unavailable"),
                 interaction_counts={kind: sum(e.get("kind") == kind for e in exchanges)

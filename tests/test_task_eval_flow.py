@@ -220,6 +220,70 @@ class TaskPreflightTests(unittest.TestCase):
             self.assertEqual((trial / "round-01/candidate/report.txt").read_text(), "incomplete")
             self.assertEqual((trial / "round-02/candidate/report.txt").read_text(), "delivered")
 
+    def test_judge_failure_keeps_solver_receipt_round_snapshot_and_raw_pair_cost(self):
+        spec = self.base / "spec"
+        spec.mkdir()
+        (spec / "task.md").write_text("Deliver the report.")
+        (spec / "acceptance.md").write_text(
+            "| a1 | Report is delivered | task | inspect: Read report.txt; one must be delivered |\n")
+        save(spec / "acceptance.json", acceptance_items(spec))
+        receipt = freeze(spec, self.root / "frozen", self.baseline)
+
+        def agent(root, config, role, message, **options):
+            self.assertEqual(role, "code")
+            (root / "workspace/candidate/report.txt").write_text("one: delivered\n")
+            options["on_round"](1, {"status": "finished", "metrics": {
+                "tool_calls": 10 if root.name == "trial-1" else 4,
+                "file_view_calls": 2, "shell_read_or_search_calls": 1,
+                "total_tokens": 20, "usage_complete": True}})
+            return {"status": "finished", "metrics": {
+                "tool_calls": 10 if root.name == "trial-1" else 4,
+                "file_view_calls": 2, "shell_read_or_search_calls": 1,
+                "total_tokens": 20, "usage_complete": True}}
+
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.run_checks",
+                   return_value={"status": "passed", "cases": []}), \
+             patch("dialogue_benchmark.task_eval.run.inspect_acceptance",
+                   side_effect=RuntimeError("judge unavailable")):
+            result = evaluate(self.item, self.root, self.baseline, receipt,
+                              {"execution_image": "image"}, {}, 0)
+
+        for condition in ("without_memory", "with_memory"):
+            trial = self.root / result[condition]["trial"]
+            self.assertEqual(result[condition]["solver_status"], "finished")
+            self.assertEqual(result[condition]["judge_status"], "error")
+            self.assertEqual(result[condition]["result"], "uncertain")
+            self.assertEqual(read(trial / "round-01/result.json")["solver_status"], "finished")
+            self.assertEqual((trial / "round-01/candidate/report.txt").read_text(),
+                             "one: delivered\n")
+        self.assertEqual(read(self.root / "paired-differences.json")["raw_cost_differences"]["tool_calls"], -6)
+
+    def test_passed_without_memory_is_marked_memory_not_required(self):
+        spec = self.base / "spec"
+        spec.mkdir()
+        (spec / "task.md").write_text("Deliver the report.")
+        (spec / "acceptance.md").write_text(
+            "| a1 | Report is delivered | task | test: test_acceptance::test_report |\n")
+        save(spec / "acceptance.json", acceptance_items(spec))
+        receipt = freeze(spec, self.root / "frozen", self.baseline)
+
+        def agent(root, config, role, message, **options):
+            return {"status": "finished", "metrics": {
+                "tool_calls": 1, "file_view_calls": 0,
+                "shell_read_or_search_calls": 0, "total_tokens": 2,
+                "usage_complete": True}}
+
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", return_value={
+                 "status": "passed", "cases": [
+                     {"id": "test_acceptance::test_report", "status": "passed"}]}):
+            result = evaluate(self.item, self.root, self.baseline, receipt,
+                              {"execution_image": "image"}, {}, 0)
+        self.assertEqual(result["without_memory"]["result"], "passed")
+        self.assertEqual(result["without_memory"]["information_condition"], "memory_not_required")
+        self.assertIn("without_memory", read(self.root / "comparison.json"))
+
     def test_changed_qa_is_rejected_before_evaluation(self):
         receipt = {"qa_sha256": qa_fingerprint(self.item["qa"])}
         self.item["qa"]["answer_points"] = ["Different historical answer"]
