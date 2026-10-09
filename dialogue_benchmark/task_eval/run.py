@@ -1159,6 +1159,8 @@ def main(argv=None):
         parser.error("Task budget must be positive")
     if args.qa_group_size is not None and args.qa_group_size < 1:
         parser.error("QA group size must be positive")
+    if args.qa_source == "external" and args.qa_group_size == 1:
+        parser.error("External requirements need at least two related QA")
     if args.preparation_feedback and not args.reuse_preparation:
         parser.error("--preparation-feedback requires --reuse-preparation")
     output = args.output.resolve()
@@ -1176,6 +1178,8 @@ def main(argv=None):
         parser.error("No usable QA with saved generation inputs")
     group_size = args.qa_group_size if args.qa_group_size is not None else (
         2 if items[0].get("qa_source") == "external" else 1)
+    if items[0].get("qa_source") == "external":
+        group_size = max(2, group_size)
     grouping_diagnostics = []
     items = group_qa_inputs(items, group_size, diagnostics=grouping_diagnostics)
     save(output / "qa-grouping.json", {"group_size": group_size,
