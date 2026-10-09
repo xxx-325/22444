@@ -45,6 +45,16 @@ class CollectionTests(unittest.TestCase):
         self.assertIsNone(row["expected_coverage"])
         self.assertEqual(sum(item["attempts"] for item in row["opportunities"]), 4)
 
+    def test_external_opportunity_stage_is_checked_before_repository_work(self):
+        with self.assertRaisesRegex(ValueError, "invalid external attempt distribution"):
+            plan_external_information([{
+                "id": "support", "brief": "Support handoff", "increments": 2,
+                "scenarios": [{"id": "handoff", "external_attempt_budget": 1,
+                               "external_attempt_distribution": [
+                                   {"stage": 3, "behavior": "handoff",
+                                    "memory_kinds": ["M1"], "attempts": 1}]}],
+            }])
+
     def test_receipt_left_in_atomic_temp_file_is_recovered(self):
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / "pipeline.json"

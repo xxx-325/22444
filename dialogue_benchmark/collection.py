@@ -338,6 +338,9 @@ def plan_external_information(projects):
                 raise ValueError("external_attempt_budget must be a nonnegative integer")
             if not kinds or any(kind not in EXTERNAL_MEMORY_KINDS for kind in kinds):
                 raise ValueError("memory_kinds must select M1..M6")
+            stage_count = project.get("increments", 1)
+            if type(stage_count) is not int or stage_count < 1:
+                raise ValueError("increments must be a positive integer")
             raw_distribution = scenario.get("external_attempt_distribution")
             if raw_distribution is None:
                 base, remainder = divmod(budget, len(kinds))
@@ -345,7 +348,7 @@ def plan_external_information(projects):
                     kind: base + (index < remainder)
                     for index, kind in enumerate(kinds)
                 }
-                stages = max(1, int(project.get("increments", 1)))
+                stages = stage_count
                 stage_base, stage_remainder = divmod(budget, stages)
                 opportunities = [
                     {
@@ -370,7 +373,7 @@ def plan_external_information(projects):
                     attempts = row.get("attempts")
                     stage = row.get("stage")
                     behavior = row.get("behavior")
-                    if (type(stage) is not int or stage < 1
+                    if (type(stage) is not int or not 1 <= stage <= stage_count
                             or type(attempts) is not int or attempts < 0
                             or not isinstance(behavior, str) or not behavior.strip()
                             or not isinstance(allowed, list) or not allowed
