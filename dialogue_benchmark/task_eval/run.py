@@ -174,7 +174,7 @@ def unchanged(receipt, spec, baseline):
 
 
 def admission(validation, baseline_checks, reference_checks, baseline_acceptance=None,
-              reference_acceptance=None):
+              reference_acceptance=None, probe=None, task_type=None):
     """Tests cannot be overridden by a model's PASS; absent tests use explicit review."""
     if not (validation.get("BASELINE") == "unmet" and validation.get("REFERENCE") == "pass"
             and validation.get("VERDICT") == "accept"
@@ -185,18 +185,56 @@ def admission(validation, baseline_checks, reference_checks, baseline_acceptance
     if reference_checks["status"] in {"failed", "error"}:
         return False
     if baseline_acceptance is not None and reference_acceptance is not None:
-        return (validation.get("TESTS") in {"executable", "partial", "unavailable"}
+        accepted = (validation.get("TESTS") in {"executable", "partial", "unavailable"}
                 and baseline_acceptance["status"] == "failed"
                 and reference_acceptance["status"] == "passed"
                 and not reference_checks.get("skipped", 0)
                 and validation.get("MUTATIONS") == "caught")
-    if validation.get("TESTS") == "executable":
-        return (baseline_checks["status"] == "failed"
-                and reference_checks["status"] == "passed"
-                and not reference_checks.get("skipped", 0)
-                and validation.get("MUTATIONS") == "caught")
-    return (validation.get("TESTS") in {"partial", "unavailable"}
-            and validation.get("MUTATIONS") in {"caught", "unavailable"})
+    elif validation.get("TESTS") == "executable":
+        accepted = (baseline_checks["status"] == "failed"
+                    and reference_checks["status"] == "passed"
+                    and not reference_checks.get("skipped", 0)
+                    and validation.get("MUTATIONS") == "caught")
+    else:
+        accepted = (validation.get("TESTS") in {"partial", "unavailable"}
+                    and validation.get("MUTATIONS") in {"caught", "unavailable"})
+    # M1/M3 are the hard admission boundary: a repository-only probe must not
+    # solve them without history.  A failed probe is evidence for review.
+    if probe is not None and task_type in {"M1", "M3"}:
+        if probe.get("status") == "needs_review":
+            return False
+        if probe.get("recoverable") or probe.get("static_recovery"):
+            return False
+    return accepted
+
+
+def repository_design_probe(root, baseline, spec, config, agent_options):
+    """Run a repository-only, no-history probe and classify leakage risk."""
+    probe_root = Path(root) / "design-probe"
+    prepare(probe_root, baseline)
+    prompt = ("Implement the task described below using only the repository. "
+              "Do not use conversation history or ask a follow-up question.\n\n" +
+              (Path(spec) / "task.md").read_text(encoding="utf-8"))
+    try:
+        try:
+            outcome = run_agent(probe_root, config, "code", prompt,
+                                history=None, no_history=True, no_followup=True,
+                                **agent_options)
+        except TypeError:
+            outcome = run_agent(probe_root, config, "code", prompt,
+                                history=None, **agent_options)
+        checks = run_checks(probe_root / "workspace/candidate", spec,
+                            probe_root / "checks", config["execution_image"],
+                            candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+        finished = agent_finished(outcome)
+        recoverable = finished and checks.get("status") == "passed"
+        return {"status": "pass", "recoverable": recoverable,
+                "static_recovery": False, "checks": checks,
+                "solver_status": outcome.get("status")}
+    except Exception as error:
+        return {"status": "needs_review", "recoverable": False,
+                "static_recovery": False, "error_type": type(error).__name__,
+                "detail": str(error)}
 
 
 def validated_spec(spec, validator_checks, output, *, allow_new_tests=True):
@@ -903,8 +941,13 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             record["reason"] = "historical_mutation_not_verified"
         if baseline_already_satisfies:
             record["reason"] = "baseline_already_satisfies_task"
+        probe = None
+        if design_probe:
+            probe = repository_design_probe(run, baseline, final_spec or spec, config, agent_options)
+            record["design_probe"] = probe
         admitted = admission(record["validation"], baseline_checks, reference_checks,
-                             baseline_acceptance, reference_acceptance)
+                             baseline_acceptance, reference_acceptance, probe,
+                             item.get("qa", {}).get("type", item.get("qa", {}).get("category")))
         record["validation_accepted"] = (not baseline_already_satisfies
                                          and agent_finished(solved) and agent_finished(validated)
                                          and final_spec is not None
@@ -922,16 +965,6 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         if baseline_already_satisfies:
             break
         if record["validation_accepted"]:
-            if history and design_probe:
-                probe_root = run / "design-probe"
-                prepare(probe_root, baseline)
-                probe = run_agent(probe_root, config, "code",
-                                  solver_input((final_spec / "task.md").read_text()) + prompts.HISTORY_REQUEST,
-                                  history=history, **agent_options)
-                record["design_probe"] = {"status": probe["status"], "used_for_admission": False,
-                    "checks": run_checks(probe_root / "workspace/candidate", final_spec,
-                                         run / "probe-checks", config["execution_image"],
-                                         candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))}
             record["accepted"] = True
             save(root / "construction.json", attempts)
             receipt = freeze(final_spec, root / "frozen", baseline)
