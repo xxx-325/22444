@@ -23,7 +23,7 @@ from .episode_input import load_episode_manifest
 from .pipeline_runner import PipelineRunner
 from .task_eval.artifacts import has_eligible_qa, read, save, qa_inputs
 from .task_eval.report import write_report
-from .task_eval.runtime import preflight_openhands_runtime, shared_task_slot
+from .task_eval.runtime import preflight_openhands_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,9 +161,8 @@ def _repo_stage(args) -> int:
     preflight_openhands_runtime(args.simulator_path, python_executable=args.python)
     collection = output / "collection"
     state = collection / "collection.json"
-    with shared_task_slot():
-        run_collection(plan, collection, Path(args.simulator_path), Path(args.env_file),
-                       Path(args.python), resume=state.is_file(), dialogue_only=True)
+    run_collection(plan, collection, Path(args.simulator_path), Path(args.env_file),
+                   Path(args.python), resume=state.is_file(), dialogue_only=True)
     manifest, quality_warnings = _manifest_from_collection(collection)
     external_information_plan = collection / "external-information-plan.json"
     save(output / "manifest-path.json", {"manifest": str(manifest),
@@ -210,13 +209,19 @@ def _qa_stage(args) -> int:
     manifest_info = read(input_root / "manifest-path.json")
     manifest = Path(manifest_info["manifest"]).resolve()
     plan = read(manifest_info["plan"])
-    routes = ("graph", "external")
+    configured_routes = plan.get("qa_sources") or ["graph", "external"]
+    if (not isinstance(configured_routes, list) or not configured_routes
+            or any(route not in {"graph", "external"} for route in configured_routes)
+            or len(set(configured_routes)) != len(configured_routes)):
+        raise ValueError("qa_sources must select distinct graph/external routes")
+    routes = tuple(configured_routes)
     output.mkdir(parents=True, exist_ok=True)
 
     def run(route):
         route_dir = output / route
         qa_dir = route_dir / "qa"
         ready = _qa_output_ready(qa_dir)
+        checkpointed = _qa_output_checkpointed(qa_dir)
         pipeline = route_dir / "pipeline.json"
         if ready and pipeline.is_file():
             try:
@@ -224,6 +229,11 @@ def _qa_stage(args) -> int:
                     return route, 0
             except (OSError, ValueError, TypeError, AttributeError):
                 pass
+        if checkpointed and not ready:
+            route_dir.mkdir(parents=True, exist_ok=True)
+            save(pipeline, {"status": "retryable", "retryable": True,
+                            "reason": "qa_checkpoint_pending", "route": route})
+            return route, 1
         if not ready:
             _archive_incomplete(qa_dir)
         command = _route_command(route, manifest, route_dir, args, plan)
@@ -276,6 +286,10 @@ def _qa_stage(args) -> int:
     qa_warnings.extend(
         "%s_shortfall" % route for route, item in records.items() if item["shortfall"]
     )
+    qa_warnings.extend(
+        "%s_stage_warning" % route for route, item in records.items()
+        if item["returncode"] or item["status"] != "completed" or item["provisional"]
+    )
     if not any(item["output_ready"] for item in records.values()):
         _write_receipt(output / "stage-receipt.json", artifacts, result="routes_failed",
                        input_path=input_root, warnings=qa_warnings, retryable=True)
@@ -298,6 +312,21 @@ def _qa_output_ready(qa_dir):
                 and public.get("status") not in {"blocked", "interrupted"})
     except (OSError, ValueError, TypeError):
         return False
+
+
+def _qa_output_checkpointed(qa_dir):
+    """Keep resumable QA group/batch outputs available for a later retry."""
+    qa_dir = Path(qa_dir)
+    if any(qa_dir.glob("batch-*.json")):
+        return True
+    stages = qa_dir / "stages"
+    if not stages.is_dir():
+        return False
+    return any(
+        path.is_file() and any(marker in path.name for marker in
+                               ("raw-candidates", "qa-input", "audit"))
+        for path in stages.iterdir()
+    )
 
 
 def _task_stage(args) -> int:
@@ -328,7 +357,7 @@ def _task_stage(args) -> int:
         allow_provisional = False
     qualified = (
         pipeline.get("status") not in {"failed", "blocked", "interrupted"}
-        and usable_for_tasks
+        and usable_for_tasks and bool(eligible_items)
     )
     output.mkdir(parents=True, exist_ok=True)
     task_manifest = output / "tasks" / "manifest.json"

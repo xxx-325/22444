@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,27 @@ from dialogue_benchmark.task_eval.artifacts import save
 
 
 class LongPipelineTests(unittest.TestCase):
+    def test_stage_receipt_hashes_input_and_all_outputs_without_patches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.json"
+            source.write_text("input", encoding="utf-8")
+            artifacts = [root / "output/one.json", root / "output/two.json"]
+            for artifact in artifacts:
+                save(artifact, {"name": artifact.name})
+            receipt_path = root / "output/stage-receipt.json"
+            _write_receipt(receipt_path, artifacts, input_path=source,
+                           result="completed_with_warnings", warnings=["qa_shortfall"],
+                           retryable=False)
+            receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(receipt["input_sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+            self.assertEqual(receipt["warnings"], ["qa_shortfall"])
+            self.assertFalse(receipt["retryable"])
+            previous_hash = receipt["output_sha256"]
+            save(artifacts[1], {"name": "changed"})
+            _write_receipt(receipt_path, artifacts, input_path=source)
+            self.assertNotEqual(json.loads(receipt_path.read_text())["output_sha256"], previous_hash)
+
     def save_qa(self, directory, *, route="external", provisional=False, empty=False,
                 public_status=None):
         questions = [] if empty else [{
@@ -51,6 +73,38 @@ class LongPipelineTests(unittest.TestCase):
             index = command.index("--parallel-workers")
             self.assertEqual(command[index + 1], "7")
 
+    def test_qa_stage_uses_configured_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_root = root / "repo"
+            output = root / "qa"
+            input_root.mkdir()
+            manifest = root / "episode.json"
+            plan = root / "plan.json"
+            save(manifest, {"placeholder": True})
+            save(plan, {"qa_sources": ["graph"], "evaluation": {"parallel_workers": 4}})
+            save(input_root / "manifest-path.json", {"manifest": str(manifest), "plan": str(plan)})
+            calls = []
+
+            def fake_run(command, cwd, stdout, stderr):
+                calls.append(command)
+                route_dir = Path(command[command.index("--output") + 1])
+                save(route_dir / "pipeline.json", {"status": "completed"})
+                save(route_dir / "qa/manifest.json", {"input_sha256": "test"})
+                save(route_dir / "qa/qa-public.json", {"questions": []})
+                return 0
+
+            args = SimpleNamespace(
+                input=input_root, output=output, python=Path(os.sys.executable),
+                simulator_path=root / "sim", env_file=root / ".env",
+            )
+            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_run):
+                self.assertEqual(_qa_stage(args), 0)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][calls[0].index("--qa-source") + 1], "graph")
+            summary = json.loads((output / "qa-summary.json").read_text())
+            self.assertEqual(set(summary["routes"]), {"graph"})
+
     def test_qa_stage_archives_incomplete_route_before_fresh_attempt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -87,6 +141,29 @@ class LongPipelineTests(unittest.TestCase):
             self.assertFalse(stale.exists())
             self.assertTrue(any(path.name.startswith("qa")
                                 for path in (output / "graph/.incomplete").iterdir()))
+
+    def test_qa_stage_keeps_partial_batch_as_retryable_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_root = root / "repo"
+            output = root / "qa"
+            input_root.mkdir()
+            manifest = root / "episode.json"
+            plan = root / "plan.json"
+            save(manifest, {"placeholder": True})
+            save(plan, {"qa_sources": ["graph"], "evaluation": {"parallel_workers": 4}})
+            save(input_root / "manifest-path.json", {"manifest": str(manifest), "plan": str(plan)})
+            save(output / "graph/qa/batch-001.json", {"batch": 1})
+            args = SimpleNamespace(
+                input=input_root, output=output, python=Path(os.sys.executable),
+                simulator_path=root / "sim", env_file=root / ".env",
+            )
+            with patch("dialogue_benchmark.long_pipeline._run_logged") as run:
+                self.assertEqual(_qa_stage(args), 1)
+            run.assert_not_called()
+            self.assertTrue((output / "graph/qa/batch-001.json").is_file())
+            self.assertEqual(json.loads((output / "graph/pipeline.json").read_text())["status"],
+                             "retryable")
 
     def test_task_stage_archives_tasks_without_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

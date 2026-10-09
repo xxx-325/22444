@@ -12,6 +12,7 @@ import sys
 
 from .task_eval.artifacts import read, save
 from .task_eval.metrics import cache_usage
+from .task_eval.runtime import shared_task_slot
 
 EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            parallel_workers=6, task_workers=2, max_task_workers=3,
@@ -19,10 +20,11 @@ EVALUATION_DEFAULTS = dict(qa_count=8, task_count=1, task_budget=2,
                            model_request_chars=96000, qa_only=False,
                            general_count=50, code_count=50)
 EXTERNAL_MEMORY_KINDS = ("M1", "M2", "M3", "M4", "M5", "M6")
-# Keep a small bounded retry allowance for a model-authored stage.  The
-# checkpoint-aware path below never discards an accepted prefix, and the extra
-# slot also lets a repaired parser recover a valid saved response.
-MAX_STAGE_RETRIES = 4
+# Keep one bounded retry for a model-authored stage.  The checkpoint-aware
+# path below never discards an accepted prefix.
+# A failed stage gets one bounded retry.  Valid dialogue/scenario checkpoints
+# remain in place for that retry; later resumes require an explicit run.
+MAX_STAGE_RETRIES = 1
 
 
 def sum_usage(rows):
@@ -748,7 +750,11 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
         persist()
         print("Collection:", row["path"], name, flush=True)
         try:
-            row["returncode"] = _command(command, cwd, folder.with_suffix(".log"))
+            if name == "dialogue":
+                with shared_task_slot():
+                    row["returncode"] = _command(command, cwd, folder.with_suffix(".log"))
+            else:
+                row["returncode"] = _command(command, cwd, folder.with_suffix(".log"))
             result = _recover_receipt(receipt)
             row["outcome"] = result.get("status", result.get("schema", "missing_receipt"))
             text = ""
