@@ -22,8 +22,7 @@
         {
           "id": "release-workflow",
           "brief": "A release team continues the toolkit through real operational changes. Let implementation attempts, observed command results, user corrections, and later handoffs appear in ordinary conversation and affect later work.",
-          "external_fact_target": 8,
-          "preplan_external_facts": true,
+          "external_attempt_budget": 8,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Treat only public observations and corrections as history."
         }
@@ -36,8 +35,7 @@
         {
           "id": "compliance-workflow",
           "brief": "A compliance team continues the document workflow through import, normalization, review, correction, and reporting work. Let real failures and user clarifications shape later changes.",
-          "external_fact_target": 8,
-          "preplan_external_facts": true,
+          "external_attempt_budget": 8,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Count an environment difference only after it appears in a public command or test result."
         }
@@ -50,8 +48,7 @@
         {
           "id": "customer-workflow",
           "brief": "A customer continues the planner across related work. Reveal conventions, observed results, and scoped corrections only when a real implementation or later workflow needs them.",
-          "external_fact_target": 8,
-          "preplan_external_facts": true,
+          "external_attempt_budget": 8,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Only public differences, failures, and corrections count as historical evidence."
         }

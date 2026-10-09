@@ -304,8 +304,9 @@ def _aggregate_status(statuses, empty="no_scenarios"):
         return empty
     # ``qa_only`` is a successful terminal route: it deliberately skips
     # repository tasks and paired execution while still producing QA.
-    if all(status in {"completed", "qa_only", "dialogue_only"} for status in statuses):
-        return "completed"
+    if all(status in {"completed", "completed_with_warnings", "qa_only", "dialogue_only"}
+           for status in statuses):
+        return "completed_with_warnings" if "completed_with_warnings" in statuses else "completed"
     if any(status in {"failed", "stopped", "interrupted", "project_rejected",
                       "scenario_rejected", "requirements_rejected",
                       "dialogue_incomplete", "evaluation_failed", "partial_failure"}
@@ -322,7 +323,7 @@ def _terminal_collection_status(state):
         project.get("status") for project in state.get("projects", []))
     if aggregate == "completed" and not state.get("warnings"):
         return "completed"
-    if aggregate in {"completed", "partial_failure", "below_target", "no_scenarios"}:
+    if aggregate in {"completed", "completed_with_warnings", "partial_failure", "below_target", "no_scenarios"}:
         return "completed_with_warnings"
     return "blocked"
 
@@ -340,25 +341,17 @@ def plan_external_information(projects):
     for project in projects:
         for scenario in project.get("scenarios", []):
             kinds = tuple(scenario.get("memory_kinds", EXTERNAL_MEMORY_KINDS))
-            budget = scenario.get("external_attempt_budget")
-            if budget is None:
-                # Keep old configuration values as a soft expected coverage
-                # while the new field controls the opportunity budget.
-                budget = scenario.get("external_fact_target", 0) or 0
+            budget = scenario.get("external_attempt_budget", 0)
             if type(budget) is not int or budget < 0:
                 raise ValueError("external_attempt_budget must be a nonnegative integer")
             if not kinds or any(kind not in EXTERNAL_MEMORY_KINDS for kind in kinds):
                 raise ValueError("memory_kinds must select M1..M6")
-            stage_count = project.get("increments", 1)
+            stage_count = project.get("increments", 2)
             if type(stage_count) is not int or stage_count < 1:
                 raise ValueError("increments must be a positive integer")
             raw_distribution = scenario.get("external_attempt_distribution")
             if raw_distribution is None:
-                base, remainder = divmod(budget, len(kinds))
-                distribution = {
-                    kind: base + (index < remainder)
-                    for index, kind in enumerate(kinds)
-                }
+                distribution = {kind: budget for kind in kinds}
                 stages = stage_count
                 stage_base, stage_remainder = divmod(budget, stages)
                 opportunities = [
@@ -418,21 +411,29 @@ def plan_external_information(projects):
     return {"schema": "external-information-plan-v2", "scenarios": rows}
 
 
-def _empty_external_attempts(scenario_plan):
-    """Return stable zeroed counters for a scenario before it starts.
-
-    Keeping these counters on the scene record even when the scenario stage
-    fails makes the collection report useful for partial runs: a missing
-    candidate is distinguishable from a missing statistic.
-    """
+def _external_attempt_stats(scenario_plan, report=None):
+    """Keep observed counters even when scenario preparation is incomplete."""
     budget = scenario_plan.get("attempt_budget", 0)
-    return {
+    counts = {
         "planned": budget,
         "started": 0,
         "candidate_groups": 0,
+        "candidate_facts": 0,
         "accepted_facts": 0,
         "unused_or_rejected": budget,
     }
+    report = report or {}
+    attempts = report.get("attempts", {})
+    counts.update({key: attempts[key] for key in counts if key in attempts})
+    outcomes = attempts.get("opportunity_outcomes", [])
+    counts["unused_attempts"] = max(0, counts["planned"] - counts["started"])
+    counts["rejected_facts"] = sum(len(row.get("rejected_fact_ids", [])) for row in outcomes)
+    if "accepted_facts" not in attempts:
+        counts["accepted_facts"] = sum(
+            value.get("facts", 0) for value in report.get("memory_counts", {}).values()
+            if isinstance(value, dict))
+    counts["opportunity_outcomes"] = outcomes
+    return counts
 
 
 def _completed_pair(task):
@@ -763,6 +764,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                                            "request_budget"}
                     and row.get("retry", 0) < MAX_STAGE_RETRIES):
                 row["status"] = "failed"
+                row["terminal"] = False
                 persist()
                 retry_command = command[:-1] if command and command[-1] in {
                     "--resume", "--resume-existing"
@@ -804,7 +806,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 row["usage"] = dict(sum_usage([]), complete=False, error_type=type(error).__name__)
             row["receipt_sha256"] = _sha256(receipt)
             row["output_ready"] = (row["status"] == "completed"
-                                   and _accepted_receipt(_read_if(receipt), expected))
+                                   and _accepted_receipt(_recover_receipt(receipt), expected))
             row["usage_ready"] = bool(row["usage"].get("complete"))
             persist()
 
@@ -893,7 +895,7 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 # Seed counters before invoking the scenario model.  A
                 # rejected stage must still report its planned opportunities
                 # and zero observed facts instead of dropping coverage data.
-                record["external_attempts"] = _empty_external_attempts(scenario_plan)
+                record["external_attempts"] = _external_attempt_stats(scenario_plan)
                 record["external_information_coverage"] = {
                     "attempt_budget": scenario_plan.get("attempt_budget", 0),
                     "actual": 0,
@@ -903,26 +905,17 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 target = scenario_root / "scenario"
                 designed = stage("scenario", target, upstream("simulator.openhands.prepare_scenario", cfg, target),
                     simulator, target / "frozen/report.json", {"completed", "candidate_pass"}, target / "budget.json")
+                frozen_report = _recover_receipt(target / "frozen/report.json")
+                record["external_attempts"] = _external_attempt_stats(scenario_plan, frozen_report)
+                if frozen_report.get("warnings"):
+                    warning("scenario_coverage_warnings", project=project["id"],
+                            scenario=scenario["id"], warnings=frozen_report["warnings"])
                 if designed is None:
                     record["status"] = "scenario_rejected"
                     warning("scenario_rejected", project=project["id"], scenario=scenario["id"])
                     continue
                 record["requested_memory_kinds"] = designed.get("design", {}).get("memory_kinds", [])
                 record["designed_memory_counts"] = designed.get("memory_counts", {})
-                frozen_report = _read_if(target / "frozen/report.json")
-                attempt_stats = frozen_report.get("attempts", {})
-                record["external_attempts"] = {
-                    **_empty_external_attempts(scenario_plan),
-                    "started": attempt_stats.get("started", 0),
-                    "candidate_groups": attempt_stats.get("candidate_groups", 0),
-                    "accepted_facts": sum(
-                        value.get("facts", 0)
-                        for value in designed.get("memory_counts", {}).values()
-                        if isinstance(value, dict)
-                    ),
-                    "unused_or_rejected": attempt_stats.get(
-                        "unused_or_rejected", scenario_plan.get("attempt_budget", 0)),
-                }
                 current["scenario_file"] = str(target / "frozen/scenario.json")
                 save(cfg, current)
                 target = scenario_root / "requirements"
@@ -994,14 +987,13 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                             command.extend(["--" + key.replace("_", "-"), str(value)])
                     completed = stage("evaluation", target, command, Path(__file__).resolve().parents[1],
                                       target / "pipeline.json", {"completed"}, target / "usage.json")
-                    evaluated.update(status=completed.get("stop_reason", "completed") if completed else "evaluation_failed",
+                    evaluated.update(status=completed.get("stop_reason", completed.get("status", "completed")) if completed else "evaluation_failed",
                                      qa_only=qa_only, path=str(target.relative_to(output)))
                     if completed is None:
                         warning("evaluation_failed", project=project["id"],
                                 scenario=scenario["id"], route=qa_source)
                     public = _read_if(target / "qa/qa-public.json")
-                    if public.get("status") == "failed":
-                        evaluated["status"] = "evaluation_failed"
+                    evaluated["qa_status"] = public.get("status")
                     evaluated["published_qa"] = len(public.get("questions", []))
                     evaluated["counts"] = public.get("counts", {})
                     tasks = _read_if(target / "tasks/manifest.json").get("tasks", [])
@@ -1012,11 +1004,16 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                         key: max(0, value - evaluated[key])
                         for key, value in evaluated["target"].items()}
                     evaluated["eligible"] = (
-                        evaluated["status"] in {"completed", "qa_only"}
+                        evaluated["status"] in {"completed", "completed_with_warnings", "qa_only"}
                         and evaluated["published_qa"] > 0
                         and (evaluated["qa_only"] or evaluated["paired_tasks"] > 0))
-                    if not evaluated["eligible"] and evaluated["status"] in {"completed", "qa_only"}:
+                    if not evaluated["eligible"] and evaluated["status"] in {"completed", "completed_with_warnings", "qa_only"}:
                         evaluated["status"] = "below_target"
+                for qa_source, evaluated in record["evaluations"].items():
+                    if any(evaluated["shortfall"].values()):
+                        warning("coverage_shortfall", project=project["id"],
+                                scenario=scenario["id"], route=qa_source,
+                                shortfall=evaluated["shortfall"])
                 outcomes = [row["status"] for row in record["evaluations"].values()]
                 record["status"] = ((outcomes[0] if len(outcomes) == 1 else "completed") if all(
                     row["eligible"]
@@ -1079,19 +1076,25 @@ def write_collection_report(output, state):
     lines += ["Targets and shortfalls describe output volume, not admission. A completed route has nonempty published QA and, unless QA-only, at least one complete terminal pair. These are run-completeness checks, not manual quality acceptance."]
     lines += ["", "## Planned external information opportunities", "",
               "The opportunity budget is created before repository generation. Attempts and accepted facts are reported separately; a shortfall is retained as coverage data.",
-              "", "| Project | Scenario | Planned attempts | Started | Candidate groups | Accepted facts | Public facts | External QA | Unused / rejected |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+              "", "| Project | Scenario | Planned attempts | Started | Candidate groups | Candidate facts | Accepted facts | Rejected facts | Public facts | External QA | Requirement candidates | Unused attempts |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for project in state["projects"]:
         for scenario in project["scenarios"]:
             coverage = scenario.get("external_information_coverage", {})
             attempts = scenario.get("external_attempts", {})
             plan_row = scenario.get("external_information_plan", {})
-            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            external = scenario.get("evaluations", {}).get("external", {})
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
                 project["id"], scenario["id"],
                 attempts.get("planned", plan_row.get("attempt_budget", "—")),
                 attempts.get("started", "—"), attempts.get("candidate_groups", "—"),
-                attempts.get("accepted_facts", "—"), coverage.get("actual", "—"),
-                scenario.get("evaluations", {}).get("external", {}).get("published_qa", "—"),
-                attempts.get("unused_or_rejected", "—")))
+                attempts.get("candidate_facts", "—"), attempts.get("accepted_facts", "—"),
+                attempts.get("rejected_facts", "—"), coverage.get("actual", "—"),
+                external.get("published_qa", "—"), len(external.get("tasks", [])),
+                attempts.get("unused_attempts", "—")))
+    if state.get("warnings"):
+        lines += ["", "## Warnings", ""]
+        lines.extend("- " + json.dumps(item, ensure_ascii=False, sort_keys=True)
+                     for item in state["warnings"])
     totals = {}
     for project in state["projects"]:
         for scenario in project["scenarios"]:

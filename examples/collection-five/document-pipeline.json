@@ -22,7 +22,7 @@
         {
           "id": "compliance-workflow",
           "brief": "A compliance team develops the toolkit through import, normalization, review, correction, and reporting work. Let real failures, user corrections, external policy facts, and later workflow decisions appear naturally and affect subsequent implementation.",
-          "external_fact_target": 24,
+          "external_attempt_budget": 24,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; count environment behavior only when it is observed in public execution."
         }

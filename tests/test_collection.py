@@ -128,10 +128,11 @@ class CollectionTests(unittest.TestCase):
         }])
         row = plan["scenarios"][0]
         self.assertEqual(row["attempt_budget"], 4)
+        self.assertEqual(row["distribution"], {"M1": 4, "M2": 4})
         self.assertNotIn("expected_coverage", row)
         self.assertEqual(sum(item["attempts"] for item in row["opportunities"]), 4)
 
-    def test_legacy_fact_target_only_seeds_attempt_budget_and_never_enters_plan(self):
+    def test_fact_target_cannot_override_attempt_budget_or_enter_plan(self):
         plan = plan_external_information([{
             "id": "support",
             "brief": "Support handoff workflow",
@@ -147,14 +148,14 @@ class CollectionTests(unittest.TestCase):
         self.assertNotIn("answers", row)
         self.assertNotIn("expected_coverage", row)
 
-    def test_legacy_fact_target_is_only_a_soft_attempt_fallback(self):
+    def test_fact_target_does_not_create_an_attempt_budget(self):
         plan = plan_external_information([{
             "id": "support",
             "brief": "Support handoff workflow",
             "scenarios": [{"id": "handoff", "external_fact_target": 3,
                            "memory_kinds": ["M1"]}],
         }])
-        self.assertEqual(plan["scenarios"][0]["attempt_budget"], 3)
+        self.assertEqual(plan["scenarios"][0]["attempt_budget"], 0)
 
     def test_external_opportunity_stage_is_checked_before_repository_work(self):
         with self.assertRaisesRegex(ValueError, "invalid external attempt distribution"):
@@ -213,6 +214,8 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(_aggregate_status(["completed", "evaluation_failed"]), "partial_failure")
         self.assertEqual(_aggregate_status(["qa_only"]), "completed")
         self.assertEqual(_aggregate_status(["qa_only", "completed"]), "completed")
+        self.assertEqual(_aggregate_status(["qa_only", "completed_with_warnings"]),
+                         "completed_with_warnings")
 
     def test_quality_mapping_is_accepted(self):
         plan = {"projects": [dict(id="planner", brief="Plan dependencies",
@@ -252,7 +255,9 @@ class CollectionTests(unittest.TestCase):
             save(root / "input.json", plan)
             result = self.invoke(root)
             evaluation = result["projects"][0]["scenarios"][0]["evaluations"]["external"]
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "completed_with_warnings")
+            self.assertTrue(evaluation["eligible"])
+            self.assertIn("coverage_shortfall", [row["code"] for row in result["warnings"]])
             self.assertEqual(evaluation["shortfall"], {"published_qa": 7, "paired_tasks": 2})
             report = (root / "run/collection.md").read_text()
             self.assertIn("QA target", report)
@@ -290,7 +295,7 @@ class CollectionTests(unittest.TestCase):
             save(root / "input.json", plan)
             result = self.invoke(root)
             scene = result["projects"][0]["scenarios"][0]
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "completed_with_warnings")
             self.assertEqual(scene["evaluations"]["graph"]["status"], "qa_only")
 
     def test_empty_graph_qa_cannot_complete_a_two_route_run(self):
@@ -388,9 +393,52 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(scene["status"], "scenario_rejected")
             self.assertEqual(scene["external_attempts"], {
                 "planned": 4, "started": 0, "candidate_groups": 0,
-                "accepted_facts": 0, "unused_or_rejected": 4,
+                "candidate_facts": 0, "accepted_facts": 0, "unused_or_rejected": 4,
+                "unused_attempts": 4, "rejected_facts": 0, "opportunity_outcomes": [],
             })
             self.assertEqual(scene["external_information_coverage"]["actual"], 0)
+            self.assertEqual(result["status"], "completed_with_warnings")
+
+    def test_failed_scenario_keeps_observed_attempts_and_rejected_facts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            plan["projects"][0]["scenarios"][0]["external_attempt_budget"] = 4
+            self.reject_first = False
+            self.scenario_report = {
+                "status": "error", "warnings": ["external_facts_rejected"],
+                "attempts": {"planned": 4, "started": 1, "candidate_groups": 1,
+                             "candidate_facts": 3, "accepted_facts": 1,
+                             "unused_or_rejected": 3, "opportunity_outcomes": [
+                                 {"stage": 1, "rejected_fact_ids": ["bad"]}]},
+            }
+            save(root / "input.json", plan)
+            result = self.invoke(root)
+            stats = result["projects"][0]["scenarios"][0]["external_attempts"]
+            self.assertEqual(stats["started"], 1)
+            self.assertEqual(stats["candidate_facts"], 3)
+            self.assertEqual(stats["accepted_facts"], 1)
+            self.assertEqual(stats["rejected_facts"], 1)
+            self.assertEqual(stats["unused_attempts"], 3)
+            report = (root / "run/collection.md").read_text()
+            self.assertIn("Candidate facts", report)
+            self.assertIn("Rejected facts", report)
+            self.assertIn("scenario_coverage_warnings", report)
+
+    def test_failed_aggregate_qa_does_not_override_usable_warning_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.qa_status = "failed"
+            self.evaluation_status = "completed_with_warnings"
+            result = self.invoke(root)
+            evaluated = result["projects"][0]["scenarios"][0]["evaluations"]["external"]
+            self.assertEqual(evaluated["status"], "completed_with_warnings")
+            self.assertEqual(evaluated["qa_status"], "failed")
+            self.assertEqual(evaluated["paired_tasks"], 1)
+            self.assertTrue(evaluated["eligible"])
             self.assertEqual(result["status"], "completed_with_warnings")
 
     def test_missing_receipt_retries_the_stage_before_marking_it_incomplete(self):
@@ -407,7 +455,26 @@ class CollectionTests(unittest.TestCase):
             ]
             self.assertEqual(len(dialogue_calls), 3)
             self.assertEqual(result["projects"][0]["scenarios"][0]["status"], "completed")
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "completed_with_warnings")
+
+    def test_truncated_receipt_retries_locally_and_preserves_failed_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plan(root)
+            self.reject_first = False
+            self.paired = True
+            self.truncated_receipt_attempts = 0
+            result = self.invoke(root)
+            self.assertEqual(self.truncated_receipt_attempts, 1)
+            self.assertIn(result["status"], {"completed", "completed_with_warnings"})
+            self.assertEqual([scene["status"] for scene in result["projects"][0]["scenarios"]],
+                             ["completed", "completed"])
+            archived = list((root / "run/attempts").rglob("dialogue-package/manifest.json"))
+            self.assertEqual(len(archived), 1)
+            self.assertEqual(archived[0].read_text(), '{"schema":')
+            active = [row for row in result["stages"]
+                      if row["name"] == "dialogue" and not row.get("archived")]
+            self.assertTrue(all(row["output_ready"] for row in active))
 
     def command(self, command, cwd, log):
         target = Path(command[command.index("--output") + 1])
@@ -432,7 +499,8 @@ class CollectionTests(unittest.TestCase):
             if getattr(self, "reject_scenario", False):
                 save(target / "budget.json", budget)
                 return 1
-            save(target / "frozen/report.json", dict(status="candidate_pass", design={"memory_kinds": ["M1"]}))
+            save(target / "frozen/report.json", getattr(self, "scenario_report", dict(
+                status="candidate_pass", design={"memory_kinds": ["M1"]})))
             save(target / "frozen/scenario.json", {})
             save(target / "budget.json", budget)
         elif name == "requirements":
@@ -452,6 +520,9 @@ class CollectionTests(unittest.TestCase):
             if hasattr(self, "dialogue_status"):
                 manifest.update(status=self.dialogue_status, quality={"warnings": ["short_dialogue"]})
             save(package / "manifest.json", manifest)
+            if hasattr(self, "truncated_receipt_attempts") and self.truncated_receipt_attempts == 0:
+                self.truncated_receipt_attempts += 1
+                (package / "manifest.json").write_text('{"schema":')
             save(package / "external-events.json", dict(events=[{"memory_kind": "M1"}]))
             review_budget = dict(budget)
             if getattr(self, "incomplete_usage", False):
@@ -482,11 +553,12 @@ class CollectionTests(unittest.TestCase):
             paired = getattr(self, "paired", False)
             qa_only = "--qa-only" in command
             nonempty_qa = paired or qa_only or getattr(self, "nonempty_qa", False)
-            save(target / "pipeline.json", dict(status="completed", **(
+            save(target / "pipeline.json", dict(status=getattr(self, "evaluation_status", "completed"), **(
                 {"stop_reason": "qa_only"} if qa_only else {} if paired else {"stop_reason": "no_eligible_qa"})))
             empty_qa = (getattr(self, "empty_qa", False)
                         or getattr(self, "empty_qa_source", None) == source)
-            save(target / "qa/qa-public.json", dict(questions=[{"id": "q1"}] if nonempty_qa and not empty_qa else []))
+            save(target / "qa/qa-public.json", dict(status=getattr(self, "qa_status", "approved"),
+                 questions=[{"id": "q1"}] if nonempty_qa and not empty_qa else []))
             if not qa_only:
                 if getattr(self, "uncertain_pair", False):
                     tasks = [dict(task="task-01", status="evaluated",

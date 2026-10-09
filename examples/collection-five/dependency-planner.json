@@ -22,7 +22,7 @@
         {
           "id": "customer-workflow",
           "brief": "A customer uses the planner across development sessions. Reveal business conventions, external operating facts and scoped corrections naturally when they affect the actual work. Across the development, create distinct public facts tied to real actions, results, or corrections.",
-          "external_fact_target": 20,
+          "external_attempt_budget": 20,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; only differences, failures, or corrections shown by public tool results count as history."
         }

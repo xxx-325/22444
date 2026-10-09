@@ -19,8 +19,7 @@
     "scenarios": [{
       "id": "warehouse-workflow",
       "brief": "A warehouse team evolves the tool through realistic import, reconciliation, correction, and reporting work. Let customer rules, observed data conditions, failed attempts, and later decisions appear in ordinary conversation and affect later behavior.",
-      "external_fact_target": 6,
-      "preplan_external_facts": true,
+      "external_attempt_budget": 6,
       "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
       "runtime_conditions": "Run in a fixed Python 3.12 standard-library environment; use only behavior actually observed in public commands or tests as historical evidence."
     }]

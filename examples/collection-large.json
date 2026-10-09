@@ -13,7 +13,7 @@
         {
           "id": "customer-release-workflow",
           "brief": "A customer uses the toolkit through a long sequence of operational changes. Let ordinary implementation attempts, observed command results, corrections, and later handoffs disclose distinct business rules and environment observations. Later work should reuse earlier decisions without exposing internal planning labels.",
-          "external_fact_target": 24,
+          "external_attempt_budget": 24,
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "运行在固定的 Python 3.12 标准库环境中；只有公开工具结果实际显示的运行差异、失败或修正才作为历史信息。"
         }
