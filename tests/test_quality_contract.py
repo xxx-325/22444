@@ -59,14 +59,14 @@ class DualTrackQualityTests(unittest.TestCase):
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.general_fact], self.scope,
             qa_mode="general", allowed_types={"external_state_application"})
-        self.assertFalse(accepted)
-        self.assertEqual(rejected[0]["reason"], "missing_type_evidence")
+        self.assertFalse(rejected)
+        self.assertIn("missing_type_evidence", accepted[0]["pre_review_warnings"])
         question["external_knowledge"] = "YAML is a structured data serialization format."
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.general_fact], self.scope,
             qa_mode="general", allowed_types={"external_state_application"})
-        self.assertFalse(accepted)
-        self.assertEqual(rejected[0]["reason"], "missing_type_evidence")
+        self.assertFalse(rejected)
+        self.assertIn("missing_type_evidence", accepted[0]["pre_review_warnings"])
 
     def test_general_cannot_cite_tool_or_code_fields(self):
         tool_fact = {"id": "ft", "statement": "工具通过", "sources": ["tool1"]}
@@ -132,8 +132,8 @@ class DualTrackQualityTests(unittest.TestCase):
         }
         accepted, rejected = validate_candidates(
             {"questions": [question]}, [self.code_fact], self.scope, qa_mode="code")
-        self.assertFalse(accepted)
-        self.assertEqual(rejected[0]["reason"], "missing_type_evidence")
+        self.assertFalse(rejected)
+        self.assertIn("missing_type_evidence", accepted[0]["pre_review_warnings"])
 
     def test_bad_question_does_not_discard_good_question(self):
         good = self._question(id="good")

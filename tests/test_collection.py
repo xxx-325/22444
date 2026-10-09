@@ -8,12 +8,33 @@ from dialogue_benchmark.collection import (EVALUATION_DEFAULTS, _aggregate_statu
                                             _authentication_failure, _completed_pair,
                                             _transient_stage_failure,
                                             _recover_receipt,
+                                            _merge_dynamic_attempt_stats,
                                             episode_usage, plan_external_information,
                                             run_collection, validate_plan)
 from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class CollectionTests(unittest.TestCase):
+    def test_dynamic_followup_attempt_receipts_are_folded_into_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "dialogue" / "private" / "followups" / "task-2" / "scenario"
+            root.mkdir(parents=True)
+            save(root / "attempts.json", {
+                "started_attempts": 1, "candidate_groups": 1,
+                "candidate_facts": 2, "accepted_facts": 1,
+                "rejected_fact_ids": ["f2"], "unused_or_rejected": 0,
+            })
+            result = _merge_dynamic_attempt_stats(
+                {"planned": 4, "started": 1, "candidate_groups": 1,
+                 "candidate_facts": 1, "accepted_facts": 1,
+                 "rejected_facts": 0, "unused_or_rejected": 2},
+                root.parents[3])
+        self.assertEqual(result["started"], 2)
+        self.assertEqual(result["candidate_facts"], 3)
+        self.assertEqual(result["accepted_facts"], 2)
+        self.assertEqual(result["rejected_facts"], 1)
+        self.assertEqual(result["unused_attempts"], 2)
+
     def test_warning_receipt_needs_expected_status_or_schema(self):
         self.assertTrue(_accepted_receipt({"status": "completed_with_warnings"}, {"completed"}))
         self.assertTrue(_accepted_receipt({"status": "completed_with_warnings",
@@ -157,13 +178,23 @@ class CollectionTests(unittest.TestCase):
         }])
         self.assertEqual(plan["scenarios"][0]["attempt_budget"], 0)
 
+    def test_opportunities_do_not_require_prebuilt_increments(self):
+        plan = plan_external_information([{
+            "id": "support", "brief": "Support operations", "increments": 0,
+            "scenarios": [{"id": "support-operations", "external_attempt_budget": 1,
+                           "external_attempt_distribution": [
+                               {"stage": 6, "behavior": "cross-workflow reporting",
+                                "memory_kinds": ["M1"], "attempts": 1}]}],
+        }])
+        self.assertEqual(plan["scenarios"][0]["opportunities"][0]["stage"], 6)
+
     def test_external_opportunity_stage_is_checked_before_repository_work(self):
         with self.assertRaisesRegex(ValueError, "invalid external attempt distribution"):
             plan_external_information([{
                 "id": "support", "brief": "Support handoff", "increments": 2,
                 "scenarios": [{"id": "handoff", "external_attempt_budget": 1,
                                "external_attempt_distribution": [
-                                   {"stage": 3, "behavior": "handoff",
+                                   {"stage": 0, "behavior": "handoff",
                                     "memory_kinds": ["M1"], "attempts": 1}]}],
             }])
 

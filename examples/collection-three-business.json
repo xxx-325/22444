@@ -4,7 +4,6 @@
   "max_total_tokens": 36000000,
   "qa_sources": ["graph", "external"],
   "dialogue_quality": {
-    "min_increments": 6,
     "min_visible_messages": 60,
     "min_user_code_rounds": 30,
     "min_public_tool_events": 80,
@@ -18,7 +17,7 @@
     {
       "id": "customer-service-platform",
       "brief": "Build a small customer service collaboration platform for a support team. It should grow through real work on customer records, tickets, service levels, assignment and escalation, pauses and closure, service history, and operational reporting. The product must remain usable from its normal command or API entry points, persist data locally, and have tests. Later work should cross these behaviors instead of becoming isolated helper functions.",
-      "increments": 6,
+      "increments": 0,
       "scenarios": [
         {
           "id": "service-operations",
@@ -40,7 +39,7 @@
     {
       "id": "data-migration-reconciliation",
       "brief": "Build a local data migration and reconciliation tool for moving records between two evolving formats. It should support imports, field mapping, incremental runs, duplicate and difference checks, resumable failures, rollback, and readable reports. The normal command line workflow and persisted run state must remain usable and tested. Later work should combine data rules, recovery behavior, and reporting rather than adding unrelated one-line fixes.",
-      "increments": 6,
+      "increments": 0,
       "scenarios": [
         {
           "id": "migration-operations",
@@ -62,7 +61,7 @@
     {
       "id": "release-change-orchestrator",
       "brief": "Build a release change orchestration tool for a small engineering team. It should manage change plans, dependency checks, staged rollout, pause and resume, rollback after failed observations, and an audit trail. It must have a usable command or API, persistent state, and tests. Later work should require coordination between planning, execution, rollback, and audit behavior.",
-      "increments": 6,
+      "increments": 0,
       "scenarios": [
         {
           "id": "change-operations",

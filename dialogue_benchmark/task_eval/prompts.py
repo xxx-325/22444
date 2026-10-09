@@ -22,7 +22,10 @@ def task_direction(qa_type):
         "将对应可观察行为写入 acceptance.md，供参考验证和两组执行共同使用。\n")
 
 SELECT_TASK = """围绕给定问答选择一项尚未完成、可验收的后续业务工作。
-若有多个问题，把它们的历史知识组合成同一条完整业务链，全部知识都要影响交付；不能只取其中一个问题写小修复任务。
+给定问答是同一业务领域的可选事实小池，可以使用一题或组合多题，自行提出一条完整自然业务目标。
+不要求每个问题都影响交付；无关事实不要强塞进需求或验收，也不要逐题拆成小修复。
+global_agreements 是公开历史中明确全局适用的约定及上下文。遵守后续修订与原始范围，
+全局编码约定适用于本次代码交付；局部客户、对象、周期约定不能扩大到全局。
 若提供 rejected_draft，按其中具体缺口重选同一业务链内的工作；不要重复已公开全部规则的目标，也不凭空补协议。
 development_workflow 是候选方向的背景。候选需求只需保留与本题历史焦点直接相连的一条自然业务链；
 不要为了保留无关的输入、报告或归档步骤而扩大任务。若缩小后没有真实可交付行为，直接 stop。
@@ -237,9 +240,13 @@ TASK_ONLY_DRAFT = """根据已选业务目标和仓库资料，写一项可执�
 """
 
 EXTERNAL_ACCEPTANCE = """为固定的新需求整理私有验收，不改需求。
-historical_questions 若有多个问答，逐个说明答案怎样影响同一业务交付，并为每个问答中的必要知识安排可观察验收；不能只验收其中一条。若任何问答用不到，写 NO_TASK.md。
+historical_questions 是可选事实池，可采用一题或多题；只验收本次适用事实，不要求无关池成员影响交付。
+global_agreements 是明确全局范围的公开历史原文及上下文，保留仍有效的编码和交付规则，
+按公开后续修订判断是否仍有效；不能扩大局部对象或周期的规则。
 输入是公开需求、实际注入的历史答案和仓库资料。
-只输出两个文件块：FILE memory-use.md、FILE acceptance.md，每个正文后独占一行 END_FILE。
+只输出三个文件块：FILE memory-use.md、FILE acceptance.md、FILE applicable-answer.txt，每个正文后独占一行 END_FILE。
+applicable-answer.txt 每行原样摘录 historical_answer 中本次实际适用的一个答案要点（不加编号），
+包含仍适用的全局约定；无关事实不列。不能缩写、改写或补充原文。
 memory-use.md 说明答案中哪条有效约定影响本次什么行为；引用答案原句并保留适用范围与例外。
 acceptance.md 用四列 Markdown 表：ID、Requirement、Basis、Check。ID 从 a1 开始。
 公开功能行的 Basis 写 task；只有历史答案才能确定的行为行写 answer。不要混写两种依据。
@@ -379,6 +386,9 @@ END_REVIEW
 """
 
 EXTERNAL_TASK_REVIEW = """核对这个候选是否真的需要 QA 提供的外部规则、状态或观测。
+evidence.global_agreements 是明确全局适用的公开约定与原始上下文；核对后续修订和范围。
+仍适用于本次代码或交付的全局规则必须在 historical_answer 和验收中得到保留；
+有遗漏选 uncertain 并说明具体约定。局部业务约定不能扩成全局规则。
 development_workflow 只是背景；需求可以按本题焦点保留其中一条完整可交付业务链。
 若缩减后没有真实业务行为、或公开需求与历史答案的行为相互矛盾，选 ineligible。
 public_task 是两组都能看到的自然需求；historical_answer 是有记忆组收到的历史答案。

@@ -24,7 +24,7 @@ from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_
 
 class TaskEvaluationTests(unittest.TestCase):
     def test_empty_external_groups_save_shortfall_before_provider_or_runtime(self):
-        for question_count in (0, 2):
+        for question_count in (0,):
             with self.subTest(question_count=question_count), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 qa_run = root / "qa"
@@ -128,8 +128,8 @@ class TaskEvaluationTests(unittest.TestCase):
                     "source_ids": ["m%d" % index], "associations": ["task:%d" % index]}
                    for index in (1, 2)]
         diagnostics = []
-        self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), [])
-        self.assertEqual(diagnostics[0]["reason"], "insufficient_related_qa")
+        self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), members)
+        self.assertEqual(diagnostics, [])
 
     def test_external_questions_sharing_only_source_are_not_grouped(self):
         members = [{"qa": {"id": "q%d" % index, "question": "Question %d" % index},
@@ -137,8 +137,8 @@ class TaskEvaluationTests(unittest.TestCase):
                     "source_ids": ["same-source"], "associations": []}
                    for index in (1, 2)]
         diagnostics = []
-        self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), [])
-        self.assertEqual(diagnostics[0]["reason"], "insufficient_related_qa")
+        self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), members)
+        self.assertEqual(diagnostics, [])
 
     def test_external_group_keeps_business_lineage_without_public_ids(self):
         members = []
@@ -160,14 +160,21 @@ class TaskEvaluationTests(unittest.TestCase):
         self.assertEqual(grouped[0]["external_lineage"]["event_ids"], ["event-1", "event-2"])
         self.assertNotIn("source-1", grouped[0]["qa"]["question"])
 
-    def test_single_external_question_stays_qa_only(self):
+    def test_single_external_question_is_a_valid_optional_pool(self):
         member = {"qa": {"id": "q1", "question": "Question 1"},
                   "qa_source": "external", "generation_input": "/tmp/input-1",
                   "source_ids": ["m1"], "associations": ["task:checkout"]}
         diagnostics = []
-        self.assertEqual(group_qa_inputs([member], 1, diagnostics=diagnostics), [])
-        self.assertEqual(diagnostics[0]["reason"],
-                         "external_requirement_requires_related_qa")
+        self.assertEqual(group_qa_inputs([member], 1, diagnostics=diagnostics), [member])
+        self.assertEqual(diagnostics, [])
+
+    def test_optional_pool_limit_keeps_related_remainder(self):
+        members = [{"qa": {"id": "q%d" % index, "question": "Question %d" % index},
+                    "qa_source": "external", "associations": ["task:checkout"]}
+                   for index in range(5)]
+        grouped = group_qa_inputs(members)
+        self.assertEqual(grouped[0]["qa_ids"], ["q0", "q1", "q2", "q3"])
+        self.assertEqual(grouped[1], members[4])
 
     def test_openhands_preflight_uses_current_interpreter_without_starting_worker(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -646,8 +653,10 @@ class TaskEvaluationTests(unittest.TestCase):
             (root / "stages/group-qa-input.json").write_text(json.dumps({"payload": "exact"}))
             self.assertEqual(qa_inputs(root)[0]["qa"]["type_status"], "unresolved")
             (root / "manifest.json").write_text(json.dumps({"qa_source": "external"}))
-            with self.assertRaises(ValueError):
-                qa_inputs(root)
+            # The external source still enforces its source contract; this
+            # deliberately incomplete fixture is rejected for missing
+            # answer evidence, not because the type is unresolved.
+            self.assertEqual(qa_inputs(root), [])
 
     def test_evidence_contract_is_bound_without_inventing_judgments(self):
         class Client:

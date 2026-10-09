@@ -332,10 +332,9 @@ def plan_external_information(projects):
     """Create the control-side opportunity budget before repository work.
 
     The plan describes opportunities to try, not a required number of
-    accepted facts.  Concrete facts are still proposed from the generated
-    repository and retained only when they arise naturally and have a public
-    source.  This keeps the pre-repository plan useful without leaking private
-    answers into model-facing prompts.
+    accepted facts. Business agreements are designed before repository work;
+    implementation and runtime observations must come from the actual project.
+    Neither becomes QA evidence until disclosed in the public conversation.
     """
     rows = []
     for project in projects:
@@ -346,9 +345,10 @@ def plan_external_information(projects):
                 raise ValueError("external_attempt_budget must be a nonnegative integer")
             if not kinds or any(kind not in EXTERNAL_MEMORY_KINDS for kind in kinds):
                 raise ValueError("memory_kinds must select M1..M6")
-            stage_count = project.get("increments", 2)
-            if type(stage_count) is not int or stage_count < 1:
-                raise ValueError("increments must be a positive integer")
+            increments = project.get("increments", 0)
+            if type(increments) is not int or increments < 0:
+                raise ValueError("increments must be a nonnegative integer")
+            stage_count = max(1, increments)
             raw_distribution = scenario.get("external_attempt_distribution")
             if raw_distribution is None:
                 distribution = {kind: budget for kind in kinds}
@@ -377,7 +377,7 @@ def plan_external_information(projects):
                     attempts = row.get("attempts")
                     stage = row.get("stage")
                     behavior = row.get("behavior")
-                    if (type(stage) is not int or not 1 <= stage <= stage_count
+                    if (type(stage) is not int or stage < 1
                             or type(attempts) is not int or attempts < 0
                             or not isinstance(behavior, str) or not behavior.strip()
                             or not isinstance(allowed, list) or not allowed
@@ -395,10 +395,8 @@ def plan_external_information(projects):
                 if total != budget:
                     raise ValueError(
                         "external attempt distribution must sum to external_attempt_budget")
-            # This file is written before any repository is generated.  Keep
-            # it deliberately limited to opportunity metadata: the later
-            # scenario stage is the only place that can propose concrete
-            # facts after inspecting the actual repository and runtime.
+            # Opportunity stages describe business development, not a required
+            # chain of prebuilt implementation commits.
             rows.append({
                 "project": project["id"],
                 "scenario": scenario["id"],
@@ -434,6 +432,29 @@ def _external_attempt_stats(scenario_plan, report=None):
             if isinstance(value, dict))
     counts["opportunity_outcomes"] = outcomes
     return counts
+
+
+def _merge_dynamic_attempt_stats(attempts, dialogue_root):
+    """Fold live follow-up opportunity receipts into the collection counters."""
+    root = Path(dialogue_root) / "private" / "followups"
+    receipts = sorted(root.glob("task-*/scenario/attempts.json"))
+    if not receipts:
+        return attempts
+    merged = dict(attempts)
+    for path in receipts:
+        try:
+            row = read(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        for key in ("started", "candidate_groups", "candidate_facts", "accepted_facts"):
+            merged[key] = merged.get(key, 0) + int(row.get(key.replace("started", "started_attempts"),
+                                                     row.get(key, 0)) or 0)
+        merged["rejected_facts"] = merged.get("rejected_facts", 0) + len(
+            row.get("rejected_fact_ids", []))
+        merged["unused_or_rejected"] = merged.get("unused_or_rejected", 0) + int(
+            row.get("unused_or_rejected", 0) or 0)
+    merged["unused_attempts"] = max(0, merged.get("planned", 0) - merged.get("started", 0))
+    return merged
 
 
 def _completed_pair(task):
@@ -836,10 +857,12 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 entry["preparation"] = "reused; original cost not charged to this collection"
             else:
                 config = copy.deepcopy(runtime)
-                config["project"] = dict(brief=project["brief"], increments=project.get("increments", 2))
+                config["project"] = dict(brief=project["brief"], increments=project.get("increments", 0))
                 config["project"]["behavior_goals"] = list(dict.fromkeys(
                     row["behavior"] for scene in project_information_plan["scenarios"]
                     for row in scene["opportunities"] if row["behavior"]))
+                config["project"]["business_context"] = "\n".join(
+                    scenario.get("brief", "") for scenario in project["scenarios"])
                 cfg = root / "project-input.json"
                 save(cfg, config)
                 target = root / "project"
@@ -948,6 +971,9 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 record["public_memory_counts"] = {kind: sum(e.get("memory_kind") == kind for e in events)
                                                    for kind in ("M1", "M2", "M3", "M4", "M5", "M6")}
                 actual = sum(record["public_memory_counts"].values())
+                record["external_attempts"] = _merge_dynamic_attempt_stats(
+                    record.get("external_attempts", {}), target)
+                record["external_attempts"]["public_facts"] = actual
                 record["external_information_coverage"] = {
                     "attempt_budget": scenario_plan.get("attempt_budget", 0),
                     "actual": actual,

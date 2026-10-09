@@ -23,7 +23,7 @@ from .episode_input import load_episode_manifest
 from .pipeline_runner import PipelineRunner
 from .task_eval.artifacts import has_eligible_qa, read, save, qa_inputs
 from .task_eval.report import write_report
-from .task_eval.runtime import preflight_openhands_runtime
+from .task_eval.runtime import preflight_openhands_runtime, shared_task_slot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,8 +136,9 @@ def _repo_stage(args) -> int:
     preflight_openhands_runtime(args.simulator_path, python_executable=args.python)
     collection = output / "collection"
     state = collection / "collection.json"
-    run_collection(plan, collection, Path(args.simulator_path), Path(args.env_file),
-                   Path(args.python), resume=state.is_file(), dialogue_only=True)
+    with shared_task_slot():
+        run_collection(plan, collection, Path(args.simulator_path), Path(args.env_file),
+                       Path(args.python), resume=state.is_file(), dialogue_only=True)
     manifest, quality_warnings = _manifest_from_collection(collection)
     external_information_plan = collection / "external-information-plan.json"
     save(output / "manifest-path.json", {"manifest": str(manifest),
@@ -341,7 +342,7 @@ def _task_stage(args) -> int:
 
 
 def _stage_main(args) -> int:
-    if args.stage == "task" and args.task_slot_directory:
+    if args.stage in {"repo", "task"} and args.task_slot_directory:
         os.environ["DIALOGUE_TASK_SLOT_DIR"] = str(args.task_slot_directory.resolve())
         os.environ["DIALOGUE_TASK_SLOT_LIMIT"] = str(args.task_slots)
     return {"repo": _repo_stage, "qa": _qa_stage, "task": _task_stage}[args.stage](args)
@@ -403,6 +404,8 @@ def build_config(config_path: Path, output: Path, *, simulator_path: Path,
         common = [str(python_path), "-m", "dialogue_benchmark.long_pipeline",
                   "--stage", "repo", "--input", "{source}", "--output", "{output}",
                   "--simulator-path", str(simulator_path.resolve()), "--env-file", str(env_file.resolve()),
+                  "--task-slot-directory", str((output / ".task-slots").resolve()),
+                  "--task-slots", str(master.get("evaluation", {}).get("max_task_workers", 3)),
                   "--python", str(python_path)]
         cases.append({"id": project["id"], "source": str(plan), "stages": {
             "repo": {"command": common, "cwd": str(ROOT), "receipt": "{output}/stage-receipt.json"},

@@ -11,6 +11,7 @@ import time
 
 from .artifacts import copy_tree, read, save, install_candidate_fixture
 from .metrics import measure, text_content
+from . import retention
 from ..llm import DEFAULT_REQUEST_TIMEOUT, validate_request_timeout, validate_reasoning_effort
 
 
@@ -630,7 +631,6 @@ def readable_reference(source, destination):
 
 def release_completed_execution(record_path):
     """Release a completed test sandbox after its host-side receipt is saved."""
-    from .retention import release_agent
     record_path = Path(record_path)
     if not record_path.exists():
         return
@@ -638,7 +638,7 @@ def release_completed_execution(record_path):
     container_id = record.get("container_id")
     if not container_id or record.get("status") != "ready":
         return
-    release_agent(record_path.parents[2])
+    retention.release_agent(record_path.parents[2])
 
 
 def public_reply(events):
@@ -653,7 +653,8 @@ def public_reply(events):
 
 
 def run_agent(root, config, role, message, *, system=None, reference=None,
-              max_requests=80, max_tokens=1500000, max_seconds=1200, history=None):
+              max_requests=80, max_tokens=1500000, max_seconds=1200, history=None,
+              max_rounds=1, on_round=None):
     from simulator.openhands.budget import Budget
     from simulator.openhands.container import SDKContainer
 
@@ -677,6 +678,7 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                                   "max_seconds": max_seconds})
     worker = None
     outcome = {"status": "running"}
+    rounds = []
     try:
         if reference is not None:
             reference = readable_reference(reference, private / "reference-input")
@@ -686,7 +688,7 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                               readonly_candidate=role == "judge", condenser_max_size=120)
         worker.start()
         outcome = worker.turn(message)
-        while history and str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}:
+        while history and max_rounds == 1 and str(outcome.get("status")) in {"finished", "ConversationExecutionStatus.FINISHED"}:
             from .history import answer_clarification, historical_question
             last = historical_question(public_reply(worker.events()))
             if last is None:
@@ -731,6 +733,62 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                 outcome["clarification_status"] = "budget_exhausted"
                 break
             outcome = worker.turn(decision["reply"])
+        for number in range(1, max_rounds + 1):
+            events = worker.events()
+            current = dict(outcome, final=public_reply(events),
+                           metrics=measure(events, private / "agent/provider.jsonl"))
+            current["metrics"]["attempted_requests"] = budget.data["attempts"]
+            current["metrics"]["usage_complete"] &= not budget.data.get("usage_missing", False)
+            current["round"] = number
+            rounds.append(current)
+            save(root / "rounds.json", rounds)
+            stop_after_round = False
+            if on_round is not None:
+                callback = on_round(number, current)
+                # A scorer may explicitly stop after a successful round.  The
+                # default remains bounded continuation when no decision is
+                # returned, preserving existing callers.
+                stop_after_round = callback is False or (
+                    isinstance(callback, dict) and callback.get("continue") is False)
+            if (number == max_rounds or str(outcome.get("status")) not in
+                    {"finished", "ConversationExecutionStatus.FINISHED"}
+                    or budget.data["attempts"] + responder_cost["requests"] >= max_requests
+                    or budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens
+                    or time.monotonic() >= budget.deadline
+                    or stop_after_round):
+                break
+            followup = ("请再核对原始需求和你已交付的结果，复用仓库已有测试验证并修正遗漏。"
+                        "沿用本会话的信息和业务范围，完成后报告实际结果。")
+            if history:
+                from .history import answer_clarification, historical_question
+                question = historical_question(public_reply(events))
+                if question is not None:
+                    review_dir = root / "clarification" / str(len(exchanges) + 1)
+                    responder_cost["requests"] += 1
+                    try:
+                        decision = answer_clarification(question, history, exchanges, config, review_dir)
+                    except Exception as error:
+                        decision = dict(status="unavailable", kind="none", sources=[], reply="none",
+                                        error=type(error).__name__)
+                    usage_path = review_dir / "usage.json"
+                    usage = read(usage_path) if usage_path.exists() else []
+                    responder_cost["usage_complete"] &= bool(usage) and all(
+                        "total_tokens" in row or ("prompt_tokens" in row and "completion_tokens" in row)
+                        for row in usage)
+                    responder_cost["tokens"] += sum(row.get("total_tokens", row.get("prompt_tokens", 0)
+                                                                          + row.get("completion_tokens", 0))
+                                                    for row in usage)
+                    can_continue = (budget.data["attempts"] + responder_cost["requests"] < max_requests
+                                    and budget.data["prompt_tokens"] + budget.data["completion_tokens"]
+                                    + responder_cost["tokens"] < max_tokens and time.monotonic() < budget.deadline)
+                    delivered = decision["status"] == "answer" and can_continue
+                    exchanges.append(dict(question=question, delivered=delivered, **decision))
+                    save(root / "clarifications.json", exchanges)
+                    outcome["clarification_status"] = decision["status"] if can_continue else "budget_exhausted"
+                    if not delivered:
+                        break
+                    followup = decision["reply"]
+            outcome = worker.turn(followup)
     except Exception as error:
         outcome = {"status": "error", "error_type": type(error).__name__, "detail": str(error)}
         if budget.data["prompt_tokens"] + budget.data["completion_tokens"] + responder_cost["tokens"] >= max_tokens:
@@ -750,6 +808,14 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
     outcome["metrics"] = measure(events, private / "agent/provider.jsonl")
     outcome["metrics"]["usage_complete"] &= not budget.data.get("usage_missing", False)
     outcome["metrics"]["attempted_requests"] = budget.data["attempts"]
+    if max_rounds > 1:
+        if outcome["status"] == "error" and len(rounds) < max_rounds:
+            failed = dict(outcome, round=len(rounds) + 1)
+            rounds.append(failed)
+            save(root / "rounds.json", rounds)
+            if on_round is not None:
+                on_round(failed["round"], failed)
+        outcome["rounds"] = rounds
     if history:
         outcome["clarifications"] = exchanges
         outcome["responder_cost"] = responder_cost
@@ -761,7 +827,6 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
                   and e.get("tool_name") not in {"think", "finish"}]
     save(root / "trajectory.json", trajectory)
     if outcome.get("status") in {"finished", "ConversationExecutionStatus.FINISHED"}:
-        from .retention import release_agent, save_trace
-        save_trace(root)
-        release_agent(root)
+        retention.save_trace(root)
+        retention.release_agent(root)
     return outcome

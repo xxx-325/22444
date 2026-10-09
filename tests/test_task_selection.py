@@ -167,6 +167,7 @@ class SelectionTests(unittest.TestCase):
                  "| a2 | Omit only a null note | answer | inspect: Compare null note and null name |\n")
         responses = [{"files": [{"name": "task.md", "content": "Deliver Maple's export."}]},
                      {"files": [{"name": "memory-use.md", "content": answer},
+                                {"name": "applicable-answer.txt", "content": answer},
                                 {"name": "acceptance.md", "content": table}]}]
         budget = SelectionBudget(self.root, {})
         spec = self.root / "external-spec"
@@ -177,7 +178,7 @@ class SelectionTests(unittest.TestCase):
         self.assertNotIn(answer, str(public))
         self.assertEqual(private["historical_answer"], answer)
         self.assertEqual(private["public_task"], (spec / "task.md").read_text())
-        self.assertEqual(read(spec / "oracle-answer.json"), {"answer": answer})
+        self.assertEqual(read(spec / "oracle-answer.json"), {"answer": "- " + answer})
         self.assertEqual([r["basis"] for r in acceptance_items(spec)], [["task"], ["answer"]])
         (spec / "acceptance.md").write_text(table.splitlines()[0])
         with self.assertRaisesRegex(ValueError, "every active historical rule"):

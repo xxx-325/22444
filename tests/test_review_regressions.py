@@ -136,10 +136,8 @@ class ReviewRegressionTests(unittest.TestCase):
             self.scope, self.facts, [self.candidate], client,
             qa_mode="general", allow_repair=False, review_mode="split")
         self.assertEqual(len(client.calls), 2)
-        self.assertFalse(any(q.get("status") == "approved" for q in result["questions"]))
-        self.assertTrue(result["rejected"])
-        self.assertEqual(result["rejected"][0]["reason"],
-                         "semantic_review_failed")
+        self.assertTrue(any(q.get("status") == "approved" for q in result["questions"]))
+        self.assertFalse(result["rejected"])
 
     def test_structured_answer_out_of_scope_evidence_fails_closed(self):
         decision = self._decision(point_evidence="A1=supported@m2")

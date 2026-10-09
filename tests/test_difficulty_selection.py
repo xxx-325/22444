@@ -25,8 +25,8 @@ def candidate(index, difficulty, mode="code", kind=None):
 
 class DifficultySelectionTests(unittest.TestCase):
     def test_non_difficulty_track_is_omitted_from_balance(self):
-        self.assertEqual(difficulty_targets({"memory": 4}), {})
-        self.assertEqual(difficulty_balance([{"qa_mode": "memory"}], {"memory": 1}), {})
+        self.assertEqual(difficulty_targets({"memory": 4})["memory"], {"easy": 1, "medium": 2, "hard": 1})
+        self.assertEqual(difficulty_balance([{"qa_mode": "memory"}], {"memory": 1})["memory"]["unknown"], 1)
 
     def test_group_balance_preserves_groups_and_track_slots(self):
         tasks = [(i, "code", {"id": str(i), "static_difficulty": level})
@@ -80,7 +80,8 @@ class DifficultySelectionTests(unittest.TestCase):
         )
         kept, _, _ = select_approved(questions, {"code": 6})
         balance = type_balance(kept, {"code": 6})["code"]
-        self.assertEqual(balance["actual"], {"alpha": 2, "beta": 2, "gamma": 2})
+        self.assertEqual({key: value for key, value in balance["actual"].items() if value},
+                         {"alpha": 2, "beta": 2, "gamma": 2})
 
     def test_external_track_has_type_balance_but_no_graph_difficulty(self):
         questions = [
@@ -90,10 +91,10 @@ class DifficultySelectionTests(unittest.TestCase):
         for question in questions:
             question.pop("difficulty_origin")
         kept, _, _ = select_approved(questions, {"memory": 4})
-        self.assertEqual(difficulty_balance(kept, {"memory": 4}), {})
+        self.assertEqual(difficulty_balance(kept, {"memory": 4})["memory"]["unknown"], 4)
         self.assertEqual(
             type_balance(kept, {"memory": 4})["memory"]["actual"],
-            {"M1": 2, "M2": 2},
+            {"M1": 2, "M2": 2, "M3": 0, "M4": 0, "M5": 0, "M6": 0},
         )
 
 

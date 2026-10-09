@@ -18,7 +18,7 @@ DEFAULT_DIFFICULTY_RATIOS = {
 
 def _static_difficulty(question):
     """Return only the deterministic graph label used for balancing."""
-    if question.get("difficulty_origin") != "static_graph_distance":
+    if question.get("difficulty_origin") not in {"static_graph_distance", "static_evidence_complexity"}:
         return None
     level = question.get("difficulty")
     return level if level in DIFFICULTY_LEVELS else None
@@ -202,7 +202,7 @@ def duplicate_reason(left, right):
         return exact
     if left.get("qa_mode", "code") != right.get("qa_mode", "code"):
         return None
-    if not (_answer_sources(left) & _answer_sources(right)):
+    if left.get("qa_mode", "code") != "memory" and not (_answer_sources(left) & _answer_sources(right)):
         return None
     if not _time_compatible(left, right):
         return None
@@ -558,7 +558,7 @@ def difficulty_targets(limits):
     normalized = {level: value / total for level, value in normalized.items()}
     targets = {}
     for mode, limit in limits.items():
-        if mode not in ("general", "code"):
+        if mode not in ("general", "code", "memory"):
             continue
         limit = max(0, int(limit or 0))
         raw = {level: normalized[level] * limit for level in DIFFICULTY_LEVELS}
@@ -583,7 +583,7 @@ def difficulty_balance(questions, limits):
     targets = difficulty_targets(limits)
     balance = {}
     for mode in limits:
-        if mode not in ("general", "code"):
+        if mode not in ("general", "code", "memory"):
             continue
         actual = {level: 0 for level in DIFFICULTY_LEVELS}
         unknown = 0
@@ -643,11 +643,14 @@ def type_balance(questions, limits):
             if question.get("qa_mode", "code") != mode:
                 continue
             value = _question_type(question)
-            if value is None:
+            if value is None or value == "unknown":
                 unknown += 1
             else:
                 actual[value] += 1
         mode_targets = targets.get(mode, {})
+        from .protocol import MEMORY_TYPES, QA_TYPES
+        for value in MEMORY_TYPES if mode == "memory" else QA_TYPES:
+            actual.setdefault(value, 0)
         balance[mode] = {
             "target": dict(mode_targets),
             "actual": dict(sorted(actual.items())),

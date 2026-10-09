@@ -79,6 +79,28 @@ def _point_text(point):
     return point if isinstance(point, str) else point.get("text", point.get("claim", ""))
 
 
+def public_global_agreements(records):
+    """Index only public wording that explicitly gives a project-wide scope."""
+    from ..external import relevant_public_history
+
+    scope = re.compile(r"(?<!\w)(?:所有任务|所有代码)|全项目|整个项目|项目统一|全局(?:编码|代码|交付)?(?:约定|规范|规则)|"
+                       r"\b(?:all tasks|all code)\b(?!\s+(?:for|in|under|during|within|of)\b)|"
+                       r"\b(?:project[- ]wide|across the project|globally)\b", re.I)
+    result = []
+    cutoff = max((record.get("order", 0) for record in records or []), default=0)
+    for record in records or []:
+        if record.get("role") != "user":
+            continue
+        text = record.get("text", "")
+        for line in text.splitlines():
+            if scope.search(line) and line.strip() and not credential_detected(line):
+                related = relevant_public_history(records, [record], line, cutoff)
+                result.append({"text": line.strip(),
+                               "sources": [record.get("original_id", record.get("id"))],
+                               "context": "\n".join(row.get("text", "") for row in related)})
+    return result
+
+
 def _input_rejection(question, candidate, request, records, *, require_sources):
     """Apply hard content/source guards independently of review status."""
     for document in (question, candidate):
@@ -139,9 +161,15 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
         ]
     run_manifest = read(qa_run / "manifest.json") if (qa_run / "manifest.json").exists() else {}
     types = MEMORY_TYPES if run_manifest.get("qa_source") == "external" else QA_TYPES
-    if any(question.get("type") not in types and not (
-            question.get("type") is None and question.get("type_status") == "unresolved"
-            and run_manifest.get("qa_source", "graph") == "graph") for question in public):
+    # Type inference is intentionally non-blocking.  A candidate whose
+    # answer evidence is valid but cannot be classified yet is retained as
+    # ``unknown``/``unresolved`` for review instead of dropping the whole
+    # route.  Concrete values still must belong to the selected QA track.
+    if any(question.get("type") not in types
+           and question.get("type") != "unknown"
+           and not (question.get("type") is None
+                    and question.get("type_status") == "unresolved")
+           for question in public):
         raise ValueError("QA types do not match the source mode; regenerate QA")
     normalized_path = qa_run / "normalized.json"
     normalized = read(normalized_path) if normalized_path.exists() else []
@@ -175,6 +203,7 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
     diagnostics = diagnostics if diagnostics is not None else []
     external_path = qa_run / "external-events.json"
     external_events = read(external_path).get("events", []) if external_path.is_file() else []
+    global_agreements = public_global_agreements(public_records)
     for question in public:
         eligible = question.get("status") == "approved" or (
             include_provisional and question.get("status") in {"needs_review", "provisional"}
@@ -215,6 +244,7 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
             if public_records is not None:
                 item["public_records"] = public_records
             if item["qa_source"] == "external":
+                item["global_agreements"] = global_agreements
                 cited = sorted({source for key in ("answer_points", "forbidden_points")
                                 for point in candidate.get(key, []) if isinstance(point, dict)
                                 for source in point.get("sources", [])})
@@ -271,26 +301,13 @@ def generation_request(item):
                            "request": read(member["generation_input"])} for member in members]}
 
 
-def group_qa_inputs(items, group_size=2, *, diagnostics=None):
-    """Partition related external questions without adjacency-based padding."""
+def group_qa_inputs(items, group_size=4, *, diagnostics=None):
+    """Build bounded related QA pools; a singleton remains a valid task seed."""
     if group_size < 1:
         raise ValueError("QA group size must be positive")
     diagnostics = diagnostics if diagnostics is not None else []
     result = [item for item in items if item.get("qa_source") != "external"]
     pending = [item for item in items if item.get("qa_source") == "external"]
-    if group_size == 1:
-        # A single graph question may stand on its own, but an external
-        # memory question must be combined with a related question before it
-        # can become a business requirement.  Keep the question in the QA
-        # outputs; only omit it from task construction.
-        if pending:
-            diagnostics.extend({
-                "qa_ids": [item["qa"]["id"]],
-                "reason": "external_requirement_requires_related_qa",
-                "required": 2,
-            } for item in pending)
-            return result
-        return list(items)
     while pending:
         members = [pending.pop(0)]
         while len(members) < group_size:
@@ -301,9 +318,8 @@ def group_qa_inputs(items, group_size=2, *, diagnostics=None):
             if match is None:
                 break
             members.append(pending.pop(match))
-        if len(members) < group_size:
-            diagnostics.append({"qa_ids": [member["qa"]["id"] for member in members],
-                                "reason": "insufficient_related_qa", "required": group_size})
+        if len(members) == 1:
+            result.append(members[0])
             continue
         ids = [member["qa"]["id"] for member in members]
         question = dict(members[0]["qa"], id="group-" + qa_fingerprint(ids)[:16],

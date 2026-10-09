@@ -412,14 +412,14 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                     if "WORKFLOW:" in prompt:
                         return {"workflow": dict(text="扩展客户对账：比较差异 → 汇总报告", sources=["资料1"])}
                     if "FOCUS:" in prompt:
-                        return {"focus": dict(text="确认客户对账容差的适用条件", sources=["资料1", "资料3", "资料5"])}
+                        return {"focus": dict(text="确认客户对账容差的适用条件", sources=["资料1", "资料3", "资料4"])}
                     if "review_issue" in payload:
                         return parse_text_response("QA q1\nQUESTION: " + question + "\n"
-                            "ANSWER_POINT: 只有显式传入 tolerances 时才启用容差。 || SOURCES: 资料1,资料3,资料5\n"
-                            "ANSWER_POINT: tolerances 默认 None 时精确比较。 || SOURCES: 资料3,资料5\nEND_QA")
+                            "ANSWER_POINT: 只有显式传入 tolerances 时才启用容差。 || SOURCES: 资料1,资料3,资料4\n"
+                            "ANSWER_POINT: tolerances 默认 None 时精确比较。 || SOURCES: 资料3,资料4\nEND_QA")
                     return parse_text_response("QA q1\nQUESTION: " + question + "\n"
                         "ANSWER_POINT: 只有显式传入 tolerances 时才启用容差，默认 None 时精确比较。"
-                        " || SOURCES: 资料1,资料3,资料5\nEND_QA")
+                        " || SOURCES: 资料1,资料3,资料4\nEND_QA")
                 if "simple_atomicity_v1" in prompt:
                     self.calls.append((prompt, payload))
                     self.usage.append({"status": "completed"})
@@ -434,8 +434,8 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                 response = super().ask(prompt, payload)
                 if "point_evidence:" in prompt:
                     response["reviews"][0].update(
-                        point_evidence="A1=supported@资料1,资料3,资料5;A2=supported@资料3,资料5",
-                        usage="confirmed@资料1,资料3,资料5",
+                        point_evidence="A1=supported@资料1,资料3,资料4;A2=supported@资料3,资料4",
+                        usage="confirmed@资料1,资料3,资料4",
                         usage_reason="用户在原约定后确认了显式启用容差的条件。")
                 return response
 
@@ -567,8 +567,8 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                 response = super().ask(prompt, payload)
                 if "point_evidence:" in prompt:
                     response["reviews"][0].update(
-                        point_evidence="A1=supported@资料3,资料5",
-                        usage="confirmed@资料1,资料3,资料5",
+                        point_evidence="A1=supported@资料3,资料4",
+                        usage="confirmed@资料1,资料3,资料4",
                         usage_reason="用户在原约定后确认了显式启用容差的条件。")
                 return response
 
@@ -584,7 +584,7 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertEqual(result["questions"][0]["status"], "approved")
         self.assertEqual(result["questions"][0]["static_evidence_status"], "unknown")
         self.assertEqual([receipt["stage"] for receipt in client.usage], [
-            "review_target", "review_relevance", "review_atomicity", "review_completeness", "review_evidence"])
+            "review_relevance", "review_atomicity", "review_completeness", "review_evidence"])
 
     def test_external_context_outside_the_scope_is_still_rejected(self):
         group, index = self.external_correction_group()
@@ -601,8 +601,8 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             question="客户的新页面需要哪种主题？",
             answer_points=[dict(text="新增页面主题。", sources=["e62"])])
         check = static_evidence_check(group, index, "M6", candidate)
-        self.assertEqual(check["status"], "unknown")
-        self.assertEqual(check["reason"], "external_context_requires_review")
+        self.assertEqual(check["status"], "insufficient")
+        self.assertEqual(check["reason"], "answer_source_out_of_scope")
         self.assertEqual(check["fact_ids"], [])
         client = Client(alignment="drifted")
         reviewed = review_candidates(group["scope"], group["facts"], [candidate], client,
@@ -663,11 +663,11 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
                 reviewed = review_candidates(scope, facts, [question], client,
                                              qa_mode="memory", review_mode="simple", allow_repair=False)
                 self.assertEqual(reviewed["questions"][0]["status"], "approved")
-                self.assertEqual(question["type"], kind)
-                self.assertEqual(question["type_origin"], "external_event")
-                self.assertNotIn("difficulty", cli._public_question(question))
+                self.assertEqual(question["type"], "unknown")
+                self.assertEqual(question["type_origin"], "static_public_evidence")
+                self.assertEqual(cli._public_question(question)["difficulty_origin"], "static_evidence_complexity")
                 self.assertNotIn("category", question)
-                for prompt, payload in client.calls[1:4]:
+                for prompt, payload in client.calls[1:3]:
                     self.assertIn(MEMORY_TYPE_GUIDANCE[kind], prompt)
                     self.assertIn("future business workflow", prompt)
                     self.assertNotIn(kind, prompt)
@@ -769,19 +769,22 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             self.assertEqual(manifest["progress"]["targets"], {"memory": 1})
             self.assertEqual(manifest["progress"]["stop_reasons"], {"memory": "target_reached"})
             self.assertEqual(set(manifest["coverage"]), {"memory"})
-            self.assertEqual(manifest["questions"]["type"], {"M1": 1})
+            self.assertEqual(manifest["questions"]["type"], {"unknown": 1})
             self.assertNotIn("general_count", manifest)
             self.assertFalse((output / "general-qa.json").exists())
             self.assertFalse((output / "code-qa.json").exists())
             items = qa_inputs(output)
             self.assertEqual(len(items), 1)
-            self.assertEqual(items[0]["qa"]["type"], "M1")
+            # The published type is inferred from the answer evidence.  If
+            # the evidence does not justify a memory class, retain the item
+            # as unknown instead of copying the event's controller label.
+            self.assertEqual(items[0]["qa"]["type"], "unknown")
             self.assertEqual(items[0]["original_candidate"]["type"], "M1")
             self.assertTrue(Path(items[0]["generation_input"]).is_file())
             self.assertEqual(items[0]["development_workflow"], "增加批量导出：读取记录 → 导出 → 汇总结果")
             view = build(output)
             self.assertEqual(view["targets"], {"memory": 1})
-            self.assertEqual(view["questions"][0]["type"], "M1")
+            self.assertEqual(view["questions"][0]["type"], "unknown")
             self.assertEqual(view["meta"]["expansion_mode"], "external_events")
 
     def test_empty_external_pool_stays_reviewable_without_model_calls(self):

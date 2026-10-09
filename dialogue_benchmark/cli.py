@@ -12,8 +12,8 @@ from threading import Lock
 
 from .chunking import split_scope
 from .fact_index import (build_evidence_groups, build_evidence_index,
-                         merge_scopes,
-                         group_review_projection, coverage_report,
+                         merge_scopes, _source_index,
+                         group_review_projection, candidate_review_projection, coverage_report,
                          expand_evidence_group_once,
                          static_candidate_labels, static_candidate_types,
                          static_evidence_check)
@@ -761,15 +761,6 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                                 "failed_checks": ["useful_historical_target"],
                                 "stage": "static_quality",
                             })
-                        elif target_type is not None and (chosen is None or (
-                                check is not None and check.get("status") == "insufficient")):
-                            static_post_rejected.append({
-                                "question": dict(question, status="rejected"),
-                                "reason": "type_evidence_static_insufficient",
-                                "static_reason": (check or {}).get("reason", "no_static_type"),
-                                "failed_checks": ["type_evidence_sufficient"],
-                                "static_type_evidence": check or checks,
-                            })
                         else:
                             checked_questions.append(question)
                     type_questions = checked_questions
@@ -792,8 +783,8 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                             projected_group, guard_audit = external_review_projection(
                                 active_group, review_candidate)
                         else:
-                            projected_group, guard_audit = group_review_projection(
-                                active_group, review_candidate)
+                            projected_group, guard_audit = candidate_review_projection(
+                                active_group, evidence_index, review_candidate)
                         guard_audit.update(
                             candidate_id=review_candidate.get("id"),
                             target_type=review_candidate.get("type", target_type),
@@ -896,17 +887,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                                      if check_type is not None else
                                      {"status": "insufficient", "reason": "no_static_type"})
                             question["static_type_evidence"] = check
-                            if check.get("status") == "insufficient" and target_type is not None:
-                                type_rejected.append({
-                                    "question": dict(question, status="rejected"),
-                                    "reason": "type_evidence_static_insufficient",
-                                    "static_reason": check.get("reason"),
-                                    "failed_checks": ["type_evidence_sufficient"],
-                                    "static_type_evidence": check,
-                                    "stage": "static_post_review",
-                                })
-                            else:
-                                final_questions.append(question)
+                            final_questions.append(question)
                         reviewed_questions = final_questions
                     combined["all_candidates"].extend(
                         generated.get("all_candidates", type_questions))
@@ -1356,7 +1337,7 @@ def _public_question(question):
         item.update(category=question.get("category", item["type"]),
                     track=question.get("track"))
     if mode == "memory":
-        for key in ("difficulty", "difficulty_origin", "difficulty_distance",
+        for key in ("difficulty_distance",
                     "stage_count", "reasoning_hops", "graph_hops"):
             item.pop(key, None)
     return item
@@ -1841,7 +1822,7 @@ def main(argv=None):
                                 "allowed_types": (target_type,),
                                 "eligible_types": (target_type,),
                                 "type_selection": "preselected",
-                                "max_questions": options["questions_per_group"],
+                                "max_questions": 1,
                                 "external_lineage": {
                                     "source_ids": list(scope.get("external_source_ids", [])),
                                     "event_ids": list(scope.get("external_event_ids", [])),
@@ -1875,6 +1856,11 @@ def main(argv=None):
                         evidence_index = build_evidence_index(
                             track_facts, facts_result["scopes"][track], track,
                             args.model_request_chars)
+                        universe = evidence_index["universe"]
+                        by_id = {row["id"]: row for row in records}
+                        by_id.update({row["id"]: row for row in universe.get("dialogue", [])})
+                        universe["dialogue"] = sorted(by_id.values(), key=lambda row: row.get("order", 0))
+                        evidence_index["source_index"] = _source_index(universe)
                         evidence_indexes[track] = evidence_index
                         print("Evidence groups: %s index ready" % track, flush=True)
                         track_groups = build_evidence_groups(

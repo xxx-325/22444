@@ -174,6 +174,52 @@ class TaskPreflightTests(unittest.TestCase):
             self.assertEqual(result[condition]["implementation_pollution"],
                              ["tests/test_acceptance.py"])
 
+    def test_two_round_pairs_keep_first_scores_and_reuse_final_fixed_checks(self):
+        spec = self.base / "spec"
+        spec.mkdir()
+        (spec / "task.md").write_text("Deliver the report.")
+        (spec / "acceptance.md").write_text(
+            "| a1 | Report is delivered | task | test: test_acceptance::test_report |\n")
+        save(spec / "acceptance.json", acceptance_items(spec))
+        save(spec / "oracle-answer.json", {"answer": "- Applicable public rule."})
+        receipt = freeze(spec, self.root / "frozen", self.baseline)
+        messages = []
+
+        def agent(root, config, role, message, **options):
+            self.assertEqual(role, "code")
+            self.assertEqual(options["max_rounds"], 2)
+            self.assertNotIn("reference", options)
+            messages.append(message)
+            candidate = root / "workspace/candidate"
+            for number in (1, 2):
+                (candidate / "report.txt").write_text("incomplete" if number == 1 else "delivered")
+                options["on_round"](number, {"status": "finished", "metrics": {
+                    "attempted_requests": number, "total_tokens": number * 10}})
+            return {"status": "finished", "metrics": {"attempted_requests": 2, "total_tokens": 20}}
+
+        def checks(candidate, spec, output, image, **options):
+            status = "passed" if (candidate / "report.txt").read_text() == "delivered" else "failed"
+            result = {"status": status, "cases": [{"id": "test_acceptance::test_report", "status": status}]}
+            save(output / "result.json", result)
+            return result
+
+        with patch("dialogue_benchmark.task_eval.run.run_agent", side_effect=agent), \
+             patch("dialogue_benchmark.task_eval.run.run_checks", side_effect=checks) as checked:
+            result = evaluate(self.item, self.root, self.baseline, receipt,
+                              {"execution_image": "image"}, {}, 0)
+        self.assertEqual(checked.call_count, 4)
+        self.assertNotIn("Applicable public rule", messages[0])
+        self.assertIn("Applicable public rule", messages[1])
+        for condition in ("with_memory", "without_memory"):
+            self.assertEqual(result[condition]["first_round"]["result"], "failed")
+            self.assertEqual(result[condition]["final_round"]["result"], "passed")
+            self.assertEqual(result[condition]["result"], "passed")
+            self.assertEqual(result[condition]["judge_status"], "not_needed")
+            self.assertEqual(result[condition]["first_round"]["metrics"]["total_tokens"], 10)
+            trial = self.root / result[condition]["trial"]
+            self.assertEqual((trial / "round-01/candidate/report.txt").read_text(), "incomplete")
+            self.assertEqual((trial / "round-02/candidate/report.txt").read_text(), "delivered")
+
     def test_changed_qa_is_rejected_before_evaluation(self):
         receipt = {"qa_sha256": qa_fingerprint(self.item["qa"])}
         self.item["qa"]["answer_points"] = ["Different historical answer"]

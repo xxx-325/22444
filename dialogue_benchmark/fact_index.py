@@ -1019,6 +1019,11 @@ def candidate_review_projection(group, evidence_index, candidate,
     guarded_infos = _candidate_guard_closure(
         base_views, all_views, historical_event=historical_event)
     guard_sources = _guard_sources(guarded_infos) | cited_sources
+    from .external import relevant_public_history
+    public_records = evidence_index.get("universe", {}).get("dialogue", [])
+    public_anchors = [row for row in public_records if row.get("id") in guard_sources]
+    guard_sources.update(row["id"] for row in relevant_public_history(
+        public_records, public_anchors, text, cutoff if isinstance(cutoff, int) else 10 ** 18))
     guard_sources.update(source for source in scope.get(
         "generation_extra_sources", []) if isinstance(source, str))
     if isinstance(cutoff, int):
@@ -2167,10 +2172,7 @@ def static_evidence_check(group, evidence_index, target_type, candidate=None):
     # absent.
     external_kind = (group.get("scope") or {}).get("external_kind")
     if external_kind:
-        expected = group["scope"].get("memory_kind")
         infos = _group_infos(group, evidence_index)
-        if expected != target_type:
-            return _code_evidence_result("insufficient", "external_type_mismatch", infos, cited_sources)
         if not infos:
             return _code_evidence_result("insufficient", "external_fact_missing", infos, cited_sources)
         if candidate is not None:
@@ -2231,12 +2233,65 @@ def static_candidate_labels(group, candidate, evidence_index, target_type,
     """Label one generated candidate from its actually cited answer evidence."""
     if group.get("qa_mode") == "memory":
         check = static_evidence_check(group, evidence_index, target_type, candidate)
-        return {"type": target_type, "type_origin": "external_event",
+        infos = _group_infos(group, evidence_index, _answer_evidence(candidate)[1])
+        text = _answer_evidence(candidate)[0]
+        kinds = set()
+        evidence = "\n".join(info["fact"].get("statement", "") for info in infos)
+        if re.search(r"约定|同意|授权|用户要求|agreed|authoriz|customer.*(?:must|requires)", evidence, re.I):
+            kinds.add("M1")
+        if any(info.get("external_observation") for info in infos):
+            kinds.add("M2")
+        if re.search(r"误导|文档.*(?:错误|不符)|mislead|incorrect.*(?:docs|example)", evidence, re.I):
+            kinds.add("M3")
+        if any(info.get("observed_failure") for info in infos):
+            kinds.add("M4")
+        if re.search(r"运行时|环境|runtime|environment|production|staging", evidence, re.I) and any(
+                info.get("external_observation") or info.get("observed_validation") for info in infos):
+            kinds.add("M5")
+        if re.search(r"跨会话|下次会话|确认|决定|已选|状态|carry forward|next session|previous session|decided|chosen|confirmed state", evidence, re.I):
+            kinds.add("M6")
+        options = sorted(kinds)
+        # The published type is evidence-derived.  The preselected target is
+        # only a generation hint and must not override what the cited facts
+        # actually support.
+        chosen = options[0] if options else "unknown"
+        cited = set(_answer_evidence(candidate)[1])
+        known = scope_source_ids(group.get("scope", {}), group.get("qa_mode"))
+        necessary = set()
+        closed = bool(infos) and cited <= known
+        for point in candidate.get("answer_points", []):
+            normalized = _normalized_fact_statement(point.get("text", ""))
+            sources = set(point.get("sources", []))
+            matches = {_normalized_fact_statement(info["fact"].get("statement", ""))
+                       for info in infos if set(info["fact"].get("sources", [])) <= sources
+                       and _normalized_fact_statement(info["fact"].get("statement", "")) in normalized}
+            if not matches:
+                possible = {_normalized_fact_statement(info["fact"].get("statement", ""))
+                            for info in infos if set(info["fact"].get("sources", [])) <= sources}
+                matches = possible if len(possible) == 1 else set()
+            if not matches:
+                closed = False
+            necessary.update(matches)
+        count = len(necessary)
+        revision = bool(re.search(r"纠正|撤销|例外|改为|改成|correct|revoke|except|instead", text, re.I))
+        difficulty = ("unknown" if not closed else "hard" if count >= 3 or count >= 2 and revision
+                      else "medium" if count == 2 else "easy")
+        return {"type": chosen, "type_origin": "static_public_evidence",
+                "type_candidates": options, "auxiliary_types": [kind for kind in options if kind != chosen],
+                "difficulty": difficulty, "difficulty_origin": "static_evidence_complexity",
+                "difficulty_fact_count": count, "difficulty_evidence_complete": closed,
                 "static_evidence_status": check["status"],
                 "static_evidence_reason": check["reason"]}
     answer_sources = []
     for point in candidate.get("answer_points", []):
-        for source in point.get("sources", []):
+        point_sources = point.get("sources", [])
+        normalized = _normalized_fact_statement(point.get("text", ""))
+        matches = [info["fact"] for info in _group_infos(group, evidence_index, point_sources)
+                   if normalized and normalized == _normalized_fact_statement(info["fact"].get("statement", ""))
+                   and set(info["fact"].get("sources", [])) <= set(point_sources)]
+        if matches:
+            point_sources = min((fact["sources"] for fact in matches), key=lambda sources: (len(sources), tuple(sources)))
+        for source in point_sources:
             if isinstance(source, str) and source not in answer_sources:
                 answer_sources.append(source)
     # Difficulty describes the evidence actually needed by this question,

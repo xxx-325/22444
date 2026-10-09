@@ -23,6 +23,39 @@ EXTERNAL_EVENT_KINDS = frozenset({
     "failure_avoidance",
 })
 
+_HISTORY_CHANGE = re.compile(
+    r"纠正|撤销|改为|改成|例外|除外|仅限|仅在|只适用|确认|不再|取消|更正|但是|不过|"
+    r"correct|revoke|replace|instead|except|only|no longer|however|optional", re.I)
+
+
+def relevant_public_history(records, anchors, text, cutoff, *, include_ambiguous=True):
+    """Select same-object amendments and their immediate reference context."""
+    from .fact_index import _entities, _semantic_shared_entities
+
+    from .fact_index import _labels
+    view = {"entities": _entities(text), "statement_labels": _labels(text)}
+    anchor_ids = {row["id"] for row in anchors}
+    selected = set(anchor_ids)
+    visible = [row for row in records if row.get("order", 0) <= cutoff]
+    previous_related = False
+    for position, row in enumerate(visible):
+        body = str(row.get("text", ""))
+        related = bool(_semantic_shared_entities(view, {"entities": _entities(body), "statement_labels": _labels(body)}))
+        amendment = bool(_HISTORY_CHANGE.search(body))
+        referential = bool(re.search(r"\b(it|that|this|they)\b|the rule|这个|该项|上述|它|此规则", body, re.I))
+        ambiguous_revision = (row.get("role") == "user" and amendment and bool(re.search(
+            r"仅在|只适用|默认|之前的|only when|only if|default|previous rule", body, re.I))
+            and bool(_labels(body)))
+        if (row.get("id") in anchor_ids
+                or amendment and related
+                or previous_related and referential
+                or include_ambiguous and ambiguous_revision):
+            selected.add(row["id"])
+            if referential and position:
+                selected.add(visible[position - 1]["id"])
+        previous_related = related or row.get("id") in selected
+    return [row for row in visible if row.get("id") in selected]
+
 
 def _event_focus(event):
     """Return only an explicitly supplied target label.
@@ -79,6 +112,11 @@ def external_review_projection(group, candidate):
     from .llm import simple_evidence_request_size
 
     scope = deepcopy(group["scope"])
+    anchors = scope["dialogue"]
+    text = "\n".join([candidate.get("question", "")]
+                     + [point.get("text", "") for point in candidate.get("answer_points", [])])
+    scope["dialogue"] = relevant_public_history(
+        scope.pop("public_history", anchors), anchors, text, scope["cutoff"])
     records = {row["id"]: row for row in scope["dialogue"]}
     required = set(scope["external_source_ids"]) | set(scope["external_usage_ids"])
     cited = {source for key in ("answer_points", "forbidden_points")
@@ -154,19 +192,10 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
     context_ids = list(event.get("context_ids", []))
     selected_ids = set(source_ids) | set(used_by) | set(context_ids)
     selected_orders = [records_by_id[item].get("order", 0) for item in selected_ids]
-    first_source_order = min(records_by_id[item].get("order", 0) for item in source_ids)
-    # Current episode exports carry a declared scope.  Do not silently append
-    # every later user/assistant message: that can expose an unrelated future
-    # fact to the QA author and make a question depend on information outside
-    # its source group.  Legacy sidecars without the marker retain the old
-    # correction-context behavior for reproducibility.
-    if event.get("scope_policy") == "declared":
-        dialogue = [record for record in records if record.get("id") in selected_ids]
-    else:
-        dialogue = [record for record in records if record.get("id") in selected_ids
-                    or (record.get("kind") == "message"
-                        and record.get("role") in {"user", "assistant"}
-                        and first_source_order < record.get("order", 0) <= cutoff)]
+    anchors = [record for record in records if record.get("id") in selected_ids]
+    anchor_text = "\n".join(str(row.get("text", "")) for row in anchors)
+    dialogue = relevant_public_history(records, anchors, anchor_text, cutoff)
+    grounded_context = relevant_public_history(records, anchors, anchor_text, cutoff, include_ambiguous=False)
     group_id = "external-%s" % event["id"]
     target_type = event["memory_kind"]
     return {
@@ -189,6 +218,7 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "memory_kinds": event.get("memory_kinds", [target_type]),
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
+        "external_context_source_ids": [row["id"] for row in grounded_context if row["id"] not in selected_ids],
         "external_focus": event.get("focus"),
         # These are control-side labels used to relate QA to a business
         # behavior. They are never copied into the public question projection.
@@ -197,7 +227,8 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
                              or event.get("constraint")),
         # Later public use/result is context for composing a useful question;
         # it remains separate from the source IDs that ground extracted facts.
-        "generation_extra_sources": list(dict.fromkeys(used_by + context_ids)),
+        "generation_extra_sources": list(dict.fromkeys(used_by + context_ids + [
+            row["id"] for row in dialogue if row["id"] not in source_ids])),
         "evidence_group": {
             "id": group_id,
             "qa_mode": "memory",
@@ -218,16 +249,28 @@ def _has_public_source(source_ids, records_by_id):
 
 
 def _event_groups(events, records_by_id, *, merge_task_events=True):
-    """Connect explicit revisions, optionally keeping task events together.
+    """Connect revisions and repeated disclosures without hiding new facts.
 
-    External QA uses one independently probeable information group per event.
-    Merging every event from one development task hides distinct facts and
-    makes the route's quota depend on the number of commits.  The old merged
-    view remains available for callers that need a task-level projection.
+    An event is a new group only when its public anchor carries a new fact.
+    Events that point at the same anchors, or repeat the same public wording,
+    are one group even when their controller-side ids differ.  Explicit
+    supersession and (when requested) task links still connect revisions.
     """
     by_id = {event["id"]: event for event in events}
     links = {identity: set() for identity in by_id}
     tasks = {}
+    anchor_groups = {}
+    wording_groups = {}
+
+    def public_wording(event):
+        texts = []
+        for source in event.get("source_ids", []):
+            text = records_by_id[source].get("text", "")
+            text = re.sub(r"\s+", " ", str(text)).strip().casefold()
+            if text:
+                texts.append(text)
+        return tuple(texts)
+
     for event in events:
         identity = event["id"]
         task = event.get("task_id") if merge_task_events else None
@@ -236,6 +279,27 @@ def _event_groups(events, records_by_id, *, merge_task_events=True):
                 links[identity].add(tasks[task])
                 links[tasks[task]].add(identity)
             tasks[task] = identity
+        # A repeated disclosure with a different event id is still the same
+        # public fact.  Exact anchor equality also coalesces multiple labels
+        # attached to one disclosure while preserving distinct anchors.
+        focus = (event.get("behavior") or event.get("focus") or "").strip().casefold()
+        anchor_key = (focus, tuple(event.get("source_ids", [])),
+                      tuple(event.get("used_by", [])),
+                      tuple(event.get("context_ids", [])))
+        if anchor_key in anchor_groups:
+            other = anchor_groups[anchor_key]
+            links[identity].add(other)
+            links[other].add(identity)
+        else:
+            anchor_groups[anchor_key] = identity
+        wording_key = (focus, public_wording(event), tuple(event.get("used_by", [])),
+                       tuple(event.get("context_ids", [])))
+        if wording_key[1] and wording_key in wording_groups:
+            other = wording_groups[wording_key]
+            links[identity].add(other)
+            links[other].add(identity)
+        elif wording_key[1]:
+            wording_groups[wording_key] = identity
         for previous in event.get("supersedes", []):
             if previous in by_id:
                 links[identity].add(previous)
@@ -262,6 +326,26 @@ def _event_groups(events, records_by_id, *, merge_task_events=True):
         for field in ("source_ids", "used_by", "context_ids"):
             merged[field] = list(dict.fromkeys(source for row in members for source in row[field]))
         yield merged
+
+
+def _combination_groups(events):
+    """Offer one supplemental judgment per explicit business object."""
+    related = {}
+    for event in events:
+        focus = event.get("behavior") or event.get("focus")
+        if isinstance(focus, str) and focus.strip():
+            related.setdefault(focus.casefold(), []).append(event)
+    for members in related.values():
+        if len(members) < 2:
+            continue
+        combined = dict(members[-1])
+        combined["id"] = "combined-" + "-".join(row["id"] for row in members)
+        combined["event_ids"] = list(dict.fromkeys(identity for row in members for identity in row["event_ids"]))
+        combined["memory_kinds"] = sorted({kind for row in members for kind in row["memory_kinds"]})
+        for field in ("source_ids", "used_by", "context_ids"):
+            combined[field] = list(dict.fromkeys(source for row in members for source in row[field]))
+        combined["combination"] = True
+        yield combined
 
 
 def load_external_scopes(path, records, cutoff, max_chars=32000,
@@ -332,8 +416,9 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
             rejected.append({"id": event_id, "reason": "usage_not_after_source"})
             continue
         accepted.append(raw)
-    for event in _event_groups(accepted, records_by_id,
-                               merge_task_events=merge_task_events):
+    groups = list(_event_groups(accepted, records_by_id, merge_task_events=merge_task_events))
+    combinations = list(_combination_groups(groups)) if not merge_task_events else []
+    for event in groups + combinations:
         if max_groups is not None and len(scopes) >= max_groups:
             rejected.append({"id": event["id"], "reason": "external_group_budget"})
             continue
@@ -347,7 +432,7 @@ def filter_external_facts(facts, scopes):
     source_to_scope = {}
     for scope in scopes:
         event_id = scope.get("external_event_id")
-        for source in scope.get("external_source_ids", []):
+        for source in scope.get("external_source_ids", []) + scope.get("external_context_source_ids", []):
             source_to_scope.setdefault(source, []).append((event_id, scope))
     kept = []
     for fact in facts:

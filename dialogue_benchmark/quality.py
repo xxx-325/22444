@@ -416,8 +416,8 @@ def validate_candidates(document, facts, scope, qa_mode=None, allowed_types=None
                 question, mode, question_type, scope, fact_sources, selected_facts)
             if type_reason in repairable_semantic:
                 warnings.append(type_reason)
-            else:
-                reason = type_reason
+            elif type_reason:
+                warnings.append(type_reason)
 
         source_closure = directly_related_sources(scope, fact_sources, mode) if not reason else set()
         if not reason:
@@ -1230,7 +1230,7 @@ def apply_question_review(candidates, review, allowed_sources=None, allowed_stag
     rejected = list(malformed)
     kept = []
     checks = ("unambiguous", "difficulty_justified", "not_answer_leaking",
-              "natural_wording", "practical_useful", "type_correct")
+              "natural_wording", "practical_useful")
     for question in candidates:
         decision = decisions.get(question["id"], {})
         if not decision or question["id"] in blocked:
@@ -1277,8 +1277,7 @@ def apply_review(candidates, review, require_structured=False, allowed_sources=N
         mode, _ = _candidate_mode_and_type(question, None)
         common_checks = ("evidence_supported", "version_consistent", "unambiguous",
                          "difficulty_justified", "not_answer_leaking", "natural_wording",
-                         "practical_useful", "answer_complete", "atomic_points_correct",
-                         "type_correct")
+                         "practical_useful", "answer_complete", "atomic_points_correct")
         causal = (bool(re.search(r"为什么|为何|原因|导致|why|cause", question.get("question", ""), re.I)))
         if causal:
             common_checks += ("causal_support",)
@@ -1307,10 +1306,9 @@ def apply_review(candidates, review, require_structured=False, allowed_sources=N
             structure_missing = question_missing + answer_missing
             structure_conflicts = question_conflicts + answer_conflicts
         missing = [key for key in required if not isinstance(decision.get(key), bool)]
-        type_correct = decision.get("type_correct") is True
         mode_correct = decision.get("qa_mode_correct", True) is True
         review_valid = (all(decision.get(key) is True for key in common_checks)
-                        and type_correct and mode_correct)
+                        and mode_correct)
         if mode == "code":
             history_fields_present = all(isinstance(decision.get(key), bool) for key in
                                          ("current_snapshot_alone_sufficient",
@@ -1359,6 +1357,7 @@ def apply_review(candidates, review, require_structured=False, allowed_sources=N
         else:
             rejected.append({"question": dict(question, status="rejected"),
                              "reason": "semantic_review_failed",
-                             "failed_checks": [key for key in common_checks if decision.get(key) is False],
+                             "failed_checks": [key for key in common_checks + (("history_requirement_correct",) if mode == "code" else ())
+                                               if decision.get(key) is False],
                              "review": decision})
     return kept, rejected

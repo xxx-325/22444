@@ -261,10 +261,9 @@ class SplitReviewTests(unittest.TestCase):
             self.scope, self.facts, [candidate], client,
             qa_mode="general", review_mode="split", allow_repair=True)
         self.assertEqual(result["questions"][0]["status"], "approved")
-        self.assertEqual(result["questions"][0]["type"], "constraint_followthrough")
+        self.assertEqual(result["questions"][0]["type"], "compatibility_preservation")
         self.assertEqual([item["stage"] for item in client.usage],
-                         ["review_structure", "review_evidence", "repair",
-                          "review_structure", "review_evidence"])
+                         ["review_structure", "review_evidence"])
 
     def test_false_history_label_is_repairable_as_inference_control(self):
         scope = copy.deepcopy(self.scope)

@@ -52,7 +52,7 @@ def implementation_pollution(changed_files):
     protected_names = {
         "task.md", "acceptance.md", "acceptance.json", "history.json",
         "history-contract.txt", "memory-use.md", "history-review.md",
-        "tests_unavailable.md",
+        "tests_unavailable.md", "oracle-answer.json", "applicable-answer.txt",
     }
     polluted = []
     for raw in changed_files or ():
@@ -68,6 +68,17 @@ def answer_text(question):
     points = question.get("answer_points", [])
     return "\n".join("- " + (p if isinstance(p, str) else p.get("text", p.get("claim", "")))
                      for p in points)
+
+
+def available_answer(item):
+    text = answer_text(item["qa"])
+    globals_text = "\n".join("- " + row["text"] for row in item.get("global_agreements", []))
+    return text + ("\n" + globals_text if globals_text else "")
+
+
+def injected_answer(item, spec):
+    path = Path(spec) / "oracle-answer.json"
+    return read(path)["answer"] if path.is_file() else answer_text(item["qa"])
 
 
 def save_task_progress(root, stage, **details):
@@ -383,7 +394,9 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
             })
     selection = (reused[0] if reused else select_task(item["qa"], public_history, baseline, config,
                  root / "selection", budget, exploration=exploration_text,
-                 workflow=item.get("development_workflow")))
+                 workflow=item.get("development_workflow"),
+                 global_agreements=item.get("global_agreements", []),
+                 qa_pool=[member["qa"] for member in item.get("qa_members", [item])]))
     if reused:
         save(root / "selection/result.json", selection)
     selection["qa_source"] = item.get("qa_source", "graph")
@@ -407,7 +420,10 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 {"question": member["qa"]["question"], "answer": answer_text(member["qa"])}
                 for member in item["qa_members"]]
         if item.get("qa_source") == "external":
-            draft_selection["historical_answer"] = answer_text(item["qa"])
+            draft_selection["historical_answer"] = available_answer(item)
+            draft_selection["global_agreements"] = [
+                {"text": row["text"], "context": row.get("context", "")}
+                for row in item.get("global_agreements", [])]
         if public_history:
             draft_selection.update(public_history=public_history,
                                    historical_answer=answer_text(item["qa"]),
@@ -425,12 +441,25 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                                  if public_history else None)
                 draft_items = acceptance_items(spec, draft_history)
                 if item.get("qa_source") == "external":
-                    if read(spec / "oracle-answer.json") != {"answer": answer_text(item["qa"])}:
-                        raise ValueError("Private acceptance answer differs from the injected QA answer")
+                    answer = injected_answer(item, spec)
+                    available = {line.removeprefix("- ").strip() for line in available_answer(item).splitlines()}
+                    if not answer.strip() or any(line.removeprefix("- ").strip() not in available
+                                                 for line in answer.splitlines() if line.strip()):
+                        raise ValueError("Private acceptance answer is not grounded in supplied public facts")
+                    used = {line.removeprefix("- ").strip() for line in answer.splitlines()}
+                    source_rows = [dict(qa_id=member["qa"]["id"], text=(point if isinstance(point, str)
+                                   else point.get("text", point.get("claim", ""))),
+                                   sources=point.get("sources", []) if isinstance(point, dict) else [])
+                                   for member in item.get("qa_members", [item])
+                                   for point in member.get("reviewed_candidate", member["qa"]).get("answer_points", [])
+                                   if (point if isinstance(point, str) else point.get("text", point.get("claim", ""))) in used]
+                    source_rows.extend(dict(text=row["text"], sources=row["sources"], scope="global")
+                                       for row in item.get("global_agreements", []) if row["text"] in used)
+                    save(run / "used-history-facts.json", source_rows)
                 protected = {name: (spec / name).read_text() for name in
                              ("task.md", "memory-use.md") + (("history-contract.txt",) if public_history else ())
                              + (("oracle-answer.json",) if item.get("qa_source") == "external" else ())}
-                reviewed_task, reviewed_answer = protected["task.md"], answer_text(item["qa"])
+                reviewed_task, reviewed_answer = protected["task.md"], injected_answer(item, spec)
                 if fixed_qualification is not None:
                     requirements = acceptance_signature(draft_items)
                     if (protected != fixed_qualification["protected"]
@@ -453,6 +482,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                             "qa_source": item.get("qa_source", "graph"),
                             "development_workflow": item.get("development_workflow", ""),
                             "repository_exploration": selection.get("repository_exploration", ""),
+                            "global_agreements": draft_selection.get("global_agreements", []),
                             "repository_queries": [q for q in selection.get("evidence", {}).get("queries", [])
                                                    if q["query"]["target"] == "repo"],
                             "contracts": (draft_history or {}).get("contracts", []),
@@ -520,7 +550,7 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 # that produced the latest feedback, including validator checks.
                 shutil.copytree(previous_tests, spec, dirs_exist_ok=True)
             remaining = budget.remaining()
-            private_memory_answer = (answer_text(item["qa"])
+            private_memory_answer = (injected_answer(item, spec)
                                      if item.get("qa_source") == "external" else "")
             if reused and attempt == 0 and not preparation_feedback:
                 authored = reused[1]
@@ -669,7 +699,8 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
         else:
             print(root.name, "reference implementation", attempt, flush=True)
             save_task_progress(root, "reference_solver", attempt=attempt)
-            reference_answer = reference_solver_answer(item, history)
+            reference_answer = (injected_answer(item, spec) if item.get("qa_source") == "external"
+                                else reference_solver_answer(item, history))
             solved = run_agent(implementation, config, "code",
                                solver_input((spec / "task.md").read_text(), reference_answer)
                                + reference_feedback, **agent_options)
@@ -963,18 +994,41 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             continue
         if not saved_solver:
             prepare(trial, baseline)
-            oracle = history["oracle_answer"] if history else answer_text(item["qa"])
+            oracle = history["oracle_answer"] if history else injected_answer(item, spec)
             message = solver_input(task, oracle if condition == "with_memory" else None)
             if history:
                 message += prompts.HISTORY_REQUEST
             print(root.name, "evaluation", condition, flush=True)
+            def record_round(number, outcome):
+                round_root = trial / ("round-%02d" % number)
+                candidate = trial / "workspace/candidate"
+                copy_tree(candidate, round_root / "candidate")
+                checks = run_checks(candidate, spec, round_root / "checks", config["execution_image"],
+                                    candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
+                judged, review_path, roots = inspect_acceptance(
+                    candidate, spec, items, checks, round_root, config, agent_options)
+                save(round_root / "judge/result.json", judged)
+                acceptance = assess_acceptance(items, checks, review_path, roots)
+                changed = write_diff(baseline, candidate, round_root / "changes.patch")
+                pollution = implementation_pollution(changed)
+                status = "uncertain" if pollution and acceptance["status"] == "passed" else acceptance["status"]
+                save(round_root / "result.json", dict(result=status, solver_status=outcome["status"],
+                     metrics=outcome["metrics"], acceptance=acceptance, checks=checks,
+                     judge_status=judged["status"], changed_files=changed,
+                     implementation_pollution=pollution))
+                return {"continue": status != "passed"}
             solved = run_agent(trial, config, "code", message, **agent_options,
+                               max_rounds=2, on_round=record_round,
                                **({"history": history} if history else {}))
         candidate = trial / "workspace/candidate"
+        completed_rounds = sorted(trial.glob("round-*/result.json"))
+        final_round_root = completed_rounds[-1].parent if completed_rounds else None
         changed = (read(trial / "version.json")["changed_files"]
                    if saved_solver and (trial / "version.json").is_file()
                    else write_diff(baseline, candidate, trial / "changes.patch"))
-        if saved_solver and (trial / "checks/result.json").is_file():
+        if final_round_root is not None:
+            checks = read(final_round_root / "checks/result.json")
+        elif saved_solver and (trial / "checks/result.json").is_file():
             checks = read(trial / "checks/result.json")
         else:
             check_root = trial / "checks"
@@ -982,9 +1036,10 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
                 check_root = check_root.with_name(check_root.name + "-resume")
             checks = run_checks(candidate, spec, check_root, config["execution_image"],
                                 candidate_pythonpath=config.get("code", {}).get("candidate_pythonpath"))
-        inspection = trial / "resume-inspection" if (trial / "resume-inspection").exists() else trial
+        inspection = (final_round_root if final_round_root is not None else
+                      trial / "resume-inspection" if (trial / "resume-inspection").exists() else trial)
         judge = inspection / "judge"
-        if saved_solver and judge.exists():
+        if (saved_solver or final_round_root is not None) and judge.exists():
             judged = read(judge / "result.json") if (judge / "result.json").is_file() else {"status": "interrupted"}
             review_path = judge / "workspace/checks/acceptance-review.txt"
             roots = {"/workspace/" + name: judge / "workspace" / name
@@ -1011,6 +1066,9 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
                              "acceptance": acceptance, "changed_files": changed,
                              "implementation_pollution": polluted,
                              "judge_evidence": verdict, "trial": trial.name}
+        rounds = [read(path) for path in sorted(trial.glob("round-*/result.json"))]
+        if rounds:
+            result[condition].update(rounds=rounds, first_round=rounds[0], final_round=rounds[-1])
         counterexample = judge / "workspace/checks/counterexample.md"
         if counterexample.is_file():
             result[condition]["counterexample_pending_shared_review"] = counterexample.read_text()
@@ -1139,7 +1197,7 @@ def main(argv=None):
                         help="Use QA items marked needs_review as provisional task seeds")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--qa-group-size", type=int,
-                        help="Related QA per business requirement (default: 2 external, 1 graph)")
+                        help="Maximum related QA in each optional pool (default: 4 external, 1 graph)")
     parser.add_argument("--baseline", type=Path,
                         help="Already pinned independent dialogue-end repository")
     parser.add_argument("--task-budget", type=int,
@@ -1161,8 +1219,6 @@ def main(argv=None):
     qa_group_size = getattr(args, "qa_group_size", None)
     if qa_group_size is not None and qa_group_size < 1:
         parser.error("QA group size must be positive")
-    if qa_source == "external" and qa_group_size == 1:
-        parser.error("External requirements need at least two related QA")
     if args.preparation_feedback and not args.reuse_preparation:
         parser.error("--preparation-feedback requires --reuse-preparation")
     output = args.output.resolve()
@@ -1180,9 +1236,7 @@ def main(argv=None):
                  read(args.qa_run / "manifest.json").get("qa_source", "graph")
                  if (args.qa_run / "manifest.json").is_file() else "graph")
     group_size = qa_group_size if qa_group_size is not None else (
-        2 if qa_source == "external" else 1)
-    if qa_source == "external":
-        group_size = max(2, group_size)
+        4 if qa_source == "external" else 1)
     grouping_diagnostics = []
     usable_count = len(items)
     items = group_qa_inputs(items, group_size, diagnostics=grouping_diagnostics)

@@ -15,7 +15,7 @@ def write_report(output, manifest):
     output = Path(output)
     tasks = manifest.get("tasks", [])
     lines = ["# Repository task comparison", "",
-             "The memory condition receives the saved QA answer as historical information.",
+             "The memory condition receives applicable saved public answers and global agreements as historical information.",
              "", "| Task | Condition | Result | History questions | Development tools | File views | Reads/searches | Solver tokens | Cache hit / rate |",
              "|---|---|---|---|---|---|---|---|---|"]
     if manifest.get("selection_only"):
@@ -51,6 +51,22 @@ def write_report(output, manifest):
                  trial.get("history_question_count", "not saved")), m.get("tool_calls", "not saved"),
                 m.get("file_view_calls", "not saved"), m.get("shell_read_or_search_calls", "not saved"),
                 m.get("total_tokens", "not saved"), cache))
+    lines += ["", "## First and final rounds", "",
+              "Both conditions use at most two solver rounds with one shared budget. Costs are cumulative and include failures.",
+              "", "| Condition | Checkpoint | Trials | Passed / failed / uncertain | Solver requests | Solver tokens |",
+              "|---|---|---|---|---|---|"]
+    for condition in ("without_memory", "with_memory"):
+        for checkpoint in ("first_round", "final_round"):
+            rows = [task["comparison"][condition][checkpoint] for task in tasks
+                    if checkpoint in task.get("comparison", {}).get(condition, {})]
+            def round_total(key):
+                values = [row.get("metrics", {}).get(key) for row in rows]
+                return sum(values) if rows and all(isinstance(value, (int, float)) for value in values) else "not saved"
+            lines.append("| %s | %s | %s | %s | %s | %s |" % (
+                condition, checkpoint, len(rows),
+                "/".join(str(sum(row["result"] == value for row in rows))
+                         for value in ("passed", "failed", "uncertain")),
+                round_total("attempted_requests"), round_total("total_tokens")))
     lines += ["", "## Agent execution", "",
               "Results above describe acceptance of the saved code. An interrupted agent may still leave "
               "code that can be checked; its execution status is recorded separately.", "",

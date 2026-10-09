@@ -323,7 +323,8 @@ def _model_repository_evidence(rows):
     return projected
 
 
-def select_task(qa, history, baseline, config, output, budget, *, exploration=None, workflow=None, feedback=None):
+def select_task(qa, history, baseline, config, output, budget, *, exploration=None, workflow=None, feedback=None,
+                global_agreements=None, qa_pool=None):
     from .prompts import SELECT_TASK
     output = Path(output)
     focus = _focused_history(history)
@@ -352,6 +353,13 @@ def select_task(qa, history, baseline, config, output, budget, *, exploration=No
             if not p.name.startswith(".")
         ),
         "development_workflow": workflow or "",
+        "global_agreements": [{"text": row["text"], "context": row.get("context", "")}
+                              for row in global_agreements or []],
+        "qa_pool": [{"question": question.get("question", ""),
+                     "answer": [point if isinstance(point, str) else
+                                point.get("text", point.get("claim", ""))
+                                for point in question.get("answer_points", [])]}
+                    for question in qa_pool or [qa]],
         "rejected_draft": feedback or "",
         "queries": [],
         "turn_context": {},
@@ -667,14 +675,21 @@ def write_draft(selection, config, output, spec, budget, feedback=""):
         response = budget.call(EXTERNAL_ACCEPTANCE, dict(
             public_task=files["task.md"], historical_answer=answer,
             historical_questions=selection.get("historical_questions", []),
+            global_agreements=selection.get("global_agreements", []),
             repository_overview=payload["repository_overview"],
             repository_evidence=payload["evidence"]), config, Path(output) / "private")
         required = ({"NO_TASK.md"} if any(row.get("name") == "NO_TASK.md" for row in
-                    response.get("files", [])) else {"memory-use.md", "acceptance.md"})
+                    response.get("files", [])) else {"memory-use.md", "acceptance.md", "applicable-answer.txt"})
         private = _parse_files(response, required, required)
         for name, content in private.items():
             (Path(spec) / name).write_text(content, encoding="utf-8")
-        save(Path(spec) / "oracle-answer.json", {"answer": answer})
+        if "applicable-answer.txt" in private:
+            selected = [line.removeprefix("- ").strip() for line in
+                        private["applicable-answer.txt"].splitlines() if line.strip()]
+            available = [line.removeprefix("- ").strip() for line in answer.splitlines() if line.strip()]
+            if not selected or any(line not in available for line in selected):
+                raise ValueError("Applicable answer must quote supplied public facts")
+            save(Path(spec) / "oracle-answer.json", {"answer": "\n".join("- " + line for line in selected)})
         files.update(private)
         return files
     from .prompts import DRAFT_TASK, HISTORY_CONTRACT

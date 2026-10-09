@@ -681,6 +681,10 @@ def simple_evidence_request_size(scope, source_ids, facts, candidate):
 
 def _evidence_review_request(scope, source_ids, facts, candidate):
     prompt = _focused_review_prompt(SIMPLE_EVIDENCE_PROMPT, candidate)
+    prompt += ("\nEvaluate each rule at the time and under the conditions asked in the question. "
+               "A later public correction, revocation or exception makes an earlier rule stale only "
+               "inside its stated scope. Historical questions may use the earlier rule at that time. "
+               "Assistant proposals do not override a confirmed user agreement.\n")
     payload, refs = simple_evidence_payload(scope, source_ids, facts=facts, candidate=candidate)
     if isinstance(scope.get("external_focus"), str) and scope["external_focus"].strip():
         event_focus = scope["external_focus"].strip()
@@ -2107,7 +2111,7 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None, external_only=
             fact_prompt = EXTERNAL_FACT_PROMPT
         else:
             fact_prompt, _, _ = _prompt_for_mode(qa_mode, None, 1)
-        source_ids = (set(scope["external_source_ids"])
+        source_ids = (set(scope["external_source_ids"]) | set(scope.get("external_context_source_ids", []))
                       if external_only and scope.get("external_event_id") else
                       _scope_material_source_ids(scope))
         fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)

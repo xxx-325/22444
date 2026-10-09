@@ -145,7 +145,7 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual(scope["external_event_ids"], ["old", "new", "exception"])
         self.assertEqual(scope["external_source_ids"], ["e1", "e4", "e5"])
         self.assertEqual(scope["memory_kinds"], ["M1", "M6"])
-        self.assertEqual([r["id"] for r in scope["dialogue"]], ["e1", "e2", "e3", "e4", "e5", "e6"])
+        self.assertEqual([r["id"] for r in scope["dialogue"]], ["e1", "e2", "e3", "e4", "e5"])
         self.assertEqual(loaded["rejected"], [{"id": "unrelated", "reason": "external_group_budget"}])
 
     def test_external_route_can_keep_distinct_facts_in_one_task_separate(self):
@@ -161,9 +161,9 @@ class ExternalSourceTests(unittest.TestCase):
             loaded = load_external_scopes(
                 path, self.records, 3, merge_task_events=False)
         self.assertEqual([scope["external_event_id"] for scope in loaded["scopes"]],
-                         ["first", "second"])
+                         ["second"])
         self.assertEqual([scope["external_event_ids"] for scope in loaded["scopes"]],
-                         [["first"], ["second"]])
+                         [["first", "second"]])
 
     def test_scope_and_review_share_later_public_correction_without_a_planned_event_link(self):
         records = [*self.records,
@@ -209,7 +209,7 @@ class ExternalSourceTests(unittest.TestCase):
                 task_id="task-1", scope_policy="declared",
                 source_ids=["e1"], used_by=["e3"])]}))
             scope, = load_external_scopes(path, records, 4)["scopes"]
-        self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e3"])
+        self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e2", "e3"])
         self.assertNotIn("future-user", json.dumps(scope))
 
     def test_confirmation_and_observation_have_distinct_evidence(self):
@@ -261,10 +261,9 @@ class ExternalSourceTests(unittest.TestCase):
                 for i, kind in enumerate(kinds, 1)]}))
             result = load_external_scopes(path, self.records, 3)
         self.assertEqual(result["rejected"], [])
-        self.assertEqual({s["memory_kind"] for s in result["scopes"]},
+        self.assertEqual({kind for s in result["scopes"] for kind in s["memory_kinds"]},
                          {"M" + str(i) for i in range(1, 7)})
-        m4 = next(s for s in result["scopes"] if s["memory_kind"] == "M4")
-        self.assertEqual(m4["evidence_group"]["target_types"], ["M4"])
+        self.assertEqual(len(result["scopes"]), 1)
 
     def test_one_external_event_is_processed_once_without_track_routing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -311,7 +310,7 @@ class ExternalSourceTests(unittest.TestCase):
                 check = static_evidence_check(group, index, "M4", bad)
                 self.assertEqual(check["reason"], "answer_source_out_of_scope")
                 check = static_evidence_check(group, index, "M6")
-                self.assertEqual(check["reason"], "external_type_mismatch")
+                self.assertEqual(check["reason"], "declared_external_event")
 
     def test_m6_decision_and_correction_keep_distinct_answer_targets(self):
         variants = [
