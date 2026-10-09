@@ -1102,7 +1102,7 @@ def evaluate(item, root, baseline, receipt, config, agent_options, index, *, res
             status = "uncertain"
         information_condition = (
             "memory_not_required" if condition == "without_memory" and status == "passed"
-            else "oracle_history" if condition == "with_memory" and history else "without_memory"
+            else "oracle_history" if condition == "with_memory" and history else condition
         )
         result[condition] = {"result": status, "solver_status": solved["status"],
                              "judge_status": judged["status"],
