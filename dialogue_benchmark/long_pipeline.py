@@ -21,6 +21,7 @@ from .collection import run_collection
 from .episode_input import load_episode_manifest
 from .pipeline_runner import PipelineRunner
 from .task_eval.artifacts import has_eligible_qa, read, save, qa_inputs
+from .task_eval.runtime import preflight_openhands_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +126,9 @@ def _archive_incomplete(directory: Path) -> Optional[Path]:
 def _repo_stage(args) -> int:
     plan = Path(args.input).resolve()
     output = Path(args.output).resolve()
+    # Fail before collection retries if the selected simulator interpreter
+    # cannot import its host-side OpenHands adapter.
+    preflight_openhands_runtime(args.simulator_path, python_executable=args.python)
     collection = output / "collection"
     state = collection / "collection.json"
     run_collection(plan, collection, Path(args.simulator_path), Path(args.env_file),
