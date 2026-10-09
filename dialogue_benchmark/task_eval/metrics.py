@@ -117,6 +117,11 @@ def measure(events, provider_path):
                   for r in responses)}
     result.update(cache_usage(responses))
     result["total_tokens"] = result["prompt_tokens"] + result["completion_tokens"]
+    # Explicit names make the accounting boundary clear to reports and
+    # callers.  ``total_tokens`` remains the solver ledger for compatibility.
+    result["solver_tokens"] = result["total_tokens"]
+    result["responder_tokens"] = 0
+    result["injection_tokens"] = None
     try:
         import tiktoken
         tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -146,12 +151,14 @@ def compare_trials(comparison):
     result = {"both_passed": both, "completion_difference":
               int(right.get("result") == "passed") - int(left.get("result") == "passed") if complete else None,
               "raw_cost_differences": {}, "comparable_cost_differences": {}}
-    for key in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"):
+    for key in ("tool_calls", "file_view_calls", "shell_read_or_search_calls",
+                "total_tokens", "solver_tokens", "responder_tokens", "injection_tokens"):
         a, b = left.get("metrics", {}).get(key), right.get("metrics", {}).get(key)
         raw_valid = isinstance(a, (int, float)) and isinstance(b, (int, float))
-        if key == "total_tokens":
+        if key in {"total_tokens", "solver_tokens", "responder_tokens", "injection_tokens"}:
             raw_valid = raw_valid and all(
-                t.get("metrics", {}).get("usage_complete") for t in (left, right))
+                (t.get("metrics", {}).get("usage_complete") if key in {"total_tokens", "solver_tokens"}
+                 else True) for t in (left, right))
         raw = b - a if raw_valid else None
         result["raw_cost_differences"][key] = raw
         result["comparable_cost_differences"][key] = raw if both else None

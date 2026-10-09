@@ -9,8 +9,16 @@ from .artifacts import read, save
 
 def historical_question(message):
     """An explicit solver request, never a classifier call on a completion report."""
-    match = re.fullmatch(r"\s*HISTORY_QUESTION:\s*(\S[\s\S]*)", message)
-    return match.group(1).strip() if match else None
+    if not isinstance(message, str):
+        return None
+    # The marker is a protocol line.  A completion report may contain prose
+    # before or after it, so matching the whole message would miss a valid
+    # question (and accidentally classify arbitrary trailing text).
+    for line in message.splitlines():
+        match = re.fullmatch(r"\s*HISTORY_QUESTION:\s*(\S.*)\s*", line)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 def _refs(value):

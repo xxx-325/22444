@@ -80,8 +80,8 @@ def write_report(output, manifest):
                 _cell(trial.get("judge_status", "not saved")),
                 "[Execution result](%s)" % receipt.relative_to(output) if receipt.is_file() else "not saved"))
     lines += ["", "## Aggregate execution costs", "",
-              "| Condition | Trials | Passed / failed / uncertain | Pass rate | History questions | Development tools | File views | Reads/searches | Solver tokens | Responder tokens | Cache hit / rate |",
-              "|---|---|---|---|---|---|---|---|---|---|---|"]
+              "| Condition | Trials | Passed / failed / uncertain | Pass rate | History questions | Clarifications | Development tools | File views | Reads/searches | Solver tokens | Responder tokens | Injection tokens | Cache hit / rate |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     rates = {}
     for condition in ("without_memory", "with_memory"):
         trials = [t["comparison"][condition] for t in tasks if condition in t.get("comparison", {})]
@@ -91,22 +91,26 @@ def write_report(output, manifest):
         passed = sum(t["result"] == "passed" for t in trials)
         rates[condition] = passed / len(trials) if trials else None
         questions = [t.get("history_question_count") for t in trials]
+        clarification_counts = [t.get("clarification_count", len(t.get("clarifications", []))) for t in trials]
         responder = [t.get("responder_cost") for t in trials]
         cache_complete = trials and all(t.get("metrics", {}).get("cache_usage_complete") for t in trials)
         cache_total = total("cache_hit_tokens") if cache_complete else "unavailable"
         cache_rate = (sum(t["metrics"]["cache_hit_tokens"] for t in trials) /
                       sum(t["metrics"]["cache_observed_prompt_tokens"] for t in trials)
                       if cache_complete and sum(t["metrics"]["cache_observed_prompt_tokens"] for t in trials) else None)
-        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        injection = total("injection_tokens")
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             condition, len(trials),
             "/".join(str(sum(t["result"] == v for t in trials)) for v in ("passed", "failed", "uncertain")),
             "%.1f%%" % (100 * rates[condition]) if trials else "—",
             (sum(questions) if trials and all(isinstance(v, int) for v in questions) else
              "unavailable" if trials and all(t.get("history_available") is False for t in trials)
              else "not saved"),
+            sum(clarification_counts) if trials and all(isinstance(v, int) for v in clarification_counts) else "not saved",
             total("tool_calls"), total("file_view_calls"), total("shell_read_or_search_calls"),
-            str(total("total_tokens")) + ("" if all(t.get("metrics", {}).get("usage_complete") for t in trials) else " (incomplete)"),
+            str(total("solver_tokens")) + ("" if all(t.get("metrics", {}).get("usage_complete") for t in trials) else " (incomplete)"),
             sum(r["tokens"] for r in responder) if trials and all(r and r.get("usage_complete") for r in responder) else "not saved",
+            injection,
             str(cache_total) + (" / %.1f%%" % (100 * cache_rate) if cache_rate is not None else " / unavailable")))
     if all(v is not None for v in rates.values()) and all(
             compare_trials(task["comparison"])["completion_difference"] is not None

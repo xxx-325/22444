@@ -821,7 +821,13 @@ def run_agent(root, config, role, message, *, system=None, reference=None,
         outcome["rounds"] = rounds
     if history:
         outcome["clarifications"] = exchanges
+        outcome["clarification_count"] = len(exchanges)
+        outcome["clarification_turns"] = len(exchanges)
         outcome["responder_cost"] = responder_cost
+        # Keep solver and responder ledgers separate; the latter may be
+        # partial when the clarification provider fails.
+        outcome["metrics"]["solver_tokens"] = outcome["metrics"].get("total_tokens")
+        outcome["metrics"]["responder_tokens"] = responder_cost["tokens"]
         outcome["metrics"]["total_tokens_with_responder"] = outcome["metrics"]["total_tokens"] + responder_cost["tokens"]
     save(root / "result.json", outcome)
     # Judge sees observable actions and outputs, not memory injection or model reasoning.
