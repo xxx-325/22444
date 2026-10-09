@@ -255,6 +255,7 @@ class CollectionTests(unittest.TestCase):
         if name == "project":
             cfg = read(Path(command[command.index("--config") + 1]))
             self.assertIsNone(cfg["user"]["max_output_tokens"])
+            self.assertTrue(target.parent.parent.joinpath("external-information-plan.json").is_file())
             save(target / "project.json", dict(status="completed"))
             save(target / "config.json", dict(repository=str(target), base="base-sha", tasks=[{"commit": "next-sha"}],
                                               development_plan=str(target / "development-plan.json")))
