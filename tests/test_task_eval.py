@@ -95,6 +95,35 @@ class TaskEvaluationTests(unittest.TestCase):
         self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), [])
         self.assertEqual(diagnostics[0]["reason"], "insufficient_related_qa")
 
+    def test_external_questions_sharing_only_source_are_not_grouped(self):
+        members = [{"qa": {"id": "q%d" % index, "question": "Question %d" % index},
+                    "qa_source": "external", "generation_input": "/tmp/input-%d" % index,
+                    "source_ids": ["same-source"], "associations": []}
+                   for index in (1, 2)]
+        diagnostics = []
+        self.assertEqual(group_qa_inputs(members, 2, diagnostics=diagnostics), [])
+        self.assertEqual(diagnostics[0]["reason"], "insufficient_related_qa")
+
+    def test_external_group_keeps_business_lineage_without_public_ids(self):
+        members = []
+        for index in (1, 2):
+            members.append({"qa": {"id": "q%d" % index,
+                                    "question": "Question %d" % index,
+                                    "answer_points": [{"text": "Answer %d" % index}]},
+                            "qa_source": "external", "generation_input": "/tmp/input-%d" % index,
+                            "source_ids": ["source-%d" % index],
+                            "associations": ["behavior:handoff"],
+                            "external_lineage": {
+                                "source_ids": ["source-%d" % index],
+                                "event_ids": ["event-%d" % index],
+                                "business_behavior": ["handoff"],
+                                "impact": ["retry policy"],
+                            }})
+        grouped = group_qa_inputs(members, 2)
+        self.assertEqual(grouped[0]["external_lineage"]["business_behavior"], ["handoff"])
+        self.assertEqual(grouped[0]["external_lineage"]["event_ids"], ["event-1", "event-2"])
+        self.assertNotIn("source-1", grouped[0]["qa"]["question"])
+
     def test_single_external_question_stays_qa_only(self):
         member = {"qa": {"id": "q1", "question": "Question 1"},
                   "qa_source": "external", "generation_input": "/tmp/input-1",

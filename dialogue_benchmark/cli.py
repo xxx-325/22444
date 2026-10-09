@@ -622,6 +622,19 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
     prepared = {}
     generation_failures = {}
 
+    def attach_external_lineage(document, group):
+        """Keep provenance beside control-side candidates, never in public text."""
+        if not isinstance(document, dict):
+            return document
+        lineage = group.get("external_lineage")
+        if not lineage:
+            return document
+        for key in ("all_candidates", "questions"):
+            for question in document.get(key, []):
+                if isinstance(question, dict):
+                    question.setdefault("external_lineage", deepcopy(lineage))
+        return document
+
     def run(item, phase):
         index, track, group = item
         task_key = (index, track)
@@ -932,7 +945,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                 if checkpoint:
                     checkpoint("generated-candidates.json" if phase == "generate"
                                else "task-result.json", combined)
-                return index, track, combined, client.usage
+                return index, track, attach_external_lineage(combined, group), client.usage
 
             checkpoint = _checkpoint(checkpoint_dir, track, "group", index)
             if phase == "generate":
@@ -945,7 +958,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                 prepared[task_key]["generated"] = generated
                 if checkpoint:
                     checkpoint("generated-candidates.json", generated)
-                return index, track, generated, client.usage
+                return index, track, attach_external_lineage(generated, group), client.usage
             generated = prepared[task_key]["generated"]
             generated_questions = list(generated.get("questions", []))
             generated_keys = set()
@@ -1002,7 +1015,7 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                 result["stage_status"].setdefault("review", "skipped")
             if checkpoint:
                 checkpoint("task-result.json", result)
-            return index, track, result, client.usage
+            return index, track, attach_external_lineage(result, group), client.usage
         except Exception as error:
             usage = client.usage if client is not None else []
             failed = index, track, {
@@ -1829,6 +1842,16 @@ def main(argv=None):
                                 "eligible_types": (target_type,),
                                 "type_selection": "preselected",
                                 "max_questions": options["questions_per_group"],
+                                "external_lineage": {
+                                    "source_ids": list(scope.get("external_source_ids", [])),
+                                    "event_ids": list(scope.get("external_event_ids", [])),
+                                    "business_behavior": ([scope["external_behavior"]]
+                                                           if isinstance(scope.get("external_behavior"), str)
+                                                           and scope["external_behavior"].strip() else []),
+                                    "impact": ([scope["external_impact"]]
+                                                if isinstance(scope.get("external_impact"), str)
+                                                and scope["external_impact"].strip() else []),
+                                },
                             }
                             groups.append(group)
                             group_tasks.append((group_index, track, group))
@@ -1984,6 +2007,15 @@ def main(argv=None):
                     after_batch=adjudicate_duplicates)
                 recoverability_state = _ordered_recoverability_state(
                     recoverability_state, qa_result["all_questions"])
+                # Attach probe results to control-side candidate records so
+                # every external QA can be audited independently.  The public
+                # projection strips this field together with source IDs.
+                for question in (qa_result.get("all_candidates", [])
+                                 + qa_result.get("all_questions", [])):
+                    if isinstance(question, dict) and external_mode:
+                        probe = recoverability_state["results"].get(question.get("id"))
+                        question["repository_probe"] = probe or {
+                            "status": "not_run", "reason": "no_probe_record"}
                 for key in ("rejected", "usage", "stage_errors", "review_warnings", "stage_status"):
                     result.setdefault(key, []).extend(qa_result.get(key, []))
                 result["usage"].extend(recoverability_state["usage"])

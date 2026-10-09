@@ -239,6 +239,20 @@ class DualModeCliTests(unittest.TestCase):
         self.assertEqual(candidate["answer_points"][0]["text"], original)
         self.assertEqual(projected["answer_points"][0]["sources"], ["e1"])
 
+    def test_external_lineage_and_probe_are_control_side_only(self):
+        candidate = {
+            "id": "q1", "qa_mode": "memory", "type": "M1",
+            "question": "What should the handoff preserve?",
+            "answer_points": [{"text": "Preserve the agreed scope.", "sources": ["e1"]}],
+            "external_lineage": {"source_ids": ["e1"], "event_ids": ["event-1"],
+                                 "business_behavior": ["handoff"], "impact": ["retry policy"]},
+            "repository_probe": {"status": "recoverable", "reason": "fixture"},
+        }
+        projected = cli._public_question(candidate)
+        self.assertNotIn("external_lineage", projected)
+        self.assertNotIn("repository_probe", projected)
+        self.assertNotIn("event-1", json.dumps(projected))
+
     def test_credentials_reject_whole_question_in_each_public_field(self):
         secrets = ["-----BEGIN OPENSSH PRIVATE KEY-----",
                    "Bearer synthetic-test-token", "sk-" + "x" * 24,

@@ -190,6 +190,11 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
         "external_focus": event.get("focus"),
+        # These are control-side labels used to relate QA to a business
+        # behavior. They are never copied into the public question projection.
+        "external_behavior": event.get("behavior") or event.get("focus"),
+        "external_impact": (event.get("impact") or event.get("behavior_impact")
+                             or event.get("constraint")),
         # Later public use/result is context for composing a useful question;
         # it remains separate from the source IDs that ground extracted facts.
         "generation_extra_sources": list(dict.fromkeys(used_by + context_ids)),

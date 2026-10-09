@@ -219,9 +219,12 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
                                 for point in candidate.get(key, []) if isinstance(point, dict)
                                 for source in point.get("sources", [])})
                 associations = set()
+                lineage_events = []
                 for event in external_events:
                     if set(event.get("source_ids", [])) & set(cited):
-                        for key in ("task_id", "focus", "object", "target"):
+                        lineage_events.append(event)
+                        for key in ("task_id", "focus", "object", "target",
+                                    "behavior", "impact", "behavior_impact", "constraint"):
                             if isinstance(event.get(key), str) and event[key].strip():
                                 associations.add(key + ":" + event[key].strip())
                 for document in (original, candidate):
@@ -230,7 +233,24 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
                         associations.add("evidence:" + group)
                 if item.get("development_workflow"):
                     associations.add("workflow:" + item["development_workflow"].strip())
-                item.update(source_ids=cited, associations=sorted(associations))
+                item.update(
+                    source_ids=cited,
+                    associations=sorted(associations),
+                    external_lineage={
+                        "source_ids": cited,
+                        "event_ids": sorted({event.get("id") for event in lineage_events
+                                              if isinstance(event.get("id"), str)}),
+                        "business_behavior": sorted({value.strip() for event in lineage_events
+                                                      for value in (event.get("behavior"),
+                                                                    event.get("focus"),
+                                                                    event.get("task_id"))
+                                                      if isinstance(value, str) and value.strip()}),
+                        "impact": sorted({value.strip() for event in lineage_events
+                                           for value in (event.get("impact"),
+                                                         event.get("behavior_impact"),
+                                                         event.get("constraint"))
+                                           if isinstance(value, str) and value.strip()}),
+                    })
             result.append(item)
         elif eligible:
             diagnostics.append({"qa_id": question.get("id"), "status": question.get("status"),
@@ -277,7 +297,6 @@ def group_qa_inputs(items, group_size=2, *, diagnostics=None):
             match = next((index for index, item in enumerate(pending)
                 if item["qa"].get("question") not in {member["qa"].get("question") for member in members}
                 and any(set(item.get("associations", [])) & set(member.get("associations", []))
-                        or set(item.get("source_ids", [])) & set(member.get("source_ids", []))
                         for member in members)), None)
             if match is None:
                 break
@@ -296,6 +315,17 @@ def group_qa_inputs(items, group_size=2, *, diagnostics=None):
                        provisional=any(member.get("provisional") for member in members),
                        source_ids=sorted({source for member in members for source in member.get("source_ids", [])}),
                        associations=sorted({value for member in members for value in member.get("associations", [])}))
+        lineage = {
+            "source_ids": sorted({source for member in members
+                                   for source in member.get("external_lineage", {}).get("source_ids", [])}),
+            "event_ids": sorted({event for member in members
+                                  for event in member.get("external_lineage", {}).get("event_ids", [])}),
+            "business_behavior": sorted({value for member in members
+                                          for value in member.get("external_lineage", {}).get("business_behavior", [])}),
+            "impact": sorted({value for member in members
+                               for value in member.get("external_lineage", {}).get("impact", [])}),
+        }
+        grouped["external_lineage"] = lineage
         workflows = list(dict.fromkeys(member["development_workflow"] for member in members
                                        if member.get("development_workflow")))
         if workflows:
