@@ -1186,7 +1186,12 @@ def main(argv=None):
     items = group_qa_inputs(items, group_size, diagnostics=grouping_diagnostics)
     save(output / "qa-grouping.json", {"group_size": group_size,
          "groups": [{"qa_id": item["qa"]["id"], "qa_ids": item.get("qa_ids", [item["qa"]["id"]]),
-                     "source_ids": item.get("source_ids", []), "provisional": item.get("provisional", False)}
+                     "source_ids": item.get("source_ids", []),
+                     # Lineage is a control-side receipt.  It lets the report
+                     # explain why questions were grouped without entering
+                     # the natural-language task input.
+                     "external_lineage": item.get("external_lineage", {}),
+                     "provisional": item.get("provisional", False)}
                     for item in items],
          "rejected_inputs": input_diagnostics, "ungrouped": grouping_diagnostics})
     if args.reuse_preparation:
