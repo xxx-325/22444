@@ -252,6 +252,8 @@ def validate_decision_points(decision, required_anchor_ids=None, public_text="")
     the necessary anchors, has all three variants, and does not put a
     rule-deciding literal in the public task.
     """
+    if required_anchor_ids is None and isinstance(decision, dict):
+        required_anchor_ids = decision.get("required_anchor_ids", decision.get("required_anchors"))
     top_required = set(str(value).strip() for value in (required_anchor_ids or [])
                        if isinstance(value, str) and value.strip())
     rows = _decision_rows(decision)
