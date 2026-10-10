@@ -162,7 +162,7 @@ class CollectionTests(unittest.TestCase):
         }])
         row = plan["scenarios"][0]
         self.assertEqual(row["attempt_budget"], 7)
-        self.assertEqual(row["distribution"], {"M1": 4, "M3": 5})
+        self.assertEqual(row["distribution"], {"M1": 3, "M3": 4})
         self.assertEqual(sum(row["opportunities"][i]["attempts"] for i in range(3)),
                          row["attempt_budget"])
         self.assertNotIn("target", row)
@@ -207,8 +207,9 @@ class CollectionTests(unittest.TestCase):
 
     def test_opportunities_do_not_require_prebuilt_increments(self):
         plan = plan_external_information([{
-            "id": "support", "brief": "Support operations", "increments": 0,
+            "id": "support", "brief": "Support operations", "increments": 6,
             "scenarios": [{"id": "support-operations", "external_attempt_budget": 1,
+                           "memory_kinds": ["M1"],
                            "external_attempt_distribution": [
                                {"stage": 6, "behavior": "cross-workflow reporting",
                                 "slots": {"M1": 1}}]}],
