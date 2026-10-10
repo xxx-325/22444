@@ -194,8 +194,13 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
     selected_orders = [records_by_id[item].get("order", 0) for item in selected_ids]
     anchors = [record for record in records if record.get("id") in selected_ids]
     anchor_text = "\n".join(str(row.get("text", "")) for row in anchors)
-    dialogue = relevant_public_history(records, anchors, anchor_text, cutoff)
-    grounded_context = relevant_public_history(records, anchors, anchor_text, cutoff, include_ambiguous=False)
+    # Public amendments are conversation messages.  Undeclared tool rows
+    # (for example ``str_replace`` edits) would otherwise match the change
+    # vocabulary and pull most of the session into every event.
+    history = [record for record in records
+               if record.get("kind") == "message" or record.get("id") in selected_ids]
+    dialogue = relevant_public_history(history, anchors, anchor_text, cutoff)
+    grounded_context = relevant_public_history(history, anchors, anchor_text, cutoff, include_ambiguous=False)
     group_id = "external-%s" % event["id"]
     target_type = event["memory_kind"]
     return {

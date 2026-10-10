@@ -212,6 +212,26 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e2", "e3"])
         self.assertNotIn("future-user", json.dumps(scope))
 
+    def test_undeclared_tool_rows_do_not_join_the_event_scope(self):
+        records = [*self.records,
+                   {"id": "e4", "order": 4, "kind": "call",
+                    "text": "str_replace export.py: only keep 空 note 兼容规则 for 旧客户端"},
+                   {"id": "e5", "order": 5, "kind": "result",
+                    "text": "replace done; 旧客户端 空 note 兼容规则 optional path updated"},
+                   {"id": "e6", "order": 6, "kind": "message", "role": "user",
+                    "text": "纠正：旧客户端的空 note 兼容规则只适用于导出接口。"}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": [dict(
+                id="rule", kind="compatibility_contract", memory_kind="M1",
+                source_ids=["e1"], used_by=["e3"])]}))
+            scope, = load_external_scopes(path, records, 6)["scopes"]
+        ids = [row["id"] for row in scope["dialogue"]]
+        self.assertIn("e3", ids)
+        self.assertIn("e6", ids)
+        self.assertNotIn("e4", ids)
+        self.assertNotIn("e5", ids)
+
     def test_confirmation_and_observation_have_distinct_evidence(self):
         scope = {"dialogue": self.records, "external_source_ids": ["e1", "e2"],
                  "external_usage_ids": ["e2", "e3"]}
