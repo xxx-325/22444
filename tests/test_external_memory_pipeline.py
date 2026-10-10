@@ -88,6 +88,26 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertIn("does not establish dispatch or execution", prompt)
         self.assertIn("Later stages assess future usefulness and final-repository recoverability", prompt)
 
+    def test_external_fact_extraction_indexes_optional_tool_output_and_keeps_public_correction(self):
+        scope = self.scope("M1")
+        scope['dialogue'].extend([
+            dict(id='e3', kind='result', order=3,
+                 text='EXPORT_IMPLEMENTATION_ONLY ' * 20000),
+            dict(id='e4', kind='message', role='user', order=4,
+                 text='客户 A 的 note 例外改为省略，其他空字段继续保留。'),
+        ])
+        scope['external_context_source_ids'] = ['e3', 'e4']
+        scope['model_request_chars'] = 48000
+        client = ExternalClient()
+        result = extract_facts(scope, client, qa_mode='memory', external_only=True)
+        self.assertEqual(result['stage_errors'], [])
+        self.assertEqual(result['stage_status']['facts'], 'completed')
+        self.assertEqual(len(client.calls), 1)
+        payload = str(client.calls[0][1])
+        self.assertNotIn('EXPORT_IMPLEMENTATION_ONLY', payload)
+        self.assertIn('客户 A 的 note 例外改为省略', payload)
+        self.assertEqual(result['facts'][0]['sources'], ['e1'])
+
     def test_memory_focus_keeps_order_choices_without_neighboring_api_contracts(self):
         scope, facts = self.order_choice_scope()
         client = OrderChoiceClient()

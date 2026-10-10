@@ -2190,7 +2190,9 @@ def extract_facts(scope, client, qa_mode="code", checkpoint=None, external_only=
         source_ids = (set(scope["external_source_ids"]) | set(scope.get("external_context_source_ids", []))
                       if external_only and scope.get("external_event_id") else
                       _scope_material_source_ids(scope))
-        fact_payload, ref_to_source = simple_evidence_payload(scope, source_ids)
+        fact_payload, ref_to_source = (
+            memory_authoring_payload(scope, source_ids, []) if external_only else
+            simple_evidence_payload(scope, source_ids))
         budget = scope.get("model_request_chars", 32000)
         _check_simple_request_budget(fact_prompt, fact_payload, budget)
         facts_document = _restore_fact_sources(
