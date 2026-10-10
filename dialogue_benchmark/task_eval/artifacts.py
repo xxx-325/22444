@@ -79,6 +79,65 @@ def _point_text(point):
     return point if isinstance(point, str) else point.get("text", point.get("claim", ""))
 
 
+def _string_list(value):
+    """Return a stable list of non-empty string identifiers."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return list(dict.fromkeys(item.strip() for item in value
+                             if isinstance(item, str) and item.strip()))
+
+
+def anchor_metadata_errors(value):
+    """Validate optional multi-anchor metadata without requiring it for legacy QA.
+
+    A question may omit the metadata when it comes from an older graph or
+    external run.  Once either anchor field is present, the relationship is
+    deterministic: required anchors are a non-empty subset of all related
+    anchors.  This helper deliberately does not infer necessity from text.
+    """
+    if not isinstance(value, dict):
+        return ["qa_not_object"]
+    present = any(key in value for key in
+                  ("anchor_ids", "required_anchor_ids", "memory_kinds",
+                   "combination_reason"))
+    if not present:
+        return []
+    anchors = _string_list(value.get("anchor_ids"))
+    required = _string_list(value.get("required_anchor_ids"))
+    errors = []
+    if not anchors:
+        errors.append("anchor_ids_missing")
+    if not required:
+        errors.append("required_anchor_ids_missing")
+    if set(required) - set(anchors):
+        errors.append("required_anchor_ids_not_subset")
+    if len(required) > 1 and not (isinstance(value.get("combination_reason"), str)
+                                  and value["combination_reason"].strip()):
+        errors.append("combination_reason_missing")
+    kinds = value.get("memory_kinds")
+    if kinds is not None and not _string_list(kinds):
+        errors.append("memory_kinds_invalid")
+    return errors
+
+
+def normalize_anchor_metadata(value):
+    """Project optional anchor metadata for control-side task receipts."""
+    if not isinstance(value, dict):
+        return {"anchor_ids": [], "required_anchor_ids": [], "memory_kinds": []}
+    return {
+        "anchor_ids": _string_list(value.get("anchor_ids")),
+        "required_anchor_ids": _string_list(value.get("required_anchor_ids")),
+        "memory_kinds": sorted({kind.upper() for kind in _string_list(value.get("memory_kinds"))}),
+        **({"combination_reason": value["combination_reason"].strip()}
+           if isinstance(value.get("combination_reason"), str)
+           and value["combination_reason"].strip() else {}),
+    }
+
+
 def public_global_agreements(records):
     """Index only public wording that explicitly gives a project-wide scope."""
     from ..external import relevant_public_history
@@ -165,12 +224,14 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
     # answer evidence is valid but cannot be classified yet is retained as
     # ``unknown``/``unresolved`` for review instead of dropping the whole
     # route.  Concrete values still must belong to the selected QA track.
+    qa_source = run_manifest.get("qa_source")
     if any(question.get("type") not in types
            and question.get("type") != "unknown"
+           and not (qa_source == "external" and question.get("type") is None)
            and not (question.get("type") is None
                     and question.get("type_status") == "unresolved")
            for question in public):
-        raise ValueError("QA types do not match the source mode; regenerate QA")
+        raise ValueError("QA type metadata does not match the source mode; regenerate QA")
     normalized_path = qa_run / "normalized.json"
     normalized = read(normalized_path) if normalized_path.exists() else []
     public_records = None
@@ -214,6 +275,10 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
             candidate = reviewed.get(question["id"], original)
             rejection = _input_rejection(question, candidate, request, normalized,
                 require_sources=run_manifest.get("qa_source") == "external")
+            metadata_errors = (anchor_metadata_errors(question)
+                               + anchor_metadata_errors(candidate))
+            if metadata_errors:
+                rejection = "invalid_anchor_metadata:" + ",".join(dict.fromkeys(metadata_errors))
             if rejection:
                 diagnostics.append({"qa_id": question["id"], "status": question.get("status"),
                                     "reason": rejection})
@@ -223,6 +288,7 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
                     "reviewed_candidate": candidate,
                     "qa_source": run_manifest.get("qa_source", "graph"),
                     "provisional": question.get("status") != "approved"}
+            item.update(normalize_anchor_metadata(question))
             payload = request.get("payload", {}) if item["qa_source"] == "external" else {}
             workflow = payload.get("workflow", {})
             focus = payload.get("focus", {})
@@ -341,10 +407,33 @@ def group_qa_inputs(items, group_size=4, *, diagnostics=None):
             answer_points=[point for member in members for point in member["qa"].get("answer_points", [])],
             forbidden_points=[point for member in members for point in member["qa"].get("forbidden_points", [])],
             status="needs_review" if any(member.get("provisional") for member in members) else "approved")
+        # The grouped question is a new multi-anchor judgment.  A legacy
+        # scalar type from the first member must not masquerade as its type.
+        question.pop("type", None)
+        question.pop("category", None)
         grouped = dict(members[0], qa=question, qa_members=members, qa_ids=ids,
                        provisional=any(member.get("provisional") for member in members),
                        source_ids=sorted({source for member in members for source in member.get("source_ids", [])}),
                        associations=sorted({value for member in members for value in member.get("associations", [])}))
+        anchor_ids = sorted({anchor for member in members
+                             for anchor in (_string_list(member.get("anchor_ids"))
+                                            + _string_list(member.get("qa", {}).get("anchor_ids")))})
+        required_anchor_ids = sorted({anchor for member in members
+                                      for anchor in (_string_list(member.get("required_anchor_ids"))
+                                                     + _string_list(member.get("qa", {}).get("required_anchor_ids")))})
+        memory_kinds = sorted({kind.upper() for member in members
+                               for kind in (_string_list(member.get("memory_kinds"))
+                                            + _string_list(member.get("qa", {}).get("memory_kinds")))
+                               if isinstance(kind, str)})
+        if anchor_ids:
+            question["anchor_ids"] = anchor_ids
+            question["required_anchor_ids"] = required_anchor_ids or anchor_ids
+            if memory_kinds:
+                question["memory_kinds"] = memory_kinds
+            question["combination_reason"] = (
+                "Related QA share one business decision or constraint chain.")
+        grouped.update(anchor_ids=anchor_ids, required_anchor_ids=required_anchor_ids,
+                       memory_kinds=memory_kinds)
         lineage = {
             "source_ids": sorted({source for member in members
                                    for source in member.get("external_lineage", {}).get("source_ids", [])}),

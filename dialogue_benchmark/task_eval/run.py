@@ -203,6 +203,133 @@ def _task_memory_kinds(item):
     return kinds
 
 
+def qa_label(qa):
+    """Return a legacy report label without inventing a single QA type."""
+    if not isinstance(qa, dict):
+        return "untyped"
+    legacy = qa.get("type")
+    if isinstance(legacy, str) and legacy.strip():
+        return legacy.strip()
+    kinds = qa.get("memory_kinds")
+    if isinstance(kinds, str):
+        kinds = [kinds]
+    if isinstance(kinds, (list, tuple, set)):
+        values = sorted({str(kind).strip().upper() for kind in kinds if str(kind).strip()})
+        if values:
+            return "+".join(values)
+    return "untyped"
+
+
+def _decision_text(value):
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("text", "value", "description", "behavior", "rule"):
+            if isinstance(value.get(key), str) and value[key].strip():
+                return value[key].strip()
+    return ""
+
+
+def _decision_rows(decision):
+    """Normalize one or many decision points while keeping old flat inputs."""
+    if not isinstance(decision, dict):
+        return []
+    rows = decision.get("decision_points", decision.get("decisions"))
+    if rows is None:
+        rows = [decision] if any(key in decision for key in (
+            "DEFAULT", "RULE", "SEPARATING_INPUT", "default", "rule",
+            "separating_input")) else []
+    if isinstance(rows, dict):
+        rows = [rows]
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def validate_decision_points(decision, required_anchor_ids=None, public_text=""):
+    """Validate the control-side DEFAULT/RULE/SEPARATING_INPUT contract.
+
+    This is intentionally deterministic and does not decide whether a model's
+    business proposal is natural.  It checks that every decision point names
+    the necessary anchors, has all three variants, and does not put a
+    rule-deciding literal in the public task.
+    """
+    top_required = set(str(value).strip() for value in (required_anchor_ids or [])
+                       if isinstance(value, str) and value.strip())
+    rows = _decision_rows(decision)
+    errors = []
+    if not rows:
+        errors.append("decision_points_missing")
+    normalized = []
+    for index, row in enumerate(rows, 1):
+        aliases = {
+            "default": ("default", "DEFAULT"),
+            "rule": ("rule", "RULE"),
+            "separating_input": ("separating_input", "SEPARATING_INPUT"),
+        }
+        values = {name: _decision_text(next((row[key] for key in keys if key in row), ""))
+                  for name, keys in aliases.items()}
+        missing = [name for name, value in values.items() if not value]
+        if missing:
+            errors.append("decision_%d_missing:%s" % (index, ",".join(missing)))
+        anchors = row.get("required_anchor_ids", row.get("required_anchors", top_required))
+        if isinstance(anchors, str):
+            anchors = [anchors]
+        anchor_set = {value.strip() for value in (anchors or [])
+                      if isinstance(value, str) and value.strip()}
+        if not anchor_set:
+            errors.append("decision_%d_required_anchor_ids_missing" % index)
+        if top_required and not anchor_set <= top_required:
+            errors.append("decision_%d_required_anchor_ids_outside_qa" % index)
+        if values["default"] and values["rule"] and values["default"] == values["rule"]:
+            errors.append("decision_%d_default_equals_rule" % index)
+        literals = decisive_rule_literals(values["rule"])
+        leaks = rule_literal_leakage(public_text, values["rule"]) if public_text else {
+            "literals": literals, "matches": [], "leaked": False}
+        if leaks["leaked"]:
+            errors.append("decision_%d_rule_literal_leaked" % index)
+        normalized.append({"required_anchor_ids": sorted(anchor_set), **values,
+                           "rule_literals": literals, "public_leakage": leaks["matches"]})
+    return {"valid": not errors, "errors": errors, "points": normalized,
+            "required_anchor_ids": sorted(top_required)}
+
+
+def decisive_rule_literals(rule):
+    """Extract only distinctive values whose disclosure can reveal a rule."""
+    text = _decision_text(rule)
+    values = set(re.findall(
+        r"`[^`]+`|'[^']+'|\"[^\"]+\"|"
+        r"(?<=[=:：])\s*[A-Za-z][A-Za-z0-9_.-]*|"
+        r"\b\d{1,4}(?:\.\d+)?(?:%|秒|分钟|小时|天|日|次)?\b|"
+        r"\b[A-Za-z][A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)+\b", text))
+    normalized = {value.strip().strip("`'\"").strip() for value in values}
+    return sorted(value for value in normalized if len(value) >= 2)
+
+
+def rule_literal_leakage(public_text, rule):
+    """Report decisive rule literals that appear in a public task."""
+    public = str(public_text or "").casefold()
+    literals = decisive_rule_literals(rule)
+    matches = [literal for literal in literals if literal.casefold() in public]
+    return {"leaked": bool(matches), "literals": literals, "matches": matches}
+
+
+def classify_repository_probe(probe, *, static_recovery=False):
+    """Classify probe evidence without treating solver failure as history proof."""
+    if not isinstance(probe, dict):
+        return "needs_review"
+    decision = str(probe.get("decision", "")).strip().lower()
+    status = str(probe.get("status", "")).strip().lower()
+    if static_recovery or probe.get("static_recovery"):
+        return "repository_recoverable"
+    if decision in {"recoverable", "repository_recoverable"} or status in {
+            "recoverable", "repository_recoverable"} or probe.get("recoverable") is True:
+        return "repository_recoverable"
+    if decision == "history_required" or status == "history_required":
+        return "history_required"
+    # ``pass`` only means the probe process completed; without a definitive
+    # repository/history decision it is not evidence for either outcome.
+    return "needs_review"
+
+
 def _static_repository_recovery(baseline, answer):
     """Conservatively detect distinctive answer literals in the baseline."""
     root = Path(baseline)
@@ -330,7 +457,8 @@ def unchanged(receipt, spec, baseline):
 
 
 def admission(validation, baseline_checks, reference_checks, baseline_acceptance=None,
-              reference_acceptance=None, probe=None, task_type=None):
+              reference_acceptance=None, probe=None, task_type=None, *,
+              required_anchor_ids=None, decision=None, public_text=""):
     """Tests cannot be overridden by a model's PASS; absent tests use explicit review."""
     if not (validation.get("BASELINE") == "unmet" and validation.get("REFERENCE") == "pass"
             and validation.get("VERDICT") == "accept"
@@ -354,12 +482,20 @@ def admission(validation, baseline_checks, reference_checks, baseline_acceptance
     else:
         accepted = (validation.get("TESTS") in {"partial", "unavailable"}
                     and validation.get("MUTATIONS") in {"caught", "unavailable"})
-    # M1/M3 are the hard admission boundary: a repository-only probe must not
-    # solve them without history.  A failed probe is evidence for review.
-    if task_type in {"M1", "M3"}:
-        if not probe or probe.get("status") != "pass":
+    if decision is not None:
+        decision_review = validate_decision_points(decision, required_anchor_ids,
+                                                   public_text)
+        if not decision_review["valid"]:
             return False
-        if probe.get("recoverable") or probe.get("static_recovery"):
+    # M1/M3 are the hard admission boundary: a repository-only probe must
+    # explicitly say history is required.  A completed solver or a failed
+    # solver alone is not enough evidence for that conclusion.
+    if isinstance(task_type, str):
+        task_kinds = {task_type}
+    else:
+        task_kinds = {value for value in (task_type or []) if isinstance(value, str)}
+    if task_kinds.intersection({"M1", "M3"}):
+        if classify_repository_probe(probe) != "history_required":
             return False
     return accepted
 
@@ -383,13 +519,17 @@ def repository_design_probe(root, baseline, spec, config, agent_options, answer=
         static_recovery = _static_repository_recovery(baseline, answer)
         status = ("needs_review" if not finished or checks.get("status") in {"error", "unavailable"}
                   else "pass")
+        classification = classify_repository_probe(
+            {"status": status, "recoverable": recoverable,
+             "static_recovery": static_recovery})
         return {"status": status, "recoverable": recoverable,
                 "static_recovery": static_recovery, "checks": checks,
-                "solver_status": outcome.get("status")}
+                "solver_status": outcome.get("status"),
+                "classification": classification}
     except Exception as error:
         return {"status": "needs_review", "recoverable": False,
                 "static_recovery": False, "error_type": type(error).__name__,
-                "detail": str(error)}
+                "detail": str(error), "classification": "needs_review"}
 
 
 def validated_spec(spec, validator_checks, output, *, allow_new_tests=True):
@@ -1109,10 +1249,16 @@ def construct(item, root, baseline, config, revisions, agent_options, *, design_
                 probe = {"status": "not_required", "recoverable": False,
                          "static_recovery": _static_repository_recovery(
                              baseline, available_answer(item)),
-                         "memory_kinds": sorted(kinds)}
+                         "memory_kinds": sorted(kinds),
+                         "classification": classify_repository_probe(
+                             {"status": "not_required"},
+                             static_recovery=_static_repository_recovery(
+                                 baseline, available_answer(item)))}
             record["design_probe"] = probe
-        task_type = next((kind for kind in ("M1", "M3") if kind in kinds),
-                         next(iter(sorted(kinds)), None))
+        # A QA may require several external information kinds.  Keep the
+        # complete set for admission; the old scalar call remains supported
+        # by ``admission`` for older callers.
+        task_type = sorted(kinds)
         admitted = admission(record["validation"], baseline_checks, reference_checks,
                              baseline_acceptance, reference_acceptance, probe,
                              task_type)
@@ -1520,7 +1666,7 @@ def recover_orphan_tasks(manifest, selected, output):
             "task": root.name,
             "status": "pending",
             "qa_id": qa_id,
-            "type": item["qa"].get("type"),
+            "type": qa_label(item["qa"]),
             "recovered_orphan": True,
         })
         known.add(root.name)
@@ -1724,7 +1870,7 @@ def main(argv=None):
                 next_number += 1
                 root_by_index[index] = replacement
                 manifest["tasks"].append({"task": replacement, "status": "pending",
-                                           "qa_id": item["qa"]["id"], "type": item["qa"]["type"]})
+                                           "qa_id": item["qa"]["id"], "type": qa_label(item["qa"])})
                 continue
             if prior and prior.get("status") in {"evaluated", "qualified", "not_admitted"}:
                 root_by_index[index] = prior["task"]
@@ -1737,7 +1883,7 @@ def main(argv=None):
                 prior["resume_replaced_by"] = replacement
                 root_by_index[index] = replacement
                 manifest["tasks"].append({"task": replacement, "status": "pending",
-                                           "qa_id": item["qa"]["id"], "type": item["qa"]["type"]})
+                                           "qa_id": item["qa"]["id"], "type": qa_label(item["qa"])})
         save(output / "manifest.json", manifest)
 
     def run_task(index, item):
@@ -1758,7 +1904,7 @@ def main(argv=None):
                 interrupted = any(trial.get("execution_status") == "interrupted"
                                   for trial in comparison.values())
                 return {"task": root.name, "status": "interrupted" if interrupted else "evaluated",
-                        "qa_id": item["qa"]["id"], "type": item["qa"]["type"],
+                        "qa_id": item["qa"]["id"], "type": qa_label(item["qa"]),
                         "comparison": comparison, "paired_differences": compare_trials(comparison)}
             except Exception as error:
                 return {**prior, "status": "interrupted", "error_type": type(error).__name__, "detail": str(error)}
@@ -1775,18 +1921,18 @@ def main(argv=None):
             if receipt is None:
                 records = read(root / "construction.json") if (root / "construction.json").exists() else [{}]
                 return {"task": root.name, "status": records[-1].get("status", "not_admitted"), "qa_id": item["qa"]["id"],
-                        "type": item["qa"]["type"]}
+                        "type": qa_label(item["qa"])}
             if args.selection_only:
                 return {"task": root.name, "status": "qualified", "qa_id": item["qa"]["id"],
-                        "type": item["qa"]["type"]}
+                        "type": qa_label(item["qa"])}
             comparison = evaluate(
                 item, root, baseline, receipt, config, agent_options, index,
                 clarification_diagnostic=args.clarification_diagnostic)
             return {"task": root.name, "status": "evaluated", "qa_id": item["qa"]["id"],
-                    "type": item["qa"]["type"],
+                    "type": qa_label(item["qa"]),
                     "comparison": comparison, "paired_differences": compare_trials(comparison)}
         except Exception as error:
-            failure = {"task": root.name, "qa_id": item["qa"]["id"], "type": item["qa"]["type"],
+            failure = {"task": root.name, "qa_id": item["qa"]["id"], "type": qa_label(item["qa"]),
                        "status": "error", "error_type": type(error).__name__,
                        "detail": str(error)}
             save(root / "failure.json", failure)
