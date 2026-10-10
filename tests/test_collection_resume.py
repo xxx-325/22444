@@ -165,6 +165,55 @@ class CollectionResumeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "same plan, runtime"):
                 self._invoke(root, resume=True)
 
+    def test_explicit_resume_uses_dialogue_checkpoint_after_retry_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._plan(root)
+            commands = []
+            interrupt_once = True
+
+            def command(argv, cwd, log):
+                nonlocal interrupt_once
+                target = Path(argv[argv.index("--output") + 1])
+                if target.name != "dialogue":
+                    return self._command(argv, cwd, log)
+                commands.append(argv)
+                if interrupt_once:
+                    interrupt_once = False
+                    save(target / "private/checkpoint.json", {
+                        "schema": "openhands-progressive-v20-test",
+                        "state": {}, "tasks": [{}], "public": [],
+                    })
+                    raise KeyboardInterrupt()
+                package = target.with_name("dialogue-package")
+                save(package / "manifest.json", {"schema": "memory-episode-v1"})
+                save(package / "external-events.json", {"events": []})
+                save(package / "private/review.json", {
+                    "budget": {"attempts": 1, "prompt_tokens": 1,
+                               "completion_tokens": 1},
+                })
+                return 0
+
+            with patch("dialogue_benchmark.collection._command", side_effect=command), \
+                    patch("dialogue_benchmark.collection.subprocess.check_output", return_value="root\n"), \
+                    patch("dialogue_benchmark.episode_input.load_episode_manifest",
+                          return_value={}):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_collection(root / "plan.json", root / "run", root, root / ".env")
+
+                state = read(root / "run/collection.json")
+                dialogue = next(row for row in state["stages"]
+                                if row["name"] == "dialogue")
+                dialogue["resume_count"] = 1
+                save(root / "run/collection.json", state)
+                result = run_collection(root / "plan.json", root / "run", root,
+                                        root / ".env", resume=True)
+
+            self.assertEqual(len(commands), 2)
+            self.assertIn("--resume", commands[1])
+            self.assertFalse((root / "run/attempts/project/scenario/dialogue/attempt-1").exists())
+            self.assertEqual(result["status"], "completed_with_warnings")
+
     def test_scenario_retry_resumes_accepted_prefix_without_archiving_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

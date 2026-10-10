@@ -762,8 +762,8 @@ def run_collection(plan_path, output, simulator, env_file, python=sys.executable
                 row["retry_diagnostic"] = str(diagnostic.relative_to(output))
             command = [*command, "--resume-existing"]
         elif (previous and name == "dialogue"
-              and previous.get("resume_count", 0) < MAX_STAGE_RETRIES
-              and _dialogue_resume_checkpoint(folder)):
+              and _dialogue_resume_checkpoint(folder)
+              and (resume or previous.get("resume_count", 0) < MAX_STAGE_RETRIES)):
             row = previous
             row["status"] = "running"
             row["resume_count"] = row.get("resume_count", 0) + 1
