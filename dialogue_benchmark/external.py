@@ -107,6 +107,35 @@ def external_usage_review(document, scope, reference_map):
     return cleaned, decision
 
 
+def external_anchor_reason(question, scope):
+    """Reject an external answer that does not rest on its own event.
+
+    An answer must cite the event source, a declared use or context, or a
+    later public User message (a correction of that rule).  Earlier,
+    undeclared messages belong to other events.
+    """
+    if not isinstance(scope, dict) or not scope.get("external_event_id"):
+        return None
+    cited = {source.partition("#fragment-")[0]
+             for point in (question.get("answer_points") or [])
+             if isinstance(point, dict)
+             for source in (point.get("sources") or []) if isinstance(source, str)}
+    if not cited:
+        return None
+    sources = set(scope.get("external_source_ids") or [])
+    allowed = (sources | set(scope.get("external_usage_ids") or [])
+               | set(scope.get("external_declared_context_ids") or []))
+    rows = [row for row in scope.get("dialogue", []) if isinstance(row, dict)]
+    source_orders = [row.get("order") for row in rows
+                     if row.get("id") in sources and isinstance(row.get("order"), int)]
+    if source_orders:
+        allowed.update(row.get("id") for row in rows
+                       if row.get("kind") == "message" and row.get("role") == "user"
+                       and isinstance(row.get("order"), int)
+                       and row["order"] > min(source_orders))
+    return None if cited & allowed else "external_anchor_not_cited"
+
+
 def external_review_projection(group, candidate):
     """Review the supplied event boundary without requiring code-graph anchors."""
     from .llm import simple_evidence_request_size
@@ -223,6 +252,7 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "memory_kinds": event.get("memory_kinds", [target_type]),
         "external_source_ids": source_ids,
         "external_usage_ids": used_by,
+        "external_declared_context_ids": context_ids,
         "external_context_source_ids": [row["id"] for row in grounded_context if row["id"] not in selected_ids],
         "external_focus": event.get("focus"),
         # These are control-side labels used to relate QA to a business

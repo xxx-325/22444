@@ -17,7 +17,8 @@ from .fact_index import (build_evidence_groups, build_evidence_index,
                          expand_evidence_group_once,
                          static_candidate_labels, static_candidate_types,
                          static_evidence_check)
-from .external import external_review_projection, filter_external_facts, load_external_scopes
+from .external import (external_anchor_reason, external_review_projection,
+                       filter_external_facts, load_external_scopes)
 from .general import build_general_scope, identify_stages
 from .graph import build_graph, graph_at, query_scope_adaptive
 from .llm import (ChatClient, DEFAULT_REQUEST_TIMEOUT, validate_request_timeout,
@@ -285,6 +286,17 @@ def _prefix_questions(result, prefix):
         if isinstance(question, dict) and isinstance(question.get("id"), str):
             question["id"] = prefix + question["id"]
     return result
+
+
+def _static_quality_rejection(question, scope):
+    """Return a deterministic static-quality rejection, or ``None``."""
+    reason = administrative_metadata_only_reason(question)
+    if reason:
+        return {"reason": reason, "failed_checks": ["useful_historical_target"]}
+    reason = external_anchor_reason(question, scope)
+    if reason:
+        return {"reason": reason, "failed_checks": ["external_event_anchor"]}
+    return None
 
 
 def _checkpoint(checkpoint_dir, track, phase, index):
@@ -774,14 +786,11 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         question["evidence_group_id"] = group.get(
                             "id", "%s-group-%d" % (track, index))
                         check = checks.get(chosen) if chosen else None
-                        metadata_reason = administrative_metadata_only_reason(question)
-                        if metadata_reason:
-                            static_post_rejected.append({
-                                "question": dict(question, status="rejected"),
-                                "reason": metadata_reason,
-                                "failed_checks": ["useful_historical_target"],
-                                "stage": "static_quality",
-                            })
+                        rejection = _static_quality_rejection(question, active_group["scope"])
+                        if rejection:
+                            static_post_rejected.append(dict(
+                                rejection, question=dict(question, status="rejected"),
+                                stage="static_quality"))
                         else:
                             checked_questions.append(question)
                     type_questions = checked_questions
@@ -847,17 +856,13 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                                 type_questions = list(reviewed_questions)
                                 filtered_questions = []
                                 for revised_question in type_questions:
-                                    metadata_reason = administrative_metadata_only_reason(
-                                        revised_question)
-                                    if metadata_reason:
-                                        type_rejected.append({
-                                            "question": dict(revised_question,
-                                                             status="rejected"),
-                                            "reason": metadata_reason,
-                                            "failed_checks": [
-                                                "useful_historical_target"],
-                                            "stage": "static_quality",
-                                        })
+                                    rejection = _static_quality_rejection(
+                                        revised_question, active_group["scope"])
+                                    if rejection:
+                                        type_rejected.append(dict(
+                                            rejection,
+                                            question=dict(revised_question, status="rejected"),
+                                            stage="static_quality"))
                                     else:
                                         filtered_questions.append(revised_question)
                                 reviewed_questions = filtered_questions
@@ -914,6 +919,17 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     if reviewed_questions:
                         final_questions = []
                         for question in reviewed_questions:
+                            # Review repair may rewrite answer sources.
+                            anchor_reason = external_anchor_reason(
+                                question, active_group["scope"])
+                            if anchor_reason:
+                                type_rejected.append({
+                                    "question": dict(question, status="rejected"),
+                                    "reason": anchor_reason,
+                                    "failed_checks": ["external_event_anchor"],
+                                    "stage": "static_quality",
+                                })
+                                continue
                             check_type = question.get("type", target_type)
                             check = (static_evidence_check(
                                 active_group, evidence_index, check_type,

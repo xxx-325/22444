@@ -606,6 +606,67 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertEqual([receipt["stage"] for receipt in client.usage], [
             "review_relevance", "review_atomicity", "review_completeness", "review_evidence"])
 
+    def test_answer_from_an_earlier_undeclared_message_is_rejected_before_review(self):
+        group, index = self.external_correction_group()
+        # Anchor the event on the later confirmation; e1 is now an earlier,
+        # undeclared message of another rule.
+        group = dict(group, scope=dict(group["scope"], external_source_ids=["e91"],
+                                       external_usage_ids=[], external_declared_context_ids=[]))
+        candidate = dict(id="q1", type="M6", qa_mode="memory", forbidden_points=[],
+            question="客户对账时，之前约定的容差是多少？",
+            answer_points=[dict(text="amount 差异不超过 0.01 视为未变化。", sources=["e1"])])
+        client = ExternalClient()
+        generated = dict(questions=[candidate], all_candidates=[candidate],
+            stage_status={"qa": "completed"}, stage_errors=[], rejected=[], raw_generated=1)
+        with patch.object(cli, "ChatClient", return_value=client), \
+                patch.object(cli, "generate_from_facts", return_value=generated):
+            result = cli._run_qa_tasks([(0, "memory", group)], "https://example.invalid",
+                "offline-test", "KEY", 1, review_mode="simple", evidence_indexes={"memory": index})
+        self.assertEqual(result["questions"], [])
+        self.assertEqual([item["reason"] for item in result["rejected"]], ["external_anchor_not_cited"])
+        self.assertEqual(client.usage, [])
+
+    def test_review_repair_that_drops_the_event_anchor_is_rejected(self):
+        group, index = self.external_correction_group()
+        group = dict(group, scope=dict(group["scope"], external_source_ids=["e91"],
+                                       external_usage_ids=[], external_declared_context_ids=[]))
+        candidate = dict(id="q1", type="M6", qa_mode="memory", forbidden_points=[],
+            question="客户对账时，未传 tolerances 时如何比较？",
+            answer_points=[dict(text="未传 tolerances 就按精确比较。", sources=["e91"])])
+        repaired = dict(candidate, status="approved",
+            answer_points=[dict(text="amount 差异不超过 0.01 视为未变化。", sources=["e1"])])
+        generated = dict(questions=[candidate], all_candidates=[candidate],
+            stage_status={"qa": "completed"}, stage_errors=[], rejected=[], raw_generated=1)
+        reviewed = dict(questions=[repaired], rejected=[], stage_errors=[], review_warnings=[],
+                        stage_status={"review": "completed"}, revisions=[])
+        with patch.object(cli, "ChatClient", return_value=ExternalClient()), \
+                patch.object(cli, "generate_from_facts", return_value=generated), \
+                patch.object(cli, "review_candidates", return_value=reviewed):
+            result = cli._run_qa_tasks([(0, "memory", group)], "https://example.invalid",
+                "offline-test", "KEY", 1, review_mode="simple", evidence_indexes={"memory": index})
+        self.assertEqual(result["questions"], [])
+        self.assertEqual([item["reason"] for item in result["rejected"]], ["external_anchor_not_cited"])
+
+    def test_external_anchor_gate_accepts_declared_context_and_later_corrections(self):
+        from dialogue_benchmark.external import external_anchor_reason
+        scope = dict(external_event_id="x", external_source_ids=["e5"], external_usage_ids=["e7"],
+                     external_declared_context_ids=["e2"], dialogue=[
+                         dict(id="e1", kind="message", role="user", order=1),
+                         dict(id="e2", kind="message", role="user", order=2),
+                         dict(id="e5", kind="message", role="user", order=5),
+                         dict(id="e7", kind="result", order=7),
+                         dict(id="e8", kind="message", role="user", order=8),
+                         dict(id="e9", kind="message", role="assistant", order=9)])
+        def reason(*sources):
+            return external_anchor_reason(
+                {"answer_points": [{"text": "x", "sources": list(sources)}]}, scope)
+        for allowed in ("e5#fragment-1", "e7", "e2", "e8"):
+            self.assertIsNone(reason("e1", allowed), allowed)
+        self.assertEqual(reason("e1"), "external_anchor_not_cited")
+        self.assertEqual(reason("e9"), "external_anchor_not_cited")
+        self.assertIsNone(external_anchor_reason(
+            {"answer_points": [{"text": "x", "sources": ["e1"]}]}, dict(scope, external_event_id=None)))
+
     def test_external_context_outside_the_scope_is_still_rejected(self):
         group, index = self.external_correction_group()
         for source in ("e70", "e93", "unprovided"):
