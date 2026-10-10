@@ -8,7 +8,7 @@
     {
       "id": "dependency-planner",
       "brief": "A small offline Python tool for planning local jobs with dependencies. Users need useful plans and clear results without running a service. Use only the standard library.",
-      "increments": 6,
+      "increments": 0,
       "scenarios": [
         {
           "id": "customer-workflow",

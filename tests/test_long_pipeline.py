@@ -41,7 +41,10 @@ class LongPipelineTests(unittest.TestCase):
     def save_qa(self, directory, *, route="external", provisional=False, empty=False,
                 public_status=None):
         questions = [] if empty else [{
-            "id": "q1", "type": "M1" if route == "external" else "constraint_followthrough",
+            "id": "q1",
+            **({"anchor_ids": ["anchor-1"], "required_anchor_ids": ["anchor-1"],
+                "memory_kinds": ["M1"]}
+               if route == "external" else {"type": "constraint_followthrough"}),
             "status": "needs_review" if provisional else "approved",
             "question": "Which agreement applies to the customer export?",
             "answer_points": [{"text": "Preserve explicitly empty fields.", "sources": ["e1"]}],

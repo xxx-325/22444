@@ -88,7 +88,9 @@ class ExternalSourceTests(unittest.TestCase):
             {"answer_points": [
                 {"text": "保留空字段", "sources": ["e1"]},
                 {"text": "部署环境也适用", "sources": ["e4"]},
-            ]})
+            ], "target_review": {
+                "reason": "客户约定与部署环境共同决定保留策略。"
+            }})
         self.assertIsNone(reason)
         self.assertEqual(metadata["required_anchor_ids"],
                          ["policy", "environment"])

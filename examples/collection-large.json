@@ -8,7 +8,7 @@
     {
       "id": "release-operations",
       "brief": "Build a local Python toolkit for coordinating release operations across several related workflows. It should ingest structured work items, validate lifecycle transitions, resolve dependencies, produce operator-facing summaries, and expose a stable command-line interface that can evolve without breaking existing users. Keep the project offline and use the standard library.",
-      "increments": 8,
+      "increments": 0,
       "scenarios": [
         {
           "id": "customer-release-workflow",

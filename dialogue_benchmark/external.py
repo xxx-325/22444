@@ -1,8 +1,8 @@
 """Build QA scopes from externally supplied dialogue events.
 
-The external-only path deliberately does not construct or search the evidence
-graph.  The dialogue producer records small, public-source event bundles and
-the QA runner turns each bundle into one bounded evidence scope.
+The external path keeps the public event sidecar as its source of truth and
+uses the deterministic action graph only to bound each event to useful public
+evidence before model extraction.
 """
 
 import json
@@ -11,6 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from .protocol import MEMORY_TYPES
+from .anchor_graph import build_action_graph, expand_anchor
 
 
 EXTERNAL_EVENT_KINDS = frozenset({
@@ -130,11 +131,14 @@ def derive_external_anchor_metadata(scope, question):
         "memory_kinds": memory_kinds,
     }
     if len(required) > 1:
-        behavior = scope.get("external_behavior") or scope.get("external_focus")
-        reason = "Required public anchors jointly determine the same business decision"
-        if isinstance(behavior, str) and behavior.strip():
-            reason += ": " + behavior.strip()
-        metadata["combination_reason"] = reason
+        reason = question.get("combination_reason")
+        for review_key in ("target_review", "relevance_review",
+                           "evidence_review", "review"):
+            review = question.get(review_key)
+            if not isinstance(reason, str) and isinstance(review, dict):
+                reason = review.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            metadata["combination_reason"] = reason.strip()
     return metadata, None
 
 def external_usage_review(document, scope, reference_map):
@@ -196,6 +200,28 @@ def event_sources(scope):
                        and row["order"] > min(source_orders)
                        and row.get("id") not in foreign)
     return allowed
+
+
+def _anchor_record_ids(event, records, graph, max_chars, cutoff):
+    """Return public record IDs admitted by one event's anchor expansion."""
+    members = event.get("anchor_events")
+    if not isinstance(members, list) or not members:
+        members = [event]
+    selected: set[str] = set()
+    audits = []
+    for member in members:
+        expanded = expand_anchor(dict(member, cutoff=cutoff), graph, max_chars)
+        audits.append(expanded)
+        for node in expanded.get("nodes", []):
+            selected.update(
+                value for value in node.get("record_ids", [])
+                if isinstance(value, str)
+            )
+    # Always retain the declared boundary even when expansion is under review.
+    for field in ("source_ids", "used_by", "context_ids"):
+        selected.update(value for value in event.get(field, [])
+                       if isinstance(value, str))
+    return selected, audits
 
 
 def external_anchor_reason(question, scope):
@@ -316,22 +342,76 @@ def _resolve_ids(values, identities, label):
     return resolved
 
 
-def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
+def _event_scope(event, records, records_by_id, cutoff, index, max_chars,
+                 evidence_graph=None):
     source_ids = list(event["source_ids"])
     used_by = list(event["used_by"])
     # Keep the declared seed boundary separate from public correction context.
     context_ids = list(event.get("context_ids", []))
     selected_ids = set(source_ids) | set(used_by) | set(context_ids)
+    anchor_audits = []
+    if evidence_graph is not None:
+        selected_ids, anchor_audits = _anchor_record_ids(
+            event, records, evidence_graph, max_chars, cutoff)
     selected_orders = [records_by_id[item].get("order", 0) for item in selected_ids]
-    anchors = [record for record in records if record.get("id") in selected_ids]
+    # Graph expansion adds context nodes, but those nodes must not become
+    # independent history anchors.  Public amendments are resolved against
+    # the event's declared sources/uses; otherwise an admitted correction can
+    # broaden the semantic scope and pull in unrelated later corrections.
+    declared_anchor_ids = set(source_ids) | set(used_by) | set(context_ids)
+    anchors = [record for record in records
+               if record.get("id") in declared_anchor_ids]
     anchor_text = "\n".join(str(row.get("text", "")) for row in anchors)
     # Public amendments are conversation messages.  Undeclared tool rows
     # (for example ``str_replace`` edits) would otherwise match the change
     # vocabulary and pull most of the session into every event.
-    history = [record for record in records
-               if record.get("kind") == "message" or record.get("id") in selected_ids]
-    dialogue = relevant_public_history(history, anchors, anchor_text, cutoff)
-    grounded_context = relevant_public_history(history, anchors, anchor_text, cutoff, include_ambiguous=False)
+    source_order = min(selected_orders) if selected_orders else cutoff
+    history = [
+        record for record in records
+        if record.get("id") in selected_ids
+        or (record.get("kind") == "message"
+            and isinstance(record.get("order"), int)
+            and record["order"] > source_order)
+    ]
+    candidate_dialogue = relevant_public_history(
+        history, anchors, anchor_text, cutoff)
+    candidate_grounded = relevant_public_history(
+        history, anchors, anchor_text, cutoff, include_ambiguous=False)
+
+    def keep_context(row, previous, candidate_ids=()):
+        # ``relevant_public_history`` has already applied the semantic and
+        # revision filters for this scope.  Do not apply a second whitespace
+        # token test here: Chinese messages, in particular, are often one
+        # whitespace-delimited sentence even when they clearly correct the
+        # selected rule.  The candidate set is still bounded by ``history``
+        # and the cutoff, while the grounded projection below deliberately
+        # uses its stricter, non-ambiguous candidate set.
+        if (row.get("id") in selected_ids
+                or row.get("role") == "assistant"
+                or row.get("id") in candidate_ids):
+            return True
+        if row.get("role") != "user":
+            return False
+        text = str(row.get("text", ""))
+        if re.search(r"\b(it|that|this|they)\b|the rule|这个|该项|上述|它|此规则",
+                     text, re.I) and previous and previous.get("role") == "assistant":
+            return True
+        return bool(re.search(r"纠正|更正|改为|改成|例外|only|except|instead|no longer",
+                              text, re.I)
+                    and any(token in text for token in anchor_text.split()[:4]))
+
+    dialogue = []
+    previous = None
+    for row in candidate_dialogue:
+        if keep_context(row, previous, {item["id"] for item in candidate_dialogue}):
+            dialogue.append(row)
+        previous = row
+    grounded_context = []
+    previous = None
+    for row in candidate_grounded:
+        if keep_context(row, previous, {item["id"] for item in candidate_grounded}):
+            grounded_context.append(row)
+        previous = row
     group_id = "external-%s" % event["id"]
     target_type = event["memory_kind"]
     # A merged disclosure is one public anchor even if it has several
@@ -406,6 +486,7 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "anchor_ids": anchor_ids,
         "anchor_memory_kinds": anchor_memory_kinds,
         "anchor_source_map": source_map,
+        "anchor_audits": anchor_audits,
         "external_kind": event["kind"],
         "memory_kind": target_type,
         "memory_kinds": event.get("memory_kinds", [target_type]),
@@ -543,6 +624,7 @@ def _combination_groups(events):
             continue
         combined = dict(members[-1])
         combined["id"] = "combined-" + "-".join(row["id"] for row in members)
+        combined["anchor_events"] = [dict(row) for row in members]
         # Each merged member is one independent anchor.  ``event_ids`` keeps
         # the full disclosure lineage, while ``anchor_ids`` names the
         # canonical member anchors used by the QA contract.
@@ -642,11 +724,14 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
         accepted.append(raw)
     groups = list(_event_groups(accepted, records_by_id, merge_task_events=merge_task_events))
     combinations = list(_combination_groups(groups)) if not merge_task_events else []
+    evidence_graph = build_action_graph(records)
     for event in groups + combinations:
         if max_groups is not None and len(scopes) >= max_groups:
             rejected.append({"id": event["id"], "reason": "external_group_budget"})
             continue
-        scopes.append(_event_scope(event, records, records_by_id, cutoff, len(scopes), max_chars))
+        scopes.append(_event_scope(
+            event, records, records_by_id, cutoff, len(scopes), max_chars,
+            evidence_graph=evidence_graph))
     # A later message may correct this event's rule, unless it is the
     # declared source of another event; then it states that event's rule.
     for scope in scopes:
