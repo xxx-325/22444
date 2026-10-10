@@ -2016,6 +2016,44 @@ def validate_reasoning_effort(value):
     return value
 
 
+_USAGE_LEDGER = {"path": None}
+_USAGE_LEDGER_LOCK = threading.Lock()
+
+
+def set_usage_ledger(path):
+    """Bind clients created from now on to an append-only request ledger.
+
+    In-memory usage reaches stage artifacts only when a stage finishes, so
+    an interrupted run lost the cost of completed requests.  Each finished
+    request is appended here immediately.  Returns the previous path.
+    """
+    previous = _USAGE_LEDGER["path"]
+    _USAGE_LEDGER["path"] = None if path is None else str(path)
+    return previous
+
+
+def _append_usage(path, receipt):
+    line = json.dumps(receipt, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with _USAGE_LEDGER_LOCK:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
+            stream.write(line)
+
+
+def read_usage_ledger(path):
+    """Return ledger receipts, ignoring a final line torn by a hard stop."""
+    rows = []
+    with open(path, encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
 class ChatClient:
     def __init__(self, endpoint, model, key_env="BENCHMARK_API_KEY", timeout=DEFAULT_REQUEST_TIMEOUT, *, system=SYSTEM,
                  reasoning_effort=None):
@@ -2033,8 +2071,18 @@ class ChatClient:
         self.system = system
         self.usage = []
         self.responses = []
+        self.usage_ledger = _USAGE_LEDGER["path"]
 
     def ask(self, prompt, data, *, request_budget=None):
+        before = len(self.usage)
+        try:
+            return self._ask_once(prompt, data, request_budget=request_budget)
+        finally:
+            if self.usage_ledger:
+                for receipt in self.usage[before:]:
+                    _append_usage(self.usage_ledger, receipt)
+
+    def _ask_once(self, prompt, data, *, request_budget=None):
         content = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
         # Evidence and request budgets are separate: facts/candidate metadata is
         # part of the request but not part of the raw scope budget.

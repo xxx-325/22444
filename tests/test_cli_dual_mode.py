@@ -732,6 +732,30 @@ class DualModeCliTests(unittest.TestCase):
                                  "ValueError")
                 self.assertEqual((output / "general-scope.json").read_bytes(), scope_bytes)
 
+    def test_qa_run_binds_its_usage_ledger_only_while_running(self):
+        from dialogue_benchmark import llm
+        bound = []
+
+        class FakeClient:
+            def __init__(self, *unused, **kwargs):
+                bound.append(llm._USAGE_LEDGER["path"])
+                self.usage = []
+
+        def fake_extract(scope, client, qa_mode, checkpoint=None):
+            return {"facts": [], "questions": [], "rejected": [], "stage_errors": [],
+                    "stage_status": {"facts": "completed"}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            with patch.object(cli, "ChatClient", FakeClient), \
+                    patch.object(cli, "extract_facts", fake_extract):
+                cli.main([str(EXAMPLE), "--output", str(output), "--qa-mode", "general",
+                          "--general-count", "1", "--parallel-workers", "1", "--allow-network",
+                          "--endpoint", "https://example.invalid", "--model", "model"])
+            self.assertTrue(bound)
+            self.assertEqual(set(bound), {str(output / "usage-ledger.jsonl")})
+            self.assertIsNone(llm._USAGE_LEDGER["path"])
+
     def test_existing_projection_without_resume_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

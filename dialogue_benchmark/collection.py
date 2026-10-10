@@ -12,6 +12,7 @@ import sys
 
 from .task_eval.artifacts import read, save
 from .task_eval.metrics import scored_task
+from .llm import read_usage_ledger
 from .task_eval.metrics import cache_usage
 from .task_eval.runtime import shared_task_slot
 
@@ -56,7 +57,16 @@ def episode_usage(root):
     receipts_by_path = {row["path"]: row for row in saved.get("receipts", [])}
     receipts = []
     qa = root / "qa/manifest.json"
-    if qa.is_file():
+    ledger = root / "qa/usage-ledger.jsonl"
+    if ledger.is_file():
+        # The ledger records every request of the QA output, including those
+        # of interrupted runs that a resumed manifest no longer lists.
+        receipt = dict(path="qa/usage-ledger.jsonl", **sum_usage(read_usage_ledger(ledger)))
+        if not qa.is_file():
+            receipt["complete"] = False
+        receipts.append(receipt)
+        receipts_by_path.pop("qa/manifest.json", None)
+    elif qa.is_file():
         receipts.append(dict(path="qa/manifest.json", **sum_usage(read(qa).get("usage", []))))
     elif (root / "qa").exists():
         receipts.append(dict(sum_usage([]), path="qa/manifest.json", complete=False))

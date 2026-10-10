@@ -21,7 +21,7 @@ from .external import (external_anchor_reason, external_review_projection,
                        filter_external_facts, load_external_scopes)
 from .general import build_general_scope, identify_stages
 from .graph import build_graph, graph_at, query_scope_adaptive
-from .llm import (ChatClient, DEFAULT_REQUEST_TIMEOUT, validate_request_timeout,
+from .llm import (ChatClient, DEFAULT_REQUEST_TIMEOUT, set_usage_ledger, validate_request_timeout,
                   extract_facts, generate_from_facts,
                   repair_simple_validation_rejection, review_candidates,
                   stage_error)
@@ -1621,6 +1621,7 @@ def main(argv=None):
         if not args.repository.is_dir():
             parser.error("--repository must point to an existing directory")
     created = False
+    previous_ledger = None
     try:
         records = load_dialogue(args.input)
         if not records:
@@ -1645,6 +1646,9 @@ def main(argv=None):
             args.output.mkdir(mode=0o700, parents=True)
         created = True
         os.chmod(args.output, 0o700)
+        # Every provider request of this output, across interruptions and
+        # resumes, is the authoritative QA spend.
+        previous_ledger = set_usage_ledger(args.output / "usage-ledger.jsonl")
         _ALLOW_OUTPUT_OVERWRITE = bool(args.resume_output)
         external_mode = options["qa_source"] == "external"
         tracks = ("memory",) if external_mode else ("general", "code")
@@ -2474,6 +2478,9 @@ def main(argv=None):
             })
         print("Run failed (%s). No QA should be treated as validated." % type(error).__name__)
         return 1
+    finally:
+        if created:
+            set_usage_ledger(previous_ledger)
 
 
 if __name__ == "__main__":
