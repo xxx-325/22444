@@ -152,6 +152,32 @@ class EpisodeRunnerTests(unittest.TestCase):
             tasks.assert_not_called()
             self.assertEqual(read(root / "run/pipeline.json")["stop_reason"], "qa_generation_failed")
 
+    def test_failed_qa_resume_does_not_reuse_outputs_of_an_earlier_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            (source / "workspace/candidate").mkdir(parents=True)
+            (source / "session.jsonl").write_text('{"kind":"user","content":"rule"}\n')
+            output = root / "run"
+            # Outputs of an earlier completed QA run in the same directory.
+            self.save_qa(output / "qa", {"status": "approved", "questions": [{"id": "q1", "status": "approved"}]})
+            save(output / "qa/manifest.json", {})
+            save(output / "qa/stages/general-chunk-0000-facts.json", [])
+            def generated(args):
+                self.assertFalse((output / "qa/manifest.json").exists())
+                self.assertTrue((output / "qa/stages/general-chunk-0000-facts.json").exists())
+                return 1
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.generate_qa", side_effect=generated), \
+                 patch("run_episode.run_tasks") as tasks, \
+                 patch("run_episode.preflight_openhands_runtime"), patch("run_episode.render"):
+                with self.assertRaisesRegex(RuntimeError, "QA generation did not complete"):
+                    main(["--source-run", str(source), "--simulator-path", str(root),
+                          "--env-file", str(root / ".env"), "--output", str(output), "--resume-qa"])
+            tasks.assert_not_called()
+            self.assertEqual(read(output / "pipeline.json")["stop_reason"], "qa_generation_failed")
+
     def test_review_candidates_do_not_feed_tasks_without_explicit_opt_in(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

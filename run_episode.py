@@ -22,6 +22,10 @@ from dialogue_benchmark.selection import globally_blocked
 
 
 MAX_QA_REQUEST_TIMEOUT = 600
+# Final QA views rewritten by every completed QA run.  Batch receipts,
+# stage checkpoints and pinned projections are resume inputs, not results.
+QA_FINAL_OUTPUTS = ("manifest.json", "qa-public.json", "qa.json", "qa-audit.json",
+                    "qa-handoff.json", "qa-candidates.json", "qa-review-queue.json")
 
 
 def _usable_qa(public, *, provisional=False, qa_root=None):
@@ -223,9 +227,15 @@ def main(argv=None):
             if args.qa_source == "external" and read(root / "qa/manifest.json").get("qa_mode") != "memory":
                 raise ValueError("External QA must use the unified memory types; regenerate QA")
         else:
+            # A resumed QA directory may still hold the final outputs of an
+            # earlier run.  Remove them first so a failed resume can never be
+            # read as that earlier result; stage checkpoints stay for reuse.
+            if args.resume_qa:
+                for name in QA_FINAL_OUTPUTS:
+                    (root / "qa" / name).unlink(missing_ok=True)
             qa_exit_status = generate_qa(qa_args)
-            if qa_exit_status and not all((root / "qa" / name).exists()
-                                  for name in ("manifest.json", "qa-public.json", "stages")):
+            if qa_exit_status and not all((root / "qa" / name).is_file()
+                                          for name in ("manifest.json", "qa-public.json")):
                 state["stop_reason"] = "qa_generation_failed"
                 raise RuntimeError("QA generation did not complete; see qa/failure.json")
         render(root)
