@@ -155,9 +155,9 @@ class CollectionTests(unittest.TestCase):
             "scenarios": [{"id": "handoff", "external_attempt_budget": 7,
                            "memory_kinds": ["M1", "M3"],
                            "external_attempt_distribution": [
-                               {"stage": 1, "behavior": "handoff", "memory_kinds": ["M1"], "attempts": 2},
-                               {"stage": 2, "behavior": "approval", "memory_kinds": ["M3"], "attempts": 3},
-                               {"stage": 3, "behavior": "handoff recovery", "memory_kinds": ["M1", "M3"], "attempts": 2},
+                               {"stage": 1, "behavior": "handoff", "slots": {"M1": 2}},
+                               {"stage": 1, "behavior": "approval", "slots": {"M3": 3}},
+                               {"stage": 1, "behavior": "handoff recovery", "slots": {"M1": 1, "M3": 1}},
                            ]}],
         }])
         row = plan["scenarios"][0]
@@ -211,7 +211,7 @@ class CollectionTests(unittest.TestCase):
             "scenarios": [{"id": "support-operations", "external_attempt_budget": 1,
                            "external_attempt_distribution": [
                                {"stage": 6, "behavior": "cross-workflow reporting",
-                                "memory_kinds": ["M1"], "attempts": 1}]}],
+                                "slots": {"M1": 1}}]}],
         }])
         self.assertEqual(plan["scenarios"][0]["opportunities"][0]["stage"], 6)
 
@@ -222,8 +222,37 @@ class CollectionTests(unittest.TestCase):
                 "scenarios": [{"id": "handoff", "external_attempt_budget": 1,
                                "external_attempt_distribution": [
                                    {"stage": 0, "behavior": "handoff",
-                                    "memory_kinds": ["M1"], "attempts": 1}]}],
+                                    "slots": {"M1": 1}}]}],
             }])
+
+    def test_slots_require_every_declared_memory_kind(self):
+        with self.assertRaisesRegex(ValueError, "each memory kind"):
+            plan_external_information([{"id": "support", "increments": 1,
+                "brief": "Support", "scenarios": [{"id": "handoff",
+                "external_attempt_budget": 1, "memory_kinds": ["M1", "M2"],
+                "external_attempt_distribution": [{"stage": 1, "behavior": "handoff",
+                                                    "slots": {"M1": 1}}]}]}])
+
+    def test_slots_reject_late_m3_m4_m5_and_final_m6(self):
+        base = {"id": "support", "increments": 2, "brief": "Support"}
+        for kind, stage in (("M3", 2), ("M4", 2), ("M5", 2), ("M6", 2)):
+            scenario = {"id": "handoff", "external_attempt_budget": 1,
+                        "memory_kinds": [kind], "external_attempt_distribution": [
+                            {"stage": stage, "behavior": "handoff", "slots": {kind: 1}}]}
+            with self.subTest(kind=kind):
+                with self.assertRaises(ValueError):
+                    plan_external_information([{**base, "scenarios": [scenario]}])
+
+    def test_coverage_defaults_are_validated(self):
+        plan = {"projects": [{"id": "support", "brief": "Support", "increments": 2,
+                 "scenarios": [{"id": "handoff", "external_attempt_budget": 6,
+                 "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
+                 "external_attempt_distribution": [{"stage": 1, "behavior": "handoff",
+                 "slots": {"M1": 1, "M2": 1, "M3": 1, "M4": 1, "M5": 1, "M6": 1}}]}]}],
+               "runtime_config": "runtime.json", "max_total_requests": 1,
+               "max_total_tokens": 1}
+        validate_plan(plan)
+        self.assertEqual(plan.get("memory_coverage_target"), None)
 
     def test_receipt_left_in_atomic_temp_file_is_recovered(self):
         with tempfile.TemporaryDirectory() as directory:
