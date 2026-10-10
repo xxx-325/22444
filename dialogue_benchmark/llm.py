@@ -2606,6 +2606,12 @@ def _target_review_request(scope, sources, facts, candidate, qa_mode):
         value = candidate.get("_generation_" + field)
         if isinstance(value, dict):
             payload[field] = {"text": value.get("text", "")}
+    # The generation focus comes from the same model run as the question, so
+    # comparing the two cannot detect drift.  A focus declared for the event
+    # is independent and takes precedence.
+    event_focus = scope.get("external_focus") if isinstance(scope, dict) else None
+    if isinstance(event_focus, str) and event_focus.strip():
+        payload["focus"] = {"text": event_focus.strip()}
     return prompt, payload
 
 

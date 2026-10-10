@@ -697,6 +697,16 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertEqual(result["questions"], [])
         self.assertEqual([item["reason"] for item in result["rejected"]], ["external_anchor_not_cited"])
 
+    def test_target_review_compares_with_the_declared_event_focus(self):
+        from dialogue_benchmark.llm import _target_review_request
+        candidate = dict(id="q1", type="M1", question="续费后 SLA 是否重算？",
+                         _generation_focus={"text": "续费后 SLA 不重算"})
+        _, payload = _target_review_request({}, set(), [], candidate, "memory")
+        self.assertEqual(payload["focus"], {"text": "续费后 SLA 不重算"})
+        _, payload = _target_review_request({"external_focus": "工程师缺席由谁标记"}, set(), [],
+                                            candidate, "memory")
+        self.assertEqual(payload["focus"], {"text": "工程师缺席由谁标记"})
+
     def test_external_anchor_gate_accepts_declared_context_and_later_corrections(self):
         from dialogue_benchmark.external import external_anchor_reason
         scope = dict(external_event_id="x", external_source_ids=["e5"], external_usage_ids=["e7"],
