@@ -92,7 +92,7 @@ class EpisodeRunnerTests(unittest.TestCase):
                 self.assertEqual(read(root / "run/qa/qa-public.json")["questions"], expected)
                 self.assertEqual(read(root / "run/usage.json")["total_tokens"], 15)
                 state = read(root / "run/pipeline.json")
-                self.assertEqual(state["status"], "completed")
+                self.assertEqual(state["status"], "completed" if questions else "completed_with_warnings")
                 self.assertEqual(state["stop_reason"], "qa_only" if questions else "no_eligible_qa")
                 page = (root / "run/report.html").read_text()
                 self.assertIn("记忆召回 QA", page)
@@ -126,6 +126,7 @@ class EpisodeRunnerTests(unittest.TestCase):
                     self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
                         "--env-file", str(root / ".env"), "--output", str(root / "run")]), 0)
                 runner.assert_called_once()
+                self.assertNotIn("--allow-provisional", runner.call_args.args[0])
                 self.assertEqual(read(root / "run/pipeline.json")["status"], "completed_with_warnings")
                 self.assertNotIn("error_type", read(root / "run/pipeline.json"))
 
@@ -150,6 +151,33 @@ class EpisodeRunnerTests(unittest.TestCase):
                         "--env-file", str(root / ".env"), "--output", str(root / "run"), "--allow-provisional"])
             tasks.assert_not_called()
             self.assertEqual(read(root / "run/pipeline.json")["stop_reason"], "qa_generation_failed")
+
+    def test_review_candidates_do_not_feed_tasks_without_explicit_opt_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            (source / "workspace/candidate").mkdir(parents=True)
+            (source / "session.jsonl").write_text('{"kind":"user","content":"rule"}\n')
+            def generated(args):
+                output = Path(args[args.index("--output") + 1])
+                self.save_qa(output, {"status": "needs_review", "questions": []})
+                candidate = {"id": "q1", "status": "needs_review", "type": "constraint_followthrough",
+                             "question": "Which rule applies?", "answer_points": [{"text": "A."}]}
+                save(output / "qa-candidates.json", {"questions": [candidate]})
+                save(output / "stages/group-raw-candidates.json", {"questions": [candidate]})
+                save(output / "manifest.json", {})
+                return 0
+            config = {"judge": {"base_url": "https://example.invalid", "model": "test", "key_env": "KEY"}}
+            with patch("run_episode.configure", return_value=config), \
+                 patch("run_episode.generate_qa", side_effect=generated), \
+                 patch("run_episode.run_tasks") as tasks, \
+                 patch("run_episode.preflight_openhands_runtime"), patch("run_episode.render"):
+                self.assertEqual(main(["--source-run", str(source), "--simulator-path", str(root),
+                    "--env-file", str(root / ".env"), "--output", str(root / "run")]), 0)
+            tasks.assert_not_called()
+            state = read(root / "run/pipeline.json")
+            self.assertEqual(state["stop_reason"], "no_eligible_qa")
+            self.assertEqual(read(root / "run/tasks/manifest.json")["provisional"], False)
 
     def test_cleanup_failure_keeps_the_usage_receipt_saved_before_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

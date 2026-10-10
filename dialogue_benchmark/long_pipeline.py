@@ -268,7 +268,8 @@ def _qa_stage(args) -> int:
         ready = _qa_output_ready(route_dir / "qa")
         public = read(route_dir / "qa/qa-public.json") if ready else {}
         try:
-            eligible = has_eligible_qa(route_dir / "qa", include_provisional=True)
+            # Only approved QA feeds requirements; review candidates stay in QA outputs.
+            eligible = has_eligible_qa(route_dir / "qa", include_provisional=False)
         except (OSError, KeyError, TypeError, ValueError):
             eligible = False
         approved = eligible and bool(public.get("questions")) and all(
@@ -350,17 +351,11 @@ def _task_stage(args) -> int:
     manifest = Path(info["manifest"]).resolve()
     plan = read(info["plan"])
     external = input_root / "external"
-    public_path = external / "qa/qa-public.json"
-    public = read(public_path) if public_path.is_file() else {}
     pipeline = read(external / "pipeline.json") if (external / "pipeline.json").is_file() else {}
     try:
-        eligible_items = qa_inputs(external / "qa", include_provisional=True)
+        eligible_items = qa_inputs(external / "qa", include_provisional=False)
     except (OSError, KeyError, TypeError, ValueError):
         eligible_items = []
-    all_approved = bool(public.get("questions")) and all(
-        question.get("status") == "approved" for question in public["questions"]
-    )
-    allow_provisional = any(item.get("provisional") for item in eligible_items)
     qa_summary = read(input_root / "qa-summary.json") if (input_root / "qa-summary.json").is_file() else {}
     external_summary = qa_summary.get("routes", {}).get("external", {})
     usable_for_tasks = external_summary.get("usable_for_tasks")
@@ -368,7 +363,6 @@ def _task_stage(args) -> int:
         usable_for_tasks = bool(eligible_items)
     if not usable_for_tasks:
         eligible_items = []
-        allow_provisional = False
     qualified = (
         pipeline.get("status") not in {"failed", "blocked", "interrupted"}
         and usable_for_tasks and bool(eligible_items)
@@ -421,8 +415,6 @@ def _task_stage(args) -> int:
         command += ["--request-timeout", str(evaluation["request_timeout"])]
     if evaluation.get("agent_seconds") is not None:
         command += ["--agent-seconds", str(evaluation["agent_seconds"])]
-    if allow_provisional and not all_approved:
-        command.append("--allow-provisional")
     code = _run_logged(command, ROOT, output / "stdout.log", output / "stderr.log")
     if code or not task_manifest.is_file():
         return code or 1

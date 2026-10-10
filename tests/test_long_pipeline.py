@@ -10,7 +10,7 @@ from unittest.mock import patch
 from dialogue_benchmark.long_pipeline import (_manifest_from_collection, _qa_stage,
                                                _route_command, _task_stage, _write_receipt, build_config)
 from dialogue_benchmark.pipeline_runner import PipelineRunner
-from dialogue_benchmark.task_eval.artifacts import save
+from dialogue_benchmark.task_eval.artifacts import read, save
 
 
 class LongPipelineTests(unittest.TestCase):
@@ -209,7 +209,7 @@ class LongPipelineTests(unittest.TestCase):
             self.assertTrue(any(path.name.startswith("tasks")
                                 for path in (output / ".incomplete").iterdir()))
 
-    def test_task_stage_continues_with_provisional_external_candidates(self):
+    def test_task_stage_does_not_build_tasks_from_provisional_external_candidates(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo = root / "repo"
@@ -228,13 +228,11 @@ class LongPipelineTests(unittest.TestCase):
                 simulator_path=root / "sim", env_file=root / ".env",
             )
 
-            def fake_run(command, cwd, stdout, stderr):
-                self.assertIn("--allow-provisional", command)
-                save(output / "tasks/manifest.json", {"status": "completed", "tasks": []})
-                return 0
-
-            with patch("dialogue_benchmark.long_pipeline._run_logged", side_effect=fake_run):
+            with patch("dialogue_benchmark.long_pipeline._run_logged") as run:
                 self.assertEqual(_task_stage(args), 0)
+            run.assert_not_called()
+            self.assertEqual(read(output / "tasks/manifest.json")["stop_reason"],
+                             "external_qa_not_qualified")
 
     def test_failed_qa_aggregate_keeps_source_validated_approved_task_input(self):
         with tempfile.TemporaryDirectory() as directory:

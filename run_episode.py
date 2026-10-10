@@ -44,22 +44,6 @@ def _usable_qa(public, *, provisional=False, qa_root=None):
     )
 
 
-def _has_provisional_candidates(root):
-    path = root / "qa/qa-candidates.json"
-    if not path.is_file():
-        return False
-    try:
-        questions = read(path).get("questions", [])
-    except (OSError, ValueError, TypeError):
-        return False
-    return any(
-        isinstance(question, dict)
-        and question.get("status") in {"approved", "needs_review", "provisional"}
-        and question.get("id")
-        for question in questions
-    )
-
-
 def _approved_qa(public):
     """Return the strict publishable check used by older callers."""
     return _usable_qa(public)
@@ -254,18 +238,12 @@ def main(argv=None):
                     else blocker.get("error_code") or "authentication_error")
             state["stop_reason"] = code
             raise RuntimeError(code)
-        provisional = bool((args.allow_provisional or qa_result.get("status") == "needs_review")
+        # Review candidates feed tasks only on explicit request.  An aggregate
+        # needs_review status still leaves individually approved QA usable.
+        provisional = bool(args.allow_provisional
                            and qa_result.get("status") != "failed"
                            and not qa_exit_status)
         usable = _usable_qa(qa_result, provisional=provisional, qa_root=root / "qa")
-        if (not usable and not provisional and qa_result.get("status") != "failed"
-                and not qa_exit_status):
-            # An aggregate warning must not hide individually usable review
-            # candidates.  The hard source/credential checks live in
-            # ``qa_inputs`` rather than in this stage wrapper.
-            provisional = _has_provisional_candidates(root)
-            if provisional:
-                usable = _usable_qa(qa_result, provisional=True, qa_root=root / "qa")
         if qa_exit_status and not usable:
             state["stop_reason"] = "qa_generation_failed"
             raise RuntimeError("QA generation failed; see qa/qa-audit.json")
@@ -273,6 +251,8 @@ def main(argv=None):
             state["warnings"] = [{"code": "qa_stage_warning", "qa_status": qa_result.get("status"),
                                   "exit_code": qa_exit_status}]
         if args.qa_only or not usable:
+            if args.qa_only and not usable:
+                state.setdefault("warnings", []).append({"code": "no_eligible_qa"})
             if not args.qa_only:
                 previous_tasks = root / "tasks/manifest.json"
                 if args.resume_tasks and previous_tasks.is_file() and read(previous_tasks).get("tasks"):
@@ -292,8 +272,7 @@ def main(argv=None):
                 status=("completed" if (
                     not state.get("warnings")
                 ) else "completed_with_warnings"),
-                stop_reason=("qa_only" if args.qa_only and qa_result.get("questions")
-                             else "no_eligible_qa"))
+                stop_reason=("qa_only" if args.qa_only and usable else "no_eligible_qa"))
             save(root / "usage.json", episode_usage(root))
             usage_saved = True
             phase("complete")
