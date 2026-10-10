@@ -29,7 +29,7 @@ from .protocol import MISSING_KINDS, MEMORY_TYPES
 from .quality import (CODE_QA_TYPES, GENERAL_QA_TYPES,
                       administrative_metadata_only_reason)
 from .security import credential_detected
-from .storage import save_projection
+from .storage import load as load_projection, save_projection
 from .subgraph import adaptive_subgraphs
 from .selection import (build_audit, select_approved, difficulty_balance,
                         type_balance, deduplicate, deduplicate_reviewed,
@@ -54,13 +54,22 @@ CHUNK_EVIDENCE_FIELDS = (
     "historical_edges", "stages",
 )
 _ALLOW_OUTPUT_OVERWRITE = False
+_PROJECTION_OUTPUTS = {"scope.json", "scopes.json", "general-scope.json", "evidence-groups.json"}
+# Inputs that saved fact and group checkpoints depend on.  A resume may reuse
+# them only when the recomputed value is identical.
+_RESUME_PINNED_OUTPUTS = _PROJECTION_OUTPUTS | {"chunks.json", "external-events.json"}
 
 
 def save(directory, name, data):
     path = directory / name
-    if name in {"scope.json", "scopes.json", "general-scope.json", "evidence-groups.json"}:
-        if path.exists():
+    if name in _RESUME_PINNED_OUTPUTS and path.exists():
+        if not _ALLOW_OUTPUT_OVERWRITE:
             raise FileExistsError(path)
+        # Groups contain tuples; compare the JSON form that was saved.
+        if load_projection(path) != json.loads(json.dumps(data, ensure_ascii=False)):
+            raise ValueError("Resume changed saved %s; use a new output directory" % name)
+        return
+    if name in _PROJECTION_OUTPUTS:
         save_projection(path, data)
         return
     with path.open("w" if _ALLOW_OUTPUT_OVERWRITE else "x", encoding="utf-8") as output:
@@ -156,7 +165,8 @@ def _build_parser():
     parser.add_argument("--reuse-facts", type=Path,
                         help="Reuse saved facts/errors from identical normalized input and chunks; extract missing chunks")
     parser.add_argument("--resume-output", action="store_true",
-                        help="Resume a partial QA output directory from saved group/batch checkpoints")
+                        help="Resume a partial QA output directory from saved group/batch checkpoints; "
+                             "failed fact chunks are retried until evidence groups exist")
     parser.add_argument("--repository", type=Path,
                         help="Final repository snapshot for the read-only recoverability probe")
     parser.add_argument("--qa-source", choices=("graph", "external"), default="graph",
@@ -290,8 +300,13 @@ def _checkpoint(checkpoint_dir, track, phase, index):
 
 def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                     reuse_dir=None, external_only=False, request_timeout=DEFAULT_REQUEST_TIMEOUT,
-                    reasoning_effort=None):
-    """Reuse saved fact results/errors and extract missing chunks in a bounded executor."""
+                    reasoning_effort=None, retry_saved_errors=False):
+    """Reuse saved fact results/errors and extract missing chunks in a bounded executor.
+
+    ``retry_saved_errors`` re-requests chunks whose only checkpoint is an
+    error.  Callers enable it only before evidence groups exist, so a retry
+    cannot change facts that saved groups or batches already depend on.
+    """
     if not tasks:
         return {"facts": [], "questions": [], "rejected": [], "usage": [],
                 "stage_errors": [], "stage_status": [],
@@ -309,7 +324,7 @@ def _run_fact_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=Non
                 result = {"facts": facts, "stage_status": {"facts": "completed", "reused": True}}
                 if write:
                     write("facts.json", facts)
-            elif error_path is not None and error_path.exists():
+            elif error_path is not None and error_path.exists() and not retry_saved_errors:
                 error = json.loads(error_path.read_text())
                 result = {"facts": [], "stage_errors": [error],
                           "stage_status": {"facts": "failed", "reused": True}}
@@ -1775,6 +1790,9 @@ def main(argv=None):
                 checkpoint_dir = args.output / "stages"
                 checkpoint_dir.mkdir(mode=0o700, exist_ok=True)
                 fact_options = {"reuse_dir": reuse_source} if reuse_source else {}
+                if (args.resume_output and not args.reuse_facts
+                        and not (args.output / "evidence-groups.json").exists()):
+                    fact_options["retry_saved_errors"] = True
                 facts_result = _run_fact_tasks(
                     fact_tasks, args.endpoint, args.model, args.key_env,
                     args.parallel_workers, checkpoint_dir,
@@ -2426,6 +2444,8 @@ def main(argv=None):
                             "Syntactic call references require semantic verification",
                             "Human review required; difficulty is provisional"],
         }
+        # A resumed run that completes supersedes an earlier stop record.
+        (args.output / "failure.json").unlink(missing_ok=True)
         save(args.output, "manifest.json", manifest)
         print("Completed: %s; %d published QA" %
               (args.output, len(public["questions"])))

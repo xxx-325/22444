@@ -150,7 +150,7 @@ def main(argv=None):
                 "snapshot_sha256": fingerprint(snapshot_path),
                 "external_sha256": (hashlib.sha256(args.external_events.read_bytes()).hexdigest()
                                     if args.external_events else None)}
-    if args.resume_tasks and (root / "pipeline.json").is_file():
+    if (args.resume_tasks or args.resume_qa) and (root / "pipeline.json").is_file():
         previous = read(root / "pipeline.json")
         previous_parameters = {k: v for k, v in previous.get("parameters", {}).items()
                                if k != "resume_tasks"}
@@ -243,7 +243,7 @@ def main(argv=None):
             if qa_exit_status and not all((root / "qa" / name).exists()
                                   for name in ("manifest.json", "qa-public.json", "stages")):
                 state["stop_reason"] = "qa_generation_failed"
-                raise RuntimeError("QA generation did not complete; see qa/error.json")
+                raise RuntimeError("QA generation did not complete; see qa/failure.json")
         render(root)
         qa_result = read(root / "qa/qa-public.json")
         audit_path = root / "qa/qa-audit.json"

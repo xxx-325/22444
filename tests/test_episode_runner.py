@@ -288,6 +288,24 @@ class EpisodeRunnerTests(unittest.TestCase):
             configure.assert_not_called()
             self.assertEqual(read(output / "pipeline.json"), saved)
 
+    def test_resume_qa_rejects_changed_parameters_before_overwriting_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            (source / "workspace/candidate").mkdir(parents=True)
+            (source / "session.jsonl").write_text('{"kind":"user","content":"rule"}\n')
+            output = root / "run"
+            save(output / "qa/normalized.json", [])
+            saved = {"parameters": {"model_request_chars": 48000}, "status": "failed"}
+            save(output / "pipeline.json", saved)
+            with patch("run_episode.configure") as configure:
+                with self.assertRaisesRegex(ValueError, "same inputs and parameters"):
+                    main(["--source-run", str(source), "--simulator-path", str(root),
+                          "--env-file", str(root / ".env"), "--output", str(output),
+                          "--model-request-chars", "96000", "--resume-qa"])
+            configure.assert_not_called()
+            self.assertEqual(read(output / "pipeline.json"), saved)
+
     def test_no_eligible_qa_saves_an_empty_task_report_without_starting_agents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

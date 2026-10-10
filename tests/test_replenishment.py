@@ -141,6 +141,9 @@ class ReplenishmentTests(unittest.TestCase):
                 "stage_errors": [], "review_warnings": [], "stage_status": [],
                 "revisions": [], "duplicate_decisions": [], "dedup_errors": [],
             }))
+            # Real batch checkpoints also leave list-valued sibling files.
+            (root / "batch-001-candidates.json").write_text(json.dumps([first]))
+            (root / "batch-001-public.json").write_text(json.dumps([first]))
             result = replenish(
                 [(0, "code", {"id": "code0"}), (1, "code", {"id": "code1"})],
                 {"code": 2}, {"code": 2}, 1, run, _publication_view,

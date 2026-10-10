@@ -654,5 +654,91 @@ class DualModeCliTests(unittest.TestCase):
             self.assertEqual(manifest["tracks"]["code"]["status"], "failed")
 
 
+    def test_resume_reuses_saved_projections_and_retries_failed_fact_chunks(self):
+        from dialogue_benchmark.llm import ModelStageError
+        calls = {"extract": 0, "generate": 0}
+
+        class FakeClient:
+            def __init__(self, *unused, **kwargs):
+                self.usage = [{"total_tokens": 1}]
+
+        def fake_extract(scope, client, qa_mode, checkpoint=None):
+            calls["extract"] += 1
+            if calls["extract"] == 1:
+                raise ModelStageError("protocol_error")
+            fact = {"id": "f1", "qa_mode": qa_mode,
+                    "statement": qa_mode + " 必须保留约定；旧规则从返回 None 改为抛错", "sources": ["e1"]}
+            checkpoint("facts.json", [fact])
+            return {"facts": [fact], "questions": [], "rejected": [],
+                    "stage_errors": [], "stage_status": {"facts": "completed"}}
+
+        def fake_generate(scope, facts, client, max_questions, qa_mode,
+                          allowed_types, checkpoint=None, candidate_prefix=None, **unused):
+            calls["generate"] += 1
+            question = {
+                "id": "q1", "qa_mode": qa_mode, "type": "constraint_followthrough",
+                "question": "general question", "difficulty": "easy", "fact_ids": ["f1"],
+                "answer_points": [{"text": "general answer", "sources": ["e1"]}],
+                "forbidden_points": [], "status": "approved",
+            }
+            return {"facts": facts, "questions": [question], "rejected": [],
+                    "stage_errors": [], "stage_status": {"qa": "completed"}}
+
+        def fake_review(scope, facts, candidates, client, qa_mode, checkpoint=None,
+                        review_mode="split"):
+            return {"facts": facts,
+                    "questions": [dict(question, status="approved") for question in candidates],
+                    "rejected": [], "stage_errors": [], "stage_status": {"review": "completed"}}
+
+        def interrupted_index(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            arguments = [
+                str(EXAMPLE), "--output", str(output), "--qa-mode", "general",
+                "--general-count", "1", "--parallel-workers", "1", "--allow-network",
+                "--review-mode", "single", "--endpoint", "https://example.invalid", "--model", "model",
+            ]
+            with patch.object(cli, "ChatClient", FakeClient), \
+                    patch.object(cli, "extract_facts", fake_extract), \
+                    patch.object(cli, "generate_from_facts", fake_generate), \
+                    patch.object(cli, "review_candidates", fake_review):
+                with patch.object(cli, "build_evidence_index", interrupted_index):
+                    with self.assertRaises(KeyboardInterrupt):
+                        cli.main(arguments)
+                self.assertTrue(list((output / "stages").glob("*-facts-error.json")))
+                self.assertFalse((output / "evidence-groups.json").exists())
+                scope_bytes = (output / "general-scope.json").read_bytes()
+                (output / "failure.json").write_text('{"status": "failed"}')
+
+                self.assertEqual(cli.main(arguments + ["--resume-output"]), 0)
+                self.assertEqual(calls["extract"], 2)
+                self.assertEqual((output / "general-scope.json").read_bytes(), scope_bytes)
+                self.assertFalse((output / "failure.json").exists())
+                self.assertTrue(list(output.glob("batch-001-candidates.json")))
+                generated = calls["generate"]
+
+                # Saved facts, groups and batches are reused without model work.
+                self.assertEqual(cli.main(arguments + ["--resume-output"]), 0)
+                self.assertEqual(calls["extract"], 2)
+                self.assertEqual(calls["generate"], generated)
+
+                chunks = json.loads((output / "chunks.json").read_text())
+                chunks[0]["context_chars"] = -1
+                (output / "chunks.json").write_text(json.dumps(chunks))
+                self.assertEqual(cli.main(arguments + ["--resume-output"]), 1)
+                self.assertEqual(json.loads((output / "failure.json").read_text())["error_type"],
+                                 "ValueError")
+                self.assertEqual((output / "general-scope.json").read_bytes(), scope_bytes)
+
+    def test_existing_projection_without_resume_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cli.save(root, "scope.json", {"dialogue": []})
+            with self.assertRaises(FileExistsError):
+                cli.save(root, "scope.json", {"dialogue": []})
+
+
 if __name__ == "__main__":
     unittest.main()

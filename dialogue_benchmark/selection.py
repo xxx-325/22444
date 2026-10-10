@@ -824,11 +824,16 @@ def replenish(tasks, limits, budgets, workers, run_batch, project, checkpoint=No
     # a resumed QA run from sending already successful groups again.
     if resume_dir is not None:
         resume_dir = Path(resume_dir)
-        receipts = sorted(resume_dir.glob("batch-*.json"))
+        # Only ``batch-NNN.json`` is a receipt; its sibling candidate and
+        # public files are lists.
+        receipts = sorted(path for path in resume_dir.glob("batch-*.json")
+                          if re.fullmatch(r"batch-\d+\.json", path.name))
         valid = []
         for receipt_path in receipts:
             try:
                 receipt = json.loads(receipt_path.read_text())
+                if not isinstance(receipt, dict):
+                    continue
                 number = receipt.get("batch")
                 audit_path = resume_dir / ("batch-%03d-audit.json" % int(number))
                 audit = json.loads(audit_path.read_text())
