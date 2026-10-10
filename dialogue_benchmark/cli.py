@@ -791,6 +791,19 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         else:
                             projected_group, guard_audit = candidate_review_projection(
                                 active_group, evidence_index, review_candidate)
+                            if (projected_group is None
+                                    and guard_audit.get("reason") == "candidate_guard_over_budget"):
+                                # Keep the selected group's evidence when the
+                                # broader history projection is too large.
+                                # A valid candidate must not disappear only
+                                # because unrelated history exceeded the
+                                # review request budget.
+                                projected_group, fallback_audit = group_review_projection(
+                                    active_group, review_candidate)
+                                if projected_group is not None:
+                                    fallback_audit["reason"] = (
+                                        "selected_subgraph_over_budget_fallback")
+                                    guard_audit = fallback_audit
                         guard_audit.update(
                             candidate_id=review_candidate.get("id"),
                             target_type=review_candidate.get("type", target_type),
