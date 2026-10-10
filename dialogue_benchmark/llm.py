@@ -1157,13 +1157,32 @@ def parse_text_response(content, *, allow_unclosed_file=False):
             raise ValueError("Invalid FOCUS response")
         return {label: {"text": focus, "sources": sources}}
     facts, questions, reviews = [], [], []
+
+    def block_header(line):
+        return line.startswith(("FACT ", "QA ", "REVIEW ")) or line == "REVIEW"
+
+    def in_block(index, end_marker):
+        # A block ends at its marker, at the next block header, or at EOF.
+        # Without the boundary a missing marker silently merged the next
+        # block into this one.
+        return index < len(lines) and lines[index] != end_marker and not block_header(lines[index])
+
+    def close_block(index, end_marker, complete, label):
+        """Return the block's last line index; without its marker the block
+        must have its required fields."""
+        if index < len(lines) and lines[index] == end_marker:
+            return index
+        if not complete:
+            raise ValueError("Unclosed %s block" % label)
+        return index - 1
+
     index = 0
     while index < len(lines):
         line = lines[index]
         if line.startswith("FACT "):
             item = {"id": line[5:].strip()}
             index += 1
-            while index < len(lines) and lines[index] != "END_FACT":
+            while in_block(index, "END_FACT"):
                 sources = _tag_value(lines[index], "SOURCES")
                 statement = _tag_value(lines[index], "TEXT")
                 source_kind = _tag_value(lines[index], "SOURCE_KIND")
@@ -1174,13 +1193,13 @@ def parse_text_response(content, *, allow_unclosed_file=False):
                 elif source_kind is not None:
                     item["source_kind"] = source_kind
                 index += 1
-            if index >= len(lines):
-                raise ValueError("Unclosed FACT block")
+            index = close_block(index, "END_FACT",
+                                bool(item.get("sources")) and bool(item.get("statement")), "FACT")
             facts.append(item)
         elif line.startswith("QA "):
             item = {"id": line[3:].strip(), "answer_points": [], "forbidden_points": []}
             index += 1
-            while index < len(lines) and lines[index] != "END_QA":
+            while in_block(index, "END_QA"):
                 fields = {
                     "QA_MODE": "qa_mode", "TYPE": "type", "CATEGORY": "category",
                     "DIFFICULTY": "difficulty",
@@ -1213,20 +1232,21 @@ def parse_text_response(content, *, allow_unclosed_file=False):
                             "text": text,
                             "sources": _parse_sources(sources if marker else "")})
                 index += 1
-            if index >= len(lines):
-                raise ValueError("Unclosed QA block")
+            index = close_block(index, "END_QA",
+                                bool(item.get("question")) and bool(item["answer_points"]), "QA")
             questions.append(item)
         elif line == "REVIEW" or line.startswith("REVIEW "):
             item = {"id": line[7:].strip()}
             index += 1
-            while index < len(lines) and lines[index] != "END_REVIEW":
+            while in_block(index, "END_REVIEW"):
                 if ":" in lines[index]:
                     key, value = lines[index].split(":", 1)
                     value = value.strip()
                     item[key.strip()] = value == "true" if value in {"true", "false"} else value
                 index += 1
-            if index >= len(lines):
-                raise ValueError("Unclosed REVIEW block")
+            # Review fields differ by stage, so completeness cannot be judged
+            # here: a review always needs its END_REVIEW marker.
+            index = close_block(index, "END_REVIEW", False, "REVIEW")
             reviews.append(item)
         index += 1
     if facts:

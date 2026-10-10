@@ -293,6 +293,25 @@ END_FACT
         self.assertEqual(parsed["facts"][0]["sources"], ["e1"])
         self.assertEqual(parsed["facts"][0]["statement"], "旧版本曾使用少量 Memory")
 
+    def test_tagged_blocks_end_at_next_header_or_eof_without_merging(self):
+        # Observed in a real run: the provider omitted END_FACT after the
+        # last complete fact (finish_reason=stop).
+        parsed = parse_text_response(
+            "FACT f1\nSOURCES: e1\nTEXT: one\n\nFACT f2\nSOURCES: e2\nTEXT: two")
+        self.assertEqual([(f["id"], f["sources"], f["statement"]) for f in parsed["facts"]],
+                         [("f1", ["e1"], "one"), ("f2", ["e2"], "two")])
+        parsed = parse_text_response(
+            "QA q1\nQUESTION: 一？\nANSWER_POINT: A || SOURCES: e1\n"
+            "QA q2\nQUESTION: 二？\nANSWER_POINT: B || SOURCES: e2\nEND_QA")
+        self.assertEqual([q["question"] for q in parsed["questions"]], ["一？", "二？"])
+
+    def test_tagged_block_without_marker_must_be_complete(self):
+        for content in ("FACT f1\nSOURCES: e1", "FACT f1\nTEXT: one\nFACT f2\nSOURCES: e2\nTEXT: two",
+                        "QA q1\nQUESTION: 一？", "REVIEW q1\nverdict: keep",
+                        "REVIEW q1\nverdict: keep\nREVIEW q2\nverdict: drop\nEND_REVIEW"):
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, "Unclosed"):
+                parse_text_response(content)
+
     def test_empty_forbidden_marker_is_treated_as_empty_list(self):
         parsed = parse_text_response("""QA q1
 TYPE: constraint_followthrough
