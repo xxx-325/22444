@@ -23,17 +23,13 @@ from dialogue_benchmark.task_eval.run import (admission, freeze, implementation_
                                                _static_repository_recovery,
                                                external_clarification_history,
                                                repository_design_probe,
-                                               classify_repository_probe,
-                                               decisive_rule_literals,
-                                               rule_literal_leakage,
-                                               validate_decision_points,
                                                qa_label)
 from dialogue_benchmark.task_eval.artifacts import (anchor_metadata_errors,
                                                      normalize_anchor_metadata)
 
 
 class TaskEvaluationTests(unittest.TestCase):
-    def test_external_qa_can_omit_legacy_single_type_and_keep_anchor_metadata(self):
+    def test_external_candidate_requires_anchor_metadata(self):
         self.assertEqual(anchor_metadata_errors({
             "anchor_ids": ["external-1", "external-2"],
             "required_anchor_ids": ["external-2"],
@@ -48,48 +44,15 @@ class TaskEvaluationTests(unittest.TestCase):
               "memory_kinds": ["M1", "M5"]})
         self.assertEqual(anchor_metadata_errors({
             "anchor_ids": ["external-1"], "required_anchor_ids": ["external-2"]}),
-                         ["required_anchor_ids_not_subset"])
+                         ["memory_kinds_missing", "required_anchor_ids_not_subset"])
+        self.assertIn("anchor_ids_missing", anchor_metadata_errors({}))
+        self.assertIn("memory_kinds_invalid", anchor_metadata_errors({
+            "anchor_ids": ["external-1"], "required_anchor_ids": ["external-1"],
+            "memory_kinds": ["M7"]}))
 
-    def test_decision_points_require_anchors_and_observable_variants(self):
-        decision = {"required_anchor_ids": ["external-1", "external-2"],
-                    "DEFAULT": "Use the normal routing.",
-                    "RULE": "When status=approved, route to the priority queue.",
-                    "SEPARATING_INPUT": "status"}
-        result = validate_decision_points(decision,
-                                          ["external-1", "external-2"],
-                                          "Route the request using the supplied status.")
-        self.assertTrue(result["valid"], result)
-        self.assertEqual(result["points"][0]["required_anchor_ids"],
-                         ["external-1", "external-2"])
-        self.assertEqual(decisive_rule_literals(decision["RULE"]), ["approved"])
-        self.assertEqual(rule_literal_leakage(
-            "Route approved requests using the supplied status.", decision["RULE"]),
-            {"leaked": True, "literals": ["approved"], "matches": ["approved"]})
-        leaked = validate_decision_points(decision, ["external-1", "external-2"],
-                                          "Route approved requests using the supplied status.")
-        self.assertIn("decision_1_rule_literal_leaked", leaked["errors"])
-        invalid = validate_decision_points(
-            {"DEFAULT": "same", "RULE": "same", "SEPARATING_INPUT": "status"},
-            [])
-        self.assertFalse(invalid["valid"])
-        self.assertIn("decision_1_required_anchor_ids_missing", invalid["errors"])
-        self.assertIn("decision_1_default_equals_rule", invalid["errors"])
-
-    def test_probe_classification_does_not_infer_history_from_solver_failure(self):
-        self.assertEqual(classify_repository_probe({"status": "pass", "recoverable": False}),
-                         "needs_review")
-        self.assertEqual(classify_repository_probe({"status": "needs_review", "recoverable": False}),
-                         "needs_review")
-        self.assertEqual(classify_repository_probe({"decision": "history_required"}),
-                         "history_required")
-        self.assertEqual(classify_repository_probe({"decision": "recoverable"}),
-                         "repository_recoverable")
-        self.assertEqual(classify_repository_probe({"status": "needs_review"}, static_recovery=True),
-                         "repository_recoverable")
-
-    def test_qa_label_keeps_legacy_type_and_supports_mixed_memory_kinds(self):
+    def test_qa_label_does_not_turn_anchor_kinds_into_a_type(self):
         self.assertEqual(qa_label({"type": "M1"}), "M1")
-        self.assertEqual(qa_label({"memory_kinds": ["M5", "M1"]}), "M1+M5")
+        self.assertEqual(qa_label({"memory_kinds": ["M5", "M1"]}), "untyped")
         self.assertEqual(qa_label({}), "untyped")
 
     def test_empty_external_groups_save_shortfall_before_provider_or_runtime(self):
@@ -180,6 +143,9 @@ class TaskEvaluationTests(unittest.TestCase):
                                     "question": "Question %d" % index,
                                     "answer_points": [{"text": "Answer %d" % index}]},
                             "qa_source": "external", "generation_input": "/tmp/input-%d" % index,
+                            "anchor_ids": ["event-%d" % index],
+                            "required_anchor_ids": ["event-%d" % index],
+                            "memory_kinds": ["M%d" % index],
                             "source_ids": [source], "associations": ["task:checkout"],
                             "provisional": False})
         with patch("dialogue_benchmark.task_eval.artifacts.read",
@@ -190,6 +156,12 @@ class TaskEvaluationTests(unittest.TestCase):
             self.assertEqual([point["text"] for point in grouped[0]["qa"]["answer_points"]],
                              ["Answer 1", "Answer 2"])
             self.assertNotIn("type", grouped[0]["qa"])
+            self.assertEqual(grouped[0]["required_anchor_ids"], ["event-1", "event-2"])
+            self.assertEqual(grouped[0]["memory_kinds"], ["M1", "M2"])
+            self.assertEqual(grouped[0]["qa_members"], members)
+            self.assertEqual(grouped[0]["source_ids"], ["m1", "m2"])
+            for key in ("anchor_ids", "required_anchor_ids", "memory_kinds", "combination_reason"):
+                self.assertNotIn(key, grouped[0]["qa"])
             request = generation_request(grouped[0])
             self.assertEqual([row["qa_id"] for row in request["questions"]], ["q1", "q2"])
 
@@ -794,19 +766,45 @@ class TaskEvaluationTests(unittest.TestCase):
             root = Path(directory)
             (root / "stages").mkdir()
             question = {"id": "q1", "status": "approved", "question": "Question",
-                        "answer_points": [{"text": "Public rule", "sources": ["e1"]}],
-                        "anchor_ids": ["e1"], "required_anchor_ids": ["e1"],
-                        "memory_kinds": ["M1"]}
+                        "answer_points": [{"text": "Public rule", "sources": ["e1"]}]}
+            candidate = dict(question, anchor_ids=["e1"], required_anchor_ids=["e1"],
+                             memory_kinds=["M1"])
             (root / "qa-public.json").write_text(json.dumps({"questions": [question]}))
             (root / "manifest.json").write_text(json.dumps({"qa_source": "external"}))
             (root / "stages/group-raw-candidates.json").write_text(
                 json.dumps({"questions": [question]}))
+            save(root / "qa-audit.json", {"questions": [candidate]})
             request = {"payload": {"scope": {"dialogue": [{"id": "e1"}]}}}
             (root / "stages/group-qa-input.json").write_text(json.dumps(request))
             result = qa_inputs(root)
             self.assertEqual(len(result), 1)
             self.assertEqual(result[0]["required_anchor_ids"], ["e1"])
             self.assertNotIn("type", result[0]["qa"])
+
+    def test_external_candidate_missing_required_or_invalid_kind_is_rejected(self):
+        question = {"id": "q1", "status": "approved", "question": "Question",
+                    "answer_points": [{"text": "Public rule", "sources": ["e1"]}]}
+        contract = {"anchor_ids": ["e1"], "required_anchor_ids": ["e1"],
+                    "memory_kinds": ["M1"]}
+        cases = [({}, "anchor_ids_missing"),
+                 ({"anchor_ids": ["e1"], "memory_kinds": ["M1"]},
+                  "required_anchor_ids_missing"),
+                 (dict(contract, memory_kinds=["M7"]), "memory_kinds_invalid"),
+                 (dict(contract, required_anchor_ids=["other"]),
+                  "required_anchor_ids_not_subset")]
+        for metadata, reason in cases:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                save(root / "manifest.json", {"qa_source": "external"})
+                save(root / "qa-public.json", {"questions": [question]})
+                save(root / "qa-audit.json", {"questions": [dict(question, **metadata)]})
+                save(root / "stages/group-raw-candidates.json", {
+                    "questions": [dict(question, **contract)]})
+                save(root / "stages/group-qa-input.json", {
+                    "payload": {"scope": {"dialogue": [{"id": "e1"}]}}})
+                diagnostics = []
+                self.assertEqual(qa_inputs(root, diagnostics=diagnostics), [])
+                self.assertIn(reason, diagnostics[0]["reason"])
 
     def test_provisional_qa_can_feed_tasks_without_becoming_approved(self):
         with tempfile.TemporaryDirectory() as directory:
