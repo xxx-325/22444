@@ -714,6 +714,10 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             self.assertIsNone(reason("e1", allowed), allowed)
         self.assertEqual(reason("e1"), "external_anchor_not_cited")
         self.assertEqual(reason("e9"), "external_anchor_not_cited")
+        # A later User message that is another event's declared source states
+        # that event's rule, not a correction of this one.
+        scope["external_foreign_source_ids"] = ["e8"]
+        self.assertEqual(reason("e8"), "external_anchor_not_cited")
         self.assertIsNone(external_anchor_reason(
             {"answer_points": [{"text": "x", "sources": ["e1"]}]}, dict(scope, external_event_id=None)))
 

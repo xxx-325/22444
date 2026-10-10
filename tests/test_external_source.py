@@ -232,6 +232,16 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertNotIn("e4", ids)
         self.assertNotIn("e5", ids)
 
+    def test_each_scope_lists_other_events_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": [
+                dict(id="a", kind="compatibility_contract", memory_kind="M1", source_ids=["e1"]),
+                dict(id="b", kind="compatibility_contract", memory_kind="M1", source_ids=["e2"])]}))
+            scopes = load_external_scopes(path, self.records, 3, merge_task_events=False)["scopes"]
+        self.assertEqual({scope["external_event_id"]: scope["external_foreign_source_ids"]
+                          for scope in scopes}, {"a": ["e2"], "b": ["e1"]})
+
     def test_confirmation_and_observation_have_distinct_evidence(self):
         scope = {"dialogue": self.records, "external_source_ids": ["e1", "e2"],
                  "external_usage_ids": ["e2", "e3"]}

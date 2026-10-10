@@ -111,8 +111,8 @@ def external_anchor_reason(question, scope):
     """Reject an external answer that does not rest on its own event.
 
     An answer must cite the event source, a declared use or context, or a
-    later public User message (a correction of that rule).  Earlier,
-    undeclared messages belong to other events.
+    later public User message (a correction of that rule) that is not the
+    declared source of another event.
     """
     if not isinstance(scope, dict) or not scope.get("external_event_id"):
         return None
@@ -128,11 +128,13 @@ def external_anchor_reason(question, scope):
     rows = [row for row in scope.get("dialogue", []) if isinstance(row, dict)]
     source_orders = [row.get("order") for row in rows
                      if row.get("id") in sources and isinstance(row.get("order"), int)]
+    foreign = set(scope.get("external_foreign_source_ids") or [])
     if source_orders:
         allowed.update(row.get("id") for row in rows
                        if row.get("kind") == "message" and row.get("role") == "user"
                        and isinstance(row.get("order"), int)
-                       and row["order"] > min(source_orders))
+                       and row["order"] > min(source_orders)
+                       and row.get("id") not in foreign)
     return None if cited & allowed else "external_anchor_not_cited"
 
 
@@ -458,6 +460,12 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
             rejected.append({"id": event["id"], "reason": "external_group_budget"})
             continue
         scopes.append(_event_scope(event, records, records_by_id, cutoff, len(scopes), max_chars))
+    # A later message may correct this event's rule, unless it is the
+    # declared source of another event; then it states that event's rule.
+    for scope in scopes:
+        own = set(scope["external_source_ids"])
+        scope["external_foreign_source_ids"] = sorted(
+            {source for event in accepted for source in event["source_ids"]} - own)
     return {"version": document.get("version"), "events": accepted,
             "scopes": scopes, "rejected": rejected}
 
