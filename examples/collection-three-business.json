@@ -17,19 +17,19 @@
     {
       "id": "customer-service-platform",
       "brief": "Build a small customer service collaboration platform for a support team. It should grow through real work on customer records, tickets, service levels, assignment and escalation, pauses and closure, service history, and operational reporting. The product must remain usable from its normal command or API entry points, persist data locally, and have tests. Later work should cross these behaviors instead of becoming isolated helper functions.",
-      "increments": 0,
+      "increments": 6,
       "scenarios": [
         {
           "id": "service-operations",
           "brief": "Continue the support team's product through several related operational changes. Let the user ask questions, inspect behavior, observe failed attempts, correct business expectations, and later rely on those decisions in another part of the workflow.",
           "external_attempt_budget": 18,
           "external_attempt_distribution": [
-            {"stage": 1, "behavior": "customer records and ticket intake", "memory_kinds": ["M1", "M2"], "attempts": 3},
-            {"stage": 2, "behavior": "service levels and assignment", "memory_kinds": ["M1", "M3", "M4"], "attempts": 3},
-            {"stage": 3, "behavior": "escalation and pause handling", "memory_kinds": ["M2", "M4"], "attempts": 3},
-            {"stage": 4, "behavior": "service history and closure", "memory_kinds": ["M1", "M3", "M6"], "attempts": 3},
-            {"stage": 5, "behavior": "operational reporting", "memory_kinds": ["M2", "M5"], "attempts": 3},
-            {"stage": 6, "behavior": "cross-workflow support operations", "memory_kinds": ["M1", "M4", "M6"], "attempts": 3}
+            {"stage": 1, "behavior": "customer records and ticket intake", "slots": {"M1": 2, "M2": 1}},
+            {"stage": 2, "behavior": "service levels and assignment", "slots": {"M1": 1, "M3": 1, "M4": 1}},
+            {"stage": 3, "behavior": "escalation and pause handling", "slots": {"M2": 2, "M4": 1}},
+            {"stage": 4, "behavior": "service history and closure", "slots": {"M1": 1, "M3": 1, "M6": 1}},
+            {"stage": 5, "behavior": "operational reporting", "slots": {"M2": 2, "M5": 1}},
+            {"stage": 6, "behavior": "cross-workflow support operations", "slots": {"M1": 1, "M4": 1, "M6": 1}}
           ],
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Only facts, corrections, failures, and environment observations made public during the conversation count as history."
@@ -39,19 +39,19 @@
     {
       "id": "data-migration-reconciliation",
       "brief": "Build a local data migration and reconciliation tool for moving records between two evolving formats. It should support imports, field mapping, incremental runs, duplicate and difference checks, resumable failures, rollback, and readable reports. The normal command line workflow and persisted run state must remain usable and tested. Later work should combine data rules, recovery behavior, and reporting rather than adding unrelated one-line fixes.",
-      "increments": 0,
+      "increments": 6,
       "scenarios": [
         {
           "id": "migration-operations",
           "brief": "Continue the migration tool through several real data-operations requests. Let implementation attempts, command results, user questions, corrections, and later reconciliation work shape the product naturally.",
           "external_attempt_budget": 18,
           "external_attempt_distribution": [
-            {"stage": 1, "behavior": "source import and field mapping", "memory_kinds": ["M1", "M2"], "attempts": 3},
-            {"stage": 2, "behavior": "incremental migration and duplicates", "memory_kinds": ["M1", "M3", "M4"], "attempts": 3},
-            {"stage": 3, "behavior": "difference checks and reports", "memory_kinds": ["M2", "M4"], "attempts": 3},
-            {"stage": 4, "behavior": "resumable failure handling", "memory_kinds": ["M1", "M3", "M6"], "attempts": 3},
-            {"stage": 5, "behavior": "rollback and persisted run state", "memory_kinds": ["M2", "M5"], "attempts": 3},
-            {"stage": 6, "behavior": "cross-run reconciliation", "memory_kinds": ["M1", "M4", "M6"], "attempts": 3}
+            {"stage": 1, "behavior": "source import and field mapping", "slots": {"M1": 2, "M2": 1}},
+            {"stage": 2, "behavior": "incremental migration and duplicates", "slots": {"M1": 1, "M3": 1, "M4": 1}},
+            {"stage": 3, "behavior": "difference checks and reports", "slots": {"M2": 2, "M4": 1}},
+            {"stage": 4, "behavior": "resumable failure handling", "slots": {"M1": 1, "M3": 1, "M6": 1}},
+            {"stage": 5, "behavior": "rollback and persisted run state", "slots": {"M2": 2, "M5": 1}},
+            {"stage": 6, "behavior": "cross-run reconciliation", "slots": {"M1": 1, "M4": 1, "M6": 1}}
           ],
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Count an environment difference only after it appears in a public command or test result."
@@ -61,19 +61,19 @@
     {
       "id": "release-change-orchestrator",
       "brief": "Build a release change orchestration tool for a small engineering team. It should manage change plans, dependency checks, staged rollout, pause and resume, rollback after failed observations, and an audit trail. It must have a usable command or API, persistent state, and tests. Later work should require coordination between planning, execution, rollback, and audit behavior.",
-      "increments": 0,
+      "increments": 6,
       "scenarios": [
         {
           "id": "change-operations",
           "brief": "Continue the release workflow through several related changes. Let the user investigate current behavior, ask for explanations, run commands, report unexpected results, correct operating expectations, and later reuse earlier decisions.",
           "external_attempt_budget": 18,
           "external_attempt_distribution": [
-            {"stage": 1, "behavior": "change planning and dependency checks", "memory_kinds": ["M1", "M2"], "attempts": 3},
-            {"stage": 2, "behavior": "staged rollout preparation", "memory_kinds": ["M1", "M3", "M4"], "attempts": 3},
-            {"stage": 3, "behavior": "pause and resume operations", "memory_kinds": ["M2", "M4"], "attempts": 3},
-            {"stage": 4, "behavior": "failure rollback", "memory_kinds": ["M1", "M3", "M6"], "attempts": 3},
-            {"stage": 5, "behavior": "audit trail and reporting", "memory_kinds": ["M2", "M5"], "attempts": 3},
-            {"stage": 6, "behavior": "cross-change release operations", "memory_kinds": ["M1", "M4", "M6"], "attempts": 3}
+            {"stage": 1, "behavior": "change planning and dependency checks", "slots": {"M1": 2, "M2": 1}},
+            {"stage": 2, "behavior": "staged rollout preparation", "slots": {"M1": 1, "M3": 1, "M4": 1}},
+            {"stage": 3, "behavior": "pause and resume operations", "slots": {"M2": 2, "M4": 1}},
+            {"stage": 4, "behavior": "failure rollback", "slots": {"M1": 1, "M3": 1, "M6": 1}},
+            {"stage": 5, "behavior": "audit trail and reporting", "slots": {"M2": 2, "M5": 1}},
+            {"stage": 6, "behavior": "cross-change release operations", "slots": {"M1": 1, "M4": 1, "M6": 1}}
           ],
           "memory_kinds": ["M1", "M2", "M3", "M4", "M5", "M6"],
           "runtime_conditions": "Use the fixed Python standard-library environment. Only public differences, failures, and corrections become historical evidence."

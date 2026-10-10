@@ -431,8 +431,23 @@ def plan_external_information(projects):
                 for row in raw_distribution:
                     if not isinstance(row, dict):
                         raise ValueError("external attempt distribution rows must be objects")
-                    allowed = row.get("memory_kinds", list(kinds))
-                    attempts = row.get("attempts")
+                    # ``slots`` is the current format: each value is one
+                    # opportunity for that memory class.  The former
+                    # memory_kinds+attempts rows are rejected for new plans.
+                    if "slots" in row:
+                        slots = row["slots"]
+                        if (not isinstance(slots, dict) or not slots
+                                or any(kind not in kinds for kind in slots)
+                                or any(type(value) is not int or value < 0
+                                       for value in slots.values())):
+                            raise ValueError("invalid external attempt distribution slots")
+                        allowed = list(slots)
+                        attempts = sum(slots.values())
+                    else:
+                        raise ValueError(
+                            "external_attempt_distribution uses obsolete memory_kinds+attempts; "
+                            "use slots"
+                        )
                     stage = row.get("stage")
                     behavior = row.get("behavior")
                     if (type(stage) is not int or stage < 1
@@ -441,18 +456,28 @@ def plan_external_information(projects):
                             or not isinstance(allowed, list) or not allowed
                             or any(kind not in kinds for kind in allowed)):
                         raise ValueError("invalid external attempt distribution row")
+                    if stage > stage_count:
+                        raise ValueError("external attempt stage exceeds scenario stages")
+                    if stage > 1 and any(kind in {"M3", "M4", "M5"} for kind in allowed):
+                        raise ValueError("M3-M5 opportunities must be in stage 1")
+                    if any(kind == "M6" for kind in allowed) and stage == stage_count:
+                        raise ValueError("M6 opportunity cannot be in the final stage")
                     opportunities.append({
                         "stage": stage,
                         "behavior": behavior.strip(),
+                        "slots": {kind: slots[kind] for kind in allowed} if "slots" in row else {},
                         "memory_kinds": list(dict.fromkeys(allowed)),
                         "attempts": attempts,
                     })
                     total += attempts
                     for kind in dict.fromkeys(allowed):
-                        distribution[kind] += attempts
+                        distribution[kind] += slots[kind]
                 if total != budget:
                     raise ValueError(
                         "external attempt distribution must sum to external_attempt_budget")
+                missing = [kind for kind in kinds if distribution.get(kind, 0) < 1]
+                if missing:
+                    raise ValueError("each memory kind needs at least one slot: " + ", ".join(missing))
             # Opportunity stages describe business development, not a required
             # chain of prebuilt implementation commits.
             rows.append({
@@ -583,6 +608,14 @@ def validate_plan(plan):
     for key in ("max_total_requests", "max_total_tokens"):
         if type(plan.get(key)) is not int or plan[key] <= 0:
             raise ValueError(key + " must be a positive stage-admission budget")
+    targets = plan.get("memory_coverage_target", {kind: 2 for kind in EXTERNAL_MEMORY_KINDS})
+    if (not isinstance(targets, dict)
+            or set(targets) != set(EXTERNAL_MEMORY_KINDS)
+            or any(type(value) is not int or value < 0 for value in targets.values())):
+        raise ValueError("memory_coverage_target must provide nonnegative M1..M6 integers")
+    topups = plan.get("max_coverage_topups", 1)
+    if type(topups) is not int or topups < 0:
+        raise ValueError("max_coverage_topups must be a nonnegative integer")
     for key, value in plan.get("evaluation", {}).items():
         if key not in EVALUATION_DEFAULTS and key != "group_budget":
             raise ValueError("Unknown evaluation option: " + key)
