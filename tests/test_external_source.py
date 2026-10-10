@@ -5,7 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dialogue_benchmark import cli
-from dialogue_benchmark.external import (external_review_projection, filter_external_facts,
+from dialogue_benchmark.external import (derive_external_anchor_metadata,
+                                         external_review_projection,
+                                         filter_external_facts,
                                          load_external_scopes, external_usage_review)
 from dialogue_benchmark.fact_index import build_evidence_index, static_evidence_check
 from dialogue_benchmark.llm import (_evidence_review_request, memory_authoring_payload,
@@ -62,6 +64,49 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual(scope["edges"], [])
         self.assertEqual(scope["versions"], [])
         self.assertEqual([row["id"] for row in scope["dialogue"]], ["e1", "e2", "e3"])
+
+    def test_external_scope_derives_required_anchor_metadata_without_qa_type(self):
+        records = [*self.records,
+                   {"id": "e4", "order": 4, "kind": "message", "role": "user",
+                    "text": "部署环境需要保留空字段。", "source_kind": "conversation"},
+                   {"id": "e5", "order": 5, "kind": "message", "role": "assistant",
+                    "text": "我会在发布流程中应用该规则。", "source_kind": "conversation"}]
+        events = [
+            {"id": "policy", "kind": "compatibility_contract", "memory_kind": "M1",
+             "focus": "空字段处理", "source_ids": ["e1"], "used_by": ["e3"]},
+            {"id": "environment", "kind": "environment_observation", "memory_kind": "M5",
+             "focus": "空字段处理", "source_ids": ["e4"], "used_by": ["e5"]},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": events}))
+            loaded = load_external_scopes(path, records, 5, merge_task_events=False)
+        combined = next(scope for scope in loaded["scopes"]
+                        if scope["external_event_id"].startswith("combined-"))
+        metadata, reason = derive_external_anchor_metadata(
+            combined,
+            {"answer_points": [
+                {"text": "保留空字段", "sources": ["e1"]},
+                {"text": "部署环境也适用", "sources": ["e4"]},
+            ]})
+        self.assertIsNone(reason)
+        self.assertEqual(metadata["required_anchor_ids"],
+                         ["policy", "environment"])
+        self.assertEqual(metadata["memory_kinds"], ["M1", "M5"])
+        self.assertIn("combination_reason", metadata)
+
+    def test_external_anchor_metadata_keeps_supporting_anchor_out_of_required_set(self):
+        scope = {
+            "anchor_ids": ["a1", "a2"],
+            "anchor_memory_kinds": {"a1": ["M1"], "a2": ["M5"]},
+            "anchor_source_map": {"e1": ["a1"], "e2": ["a2"]},
+        }
+        metadata, reason = derive_external_anchor_metadata(
+            scope, {"answer_points": [{"text": "rule", "sources": ["e1"]}]})
+        self.assertIsNone(reason)
+        self.assertEqual(metadata["anchor_ids"], ["a1", "a2"])
+        self.assertEqual(metadata["required_anchor_ids"], ["a1"])
+        self.assertEqual(metadata["memory_kinds"], ["M1"])
 
     def test_same_source_events_keep_distinct_focus_in_generation_requests(self):
         events = [

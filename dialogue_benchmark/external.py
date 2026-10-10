@@ -70,6 +70,73 @@ def _event_focus(event):
             return value.strip()
     return None
 
+
+def _canonical_source(source):
+    """Ignore a local fragment suffix when matching an anchor source."""
+    return source.partition("#fragment-")[0] if isinstance(source, str) else source
+
+
+def derive_external_anchor_metadata(scope, question):
+    """Derive control-side anchor metadata from cited public evidence.
+
+    External QA does not receive a single ``type`` label.  The only
+    deterministic source of necessity is the answer's public citations and the
+    event-to-source map recorded when the scope was built.  A supporting anchor
+    may remain in ``anchor_ids`` without entering ``required_anchor_ids``.
+    """
+    if not isinstance(scope, dict) or not isinstance(question, dict):
+        return None, "invalid_external_anchor_input"
+    anchor_ids = list(dict.fromkeys(
+        value for value in scope.get("anchor_ids", [])
+        if isinstance(value, str) and value.strip()))
+    source_map = scope.get("anchor_source_map", {})
+    if not isinstance(source_map, dict):
+        source_map = {}
+    required = []
+    cited_sources = []
+    for point in question.get("answer_points", []):
+        if not isinstance(point, dict):
+            continue
+        for source in point.get("sources", []):
+            if not isinstance(source, str):
+                continue
+            if source not in cited_sources:
+                cited_sources.append(source)
+            base = _canonical_source(source)
+            values = source_map.get(source, source_map.get(base, []))
+            if isinstance(values, str):
+                values = [values]
+            for anchor in values if isinstance(values, (list, tuple, set)) else []:
+                if anchor in anchor_ids and anchor not in required:
+                    required.append(anchor)
+    if not anchor_ids:
+        return None, "external_anchor_ids_missing"
+    if not required:
+        return None, "required_anchor_ids_unresolved"
+    kinds_by_anchor = scope.get("anchor_memory_kinds", {})
+    if not isinstance(kinds_by_anchor, dict):
+        kinds_by_anchor = {}
+    memory_kinds = sorted({
+        str(kind).upper()
+        for anchor in required
+        for kind in (kinds_by_anchor.get(anchor, []) if isinstance(
+            kinds_by_anchor.get(anchor, []), (list, tuple, set))
+            else [kinds_by_anchor.get(anchor)])
+        if isinstance(kind, str) and kind.upper() in MEMORY_TYPES
+    })
+    metadata = {
+        "anchor_ids": anchor_ids,
+        "required_anchor_ids": required,
+        "memory_kinds": memory_kinds,
+    }
+    if len(required) > 1:
+        behavior = scope.get("external_behavior") or scope.get("external_focus")
+        reason = "Required public anchors jointly determine the same business decision"
+        if isinstance(behavior, str) and behavior.strip():
+            reason += ": " + behavior.strip()
+        metadata["combination_reason"] = reason
+    return metadata, None
+
 def external_usage_review(document, scope, reference_map):
     """Separate the event-use judgment from immutable answer-point judgments."""
     cleaned = deepcopy(document)
@@ -140,8 +207,35 @@ def external_anchor_reason(question, scope):
              if isinstance(point, dict)
              for source in (point.get("sources") or []) if isinstance(source, str)}
     if not cited:
+        return "no_public_source_cited"
+    metadata_required = question.get("required_anchor_ids")
+    if metadata_required is not None:
+        required = [value for value in metadata_required
+                    if isinstance(value, str) and value.strip()]
+        if not required:
+            return "required_anchor_ids_missing"
+        source_map = scope.get("anchor_source_map", {})
+        if not isinstance(source_map, dict):
+            return "external_anchor_not_cited"
+        reverse = {}
+        for source, anchors in source_map.items():
+            values = [anchors] if isinstance(anchors, str) else anchors
+            if not isinstance(values, (list, tuple, set)):
+                continue
+            for anchor in values:
+                reverse.setdefault(anchor, set()).add(
+                    _canonical_source(source))
+        allowed = {
+            _canonical_source(source) for source in event_sources(scope)
+        }
+        for anchor in required:
+            if not (cited & reverse.get(anchor, set()) & allowed):
+                return ("anchor_not_cited:" + anchor
+                        if len(required) > 1 else "external_anchor_not_cited")
         return None
-    return None if cited & event_sources(scope) else "external_anchor_not_cited"
+    return None if cited & {
+        _canonical_source(source) for source in event_sources(scope)
+    } else "external_anchor_not_cited"
 
 
 def external_review_projection(group, candidate):
@@ -240,6 +334,60 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
     grounded_context = relevant_public_history(history, anchors, anchor_text, cutoff, include_ambiguous=False)
     group_id = "external-%s" % event["id"]
     target_type = event["memory_kind"]
+    # A merged disclosure is one public anchor even if it has several
+    # controller-side event ids.  An explicit combination keeps one anchor
+    # per contributing event so a later candidate can distinguish required
+    # from supporting evidence.
+    if event.get("combination"):
+        anchor_ids = list(dict.fromkeys(
+            event.get("anchor_ids") or event.get("event_ids", [event["id"]])))
+    else:
+        anchor_ids = [event["id"]]
+    anchor_memory_kinds = event.get("anchor_memory_kinds")
+    if not isinstance(anchor_memory_kinds, dict):
+        anchor_memory_kinds = {
+            anchor_ids[0]: list(event.get("memory_kinds", [target_type]))
+        }
+    anchor_memory_kinds = {
+        str(anchor): (list(dict.fromkeys(value)) if isinstance(value, (list, tuple, set))
+                      else [value])
+        for anchor, value in anchor_memory_kinds.items()
+        if isinstance(anchor, str)
+    }
+    source_map = event.get("anchor_source_map")
+    if not isinstance(source_map, dict):
+        source_map = {}
+    source_map = {
+        str(source): list(dict.fromkeys(values if isinstance(values, (list, tuple, set))
+                                        else [values]))
+        for source, values in source_map.items()
+        if isinstance(source, str)
+    }
+    if not source_map:
+        for source in selected_ids:
+            source_map[source] = list(anchor_ids)
+    # A later public correction is part of the event's evidence boundary, but
+    # an earlier related message is only context.  Keep the source map aligned
+    # with event_sources so context cannot be promoted to a required anchor.
+    allowed_ids = set(source_ids) | set(used_by) | set(context_ids)
+    source_orders = [
+        records_by_id[item].get("order", 0)
+        for item in source_ids
+        if item in records_by_id and isinstance(records_by_id[item].get("order"), int)
+    ]
+    foreign = set(event.get("foreign_source_ids", []))
+    if source_orders:
+        allowed_ids.update(
+            row["id"] for row in dialogue
+            if row.get("kind") == "message"
+            and row.get("role") == "user"
+            and isinstance(row.get("order"), int)
+            and row["order"] > min(source_orders)
+            and row.get("id") not in foreign
+        )
+    for row in dialogue:
+        if row["id"] in allowed_ids:
+            source_map.setdefault(row["id"], list(anchor_ids))
     return {
         "cutoff": cutoff,
         "track": "memory",
@@ -255,6 +403,9 @@ def _event_scope(event, records, records_by_id, cutoff, index, max_chars):
         "model_request_chars": max_chars,
         "external_event_id": event["id"],
         "external_event_ids": event.get("event_ids", [event["id"]]),
+        "anchor_ids": anchor_ids,
+        "anchor_memory_kinds": anchor_memory_kinds,
+        "anchor_source_map": source_map,
         "external_kind": event["kind"],
         "memory_kind": target_type,
         "memory_kinds": event.get("memory_kinds", [target_type]),
@@ -366,8 +517,17 @@ def _event_groups(events, records_by_id, *, merge_task_events=True):
         merged = dict(members[-1])
         merged["event_ids"] = [row["id"] for row in members]
         merged["memory_kinds"] = sorted({row["memory_kind"] for row in members})
+        canonical_id = merged["id"]
+        merged["anchor_memory_kinds"] = {
+            canonical_id: sorted({row["memory_kind"] for row in members})
+        }
         for field in ("source_ids", "used_by", "context_ids"):
             merged[field] = list(dict.fromkeys(source for row in members for source in row[field]))
+        merged["anchor_source_map"] = {
+            source: [canonical_id]
+            for source in (merged["source_ids"] + merged["used_by"]
+                           + merged["context_ids"])
+        }
         yield merged
 
 
@@ -383,10 +543,31 @@ def _combination_groups(events):
             continue
         combined = dict(members[-1])
         combined["id"] = "combined-" + "-".join(row["id"] for row in members)
+        # Each merged member is one independent anchor.  ``event_ids`` keeps
+        # the full disclosure lineage, while ``anchor_ids`` names the
+        # canonical member anchors used by the QA contract.
+        combined["anchor_ids"] = [row["id"] for row in members]
         combined["event_ids"] = list(dict.fromkeys(identity for row in members for identity in row["event_ids"]))
         combined["memory_kinds"] = sorted({kind for row in members for kind in row["memory_kinds"]})
+        combined["anchor_memory_kinds"] = {
+            anchor: sorted({kind for kind in row.get("anchor_memory_kinds", {}).get(anchor, [])
+                            if kind in MEMORY_TYPES})
+            for row in members
+            for anchor in row.get("anchor_memory_kinds", {})
+        }
         for field in ("source_ids", "used_by", "context_ids"):
             combined[field] = list(dict.fromkeys(source for row in members for source in row[field]))
+        combined["anchor_source_map"] = {}
+        for row in members:
+            row_map = row.get("anchor_source_map", {})
+            for source in row["source_ids"] + row["used_by"] + row["context_ids"]:
+                anchors = row_map.get(source, [row["id"]])
+                combined["anchor_source_map"].setdefault(source, [])
+                combined["anchor_source_map"][source].extend(anchors)
+        combined["anchor_source_map"] = {
+            source: list(dict.fromkeys(anchors))
+            for source, anchors in combined["anchor_source_map"].items()
+        }
         combined["combination"] = True
         yield combined
 
