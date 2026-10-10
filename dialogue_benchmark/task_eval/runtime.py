@@ -172,7 +172,9 @@ def bounded_model_config(config, max_seconds):
         return config
     bounded_config = dict(config)
     bounded_config["judge"] = dict(judge)
-    bounded_config["judge"]["request_timeout"] = bounded
+    # OpenHands agents accept whole seconds only; a float CLI cap (600.0)
+    # would make every judge-role agent fail before its first request.
+    bounded_config["judge"]["request_timeout"] = max(1, int(bounded))
     return bounded_config
 
 

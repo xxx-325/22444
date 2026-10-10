@@ -186,6 +186,13 @@ class RequestTimeoutTests(unittest.TestCase):
         self.assertEqual(config["judge"]["request_timeout"], 1800)
         self.assertIs(bounded["code"], config["code"])
 
+    def test_bounded_judge_timeout_uses_whole_seconds_for_openhands_agents(self):
+        config = {"judge": {"request_timeout": 1800}, "code": {"request_timeout": 1800}}
+        bounded = bounded_model_config(config, 600.0)["judge"]["request_timeout"]
+        self.assertIs(type(bounded), int)
+        self.assertEqual(bounded, 600)
+        self.assertEqual(bounded_model_config(config, 0.5)["judge"]["request_timeout"], 1)
+
     def configured(self, original, control):
         with patch.dict("sys.modules", {"simulator.episode": SimpleNamespace(load_environment=lambda _: None)}), \
                 patch("sys.path", []), patch.dict("os.environ", {"TEST_KEY": "test-only"}), \
