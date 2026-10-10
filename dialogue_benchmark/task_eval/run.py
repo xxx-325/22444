@@ -90,8 +90,10 @@ def external_clarification_history(item):
     records so that a ``HISTORY_QUESTION`` can be answered without inventing
     facts or silently turning the full dialogue into solver context.
     """
-    qa = item.get("qa", {})
-    points = list(qa.get("answer_points", []))
+    # Published QA drops answer sources; the reviewed candidate keeps them.
+    points = [point for member in item.get("qa_members", [item])
+              for point in member.get("reviewed_candidate", member.get("qa", {})).get(
+                  "answer_points", [])]
     global_agreements = list(item.get("global_agreements", []))
     source_ids = {
         source for point in points

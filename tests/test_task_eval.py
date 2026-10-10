@@ -555,6 +555,26 @@ class TaskEvaluationTests(unittest.TestCase):
         self.assertEqual(history["contracts"][0]["sources"], ["e1"])
         self.assertEqual(history["events"][0]["text"], "The provider disabled SMS.")
 
+    def test_external_responder_history_uses_reviewed_sources_of_published_qa(self):
+        records = [{"id": "e1", "original_id": "e1", "order": 3, "kind": "message",
+                    "role": "user", "text": "The provider disabled SMS."},
+                   {"id": "e2", "original_id": "e2", "order": 5, "kind": "message",
+                    "role": "user", "text": "Email stays enabled."}]
+        def member(qa_id, text, source):
+            # Published QA keeps answer text only; sources live in the reviewed candidate.
+            return {"qa_source": "external", "public_records": records,
+                    "qa": {"id": qa_id, "answer_points": [{"text": text}]},
+                    "reviewed_candidate": {"id": qa_id,
+                                           "answer_points": [{"text": text, "sources": [source]}]}}
+        single = member("q1", "SMS is disabled.", "e1")
+        history = external_clarification_history(single)
+        self.assertEqual(history["contracts"][0]["sources"], ["e1"])
+        grouped = dict(single, qa={"id": "group", "answer_points": [{"text": "SMS is disabled."},
+                                                                  {"text": "Email stays enabled."}]},
+                       qa_members=[single, member("q2", "Email stays enabled.", "e2")])
+        history = external_clarification_history(grouped)
+        self.assertEqual([row["sources"] for row in history["contracts"]], [["e1"], ["e2"]])
+
     def test_repository_probe_error_stays_needs_review_and_m1_requires_probe(self):
         validation = {"BASELINE": "unmet", "REFERENCE": "pass", "VERDICT": "accept",
                       "TESTS": "unavailable", "MUTATIONS": "unavailable", "COVERAGE": "complete"}
