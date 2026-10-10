@@ -20,7 +20,9 @@ DEFAULT_DIFFICULTY_RATIOS = {
 
 def _static_difficulty(question):
     """Return only the deterministic graph label used for balancing."""
-    if question.get("difficulty_origin") not in {"static_graph_distance", "static_evidence_complexity"}:
+    if question.get("difficulty_origin") not in {
+            "static_graph_distance", "static_evidence_complexity",
+            "anchor_evidence"}:
         return None
     level = question.get("difficulty")
     return level if level in DIFFICULTY_LEVELS else None
@@ -646,6 +648,18 @@ def type_balance(questions, limits):
     targets = type_targets(questions, limits)
     balance = {}
     for mode in limits:
+        if mode == "memory" and any(
+                isinstance(question, dict) and question.get("anchor_ids")
+                for question in questions):
+            scoped = [question for question in questions
+                      if question.get("qa_mode", "code") == mode]
+            balance[mode] = {
+                "target": {},
+                "actual": {},
+                "unknown": len(scoped),
+                "shortfall": {},
+            }
+            continue
         actual = Counter()
         unknown = 0
         for question in questions:

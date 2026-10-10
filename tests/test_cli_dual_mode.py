@@ -256,6 +256,22 @@ class DualModeCliTests(unittest.TestCase):
         self.assertNotIn("repository_probe", projected)
         self.assertNotIn("event-1", json.dumps(projected))
 
+    def test_multi_anchor_external_projection_has_no_single_public_type(self):
+        candidate = {
+            "id": "q1", "qa_mode": "memory", "type": "M1",
+            "anchor_ids": ["a1", "a2"],
+            "required_anchor_ids": ["a1", "a2"],
+            "memory_kinds": ["M1", "M5"],
+            "combination_reason": "Both rules determine the release decision.",
+            "question": "Which release decision should be applied?",
+            "answer_points": [{"text": "Apply both constraints.", "sources": ["e1", "e2"]}],
+            "forbidden_points": [],
+        }
+        projected = cli._public_question(candidate)
+        self.assertNotIn("type", projected)
+        self.assertNotIn("anchor_ids", projected)
+        self.assertNotIn("memory_kinds", projected)
+
     def test_credentials_reject_whole_question_in_each_public_field(self):
         secrets = ["-----BEGIN OPENSSH PRIVATE KEY-----",
                    "Bearer synthetic-test-token", "sk-" + "x" * 24,

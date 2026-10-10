@@ -316,9 +316,13 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
     def test_task_input_keeps_reviewed_sources_and_original_draft_separately(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            original = dict(id="q1", type="M1", status="approved", answer_points=[
+            original = dict(id="q1", status="approved", answer_points=[
                 dict(text="Keep nulls", sources=["e1"])])
-            corrected = dict(original, answer_points=[dict(text="Omit note nulls for Harbor only", sources=["e3"])])
+            corrected = dict(id="q1", status="approved",
+                            answer_points=[dict(text="Omit note nulls for Harbor only",
+                                                sources=["e3"])],
+                            anchor_ids=["a1"], required_anchor_ids=["a1"],
+                            memory_kinds=["M1"])
             save(root / "qa-public.json", {"questions": [corrected]})
             save(root / "qa-audit.json", {"questions": [corrected]})
             save(root / "manifest.json", {"qa_source": "external"})
@@ -348,8 +352,11 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             with self.subTest(lineage=lineage), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 # e1 is shared conversation context; the question came from "absence".
-                question = dict(id="q1", type="M1", status="approved",
-                                answer_points=[dict(text="Dispatcher marks absence", sources=["e1", "e3"])])
+                question = dict(id="q1", status="approved",
+                                answer_points=[dict(text="Dispatcher marks absence",
+                                                    sources=["e1", "e3"])],
+                                anchor_ids=[expected[0]], required_anchor_ids=[expected[0]],
+                                memory_kinds=["M1"])
                 if lineage is not None:
                     question["external_lineage"] = lineage
                 else:
@@ -372,9 +379,11 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
     def test_task_input_rejects_a_lineage_event_missing_from_the_sidecar(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            question = dict(id="q1", type="M1", status="approved",
+            question = dict(id="q1", status="approved",
                             external_lineage={"event_ids": ["missing"]},
-                            answer_points=[dict(text="Keep nulls", sources=["e1"])])
+                            answer_points=[dict(text="Keep nulls", sources=["e1"])],
+                            anchor_ids=["missing"], required_anchor_ids=["missing"],
+                            memory_kinds=["M1"])
             save(root / "qa-public.json", {"questions": [question]})
             save(root / "qa-audit.json", {"questions": [question]})
             save(root / "manifest.json", {"qa_source": "external"})
@@ -390,8 +399,10 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
     def test_task_input_drops_workflow_from_a_disjoint_focus(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            question = dict(id="q1", type="M6", status="approved",
-                            answer_points=[dict(text="Keep the permit zone", sources=["e2"])])
+            question = dict(id="q1", status="approved",
+                            answer_points=[dict(text="Keep the permit zone", sources=["e2"])],
+                            anchor_ids=["a1"], required_anchor_ids=["a1"],
+                            memory_kinds=["M6"])
             save(root / "qa-public.json", {"questions": [question]})
             save(root / "manifest.json", {"qa_source": "external"})
             save(root / "stages/group-raw-candidates.json", {"questions": [question]})
@@ -914,22 +925,24 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
             self.assertEqual(manifest["progress"]["targets"], {"memory": 1})
             self.assertEqual(manifest["progress"]["stop_reasons"], {"memory": "target_reached"})
             self.assertEqual(set(manifest["coverage"]), {"memory"})
-            self.assertEqual(manifest["questions"]["type"], {"unknown": 1})
+            self.assertEqual(manifest["questions"]["type"], {})
+            self.assertEqual(
+                manifest["questions"]["anchor_coverage"]["required_memory_kinds"]["M1"], 1)
             self.assertNotIn("general_count", manifest)
             self.assertFalse((output / "general-qa.json").exists())
             self.assertFalse((output / "code-qa.json").exists())
             items = qa_inputs(output)
             self.assertEqual(len(items), 1)
-            # The published type is inferred from the answer evidence.  If
-            # the evidence does not justify a memory class, retain the item
-            # as unknown instead of copying the event's controller label.
-            self.assertEqual(items[0]["qa"]["type"], "unknown")
-            self.assertEqual(items[0]["original_candidate"]["type"], "M1")
+            # M1-M6 belongs to the external information, not the public QA.
+            self.assertNotIn("type", items[0]["qa"])
+            self.assertEqual(items[0]["required_anchor_ids"], ["x1"])
+            self.assertEqual(items[0]["memory_kinds"], ["M1"])
+            self.assertNotIn("type", items[0]["original_candidate"])
             self.assertTrue(Path(items[0]["generation_input"]).is_file())
             self.assertEqual(items[0]["development_workflow"], "增加批量导出：读取记录 → 导出 → 汇总结果")
             view = build(output)
             self.assertEqual(view["targets"], {"memory": 1})
-            self.assertEqual(view["questions"][0]["type"], "unknown")
+            self.assertIn(view["questions"][0].get("type"), (None, "unknown"))
             self.assertEqual(view["meta"]["expansion_mode"], "external_events")
 
     def test_empty_external_pool_stays_reviewable_without_model_calls(self):

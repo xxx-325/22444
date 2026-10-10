@@ -11,14 +11,16 @@ from pathlib import Path
 from threading import Lock
 
 from .chunking import split_scope
+from .anchor_graph import difficulty_basis
 from .fact_index import (build_evidence_groups, build_evidence_index,
                          merge_scopes, _source_index,
                          group_review_projection, candidate_review_projection, coverage_report,
                          expand_evidence_group_once,
                          static_candidate_labels, static_candidate_types,
                          static_evidence_check)
-from .external import (external_anchor_reason, external_review_projection,
-                       filter_external_facts, load_external_scopes)
+from .external import (derive_external_anchor_metadata, external_anchor_reason,
+                       external_review_projection, filter_external_facts,
+                       load_external_scopes)
 from .general import build_general_scope, identify_stages
 from .graph import build_graph, graph_at, query_scope_adaptive
 from .llm import (ChatClient, DEFAULT_REQUEST_TIMEOUT, set_usage_ledger, validate_request_timeout,
@@ -660,12 +662,16 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
         if not isinstance(document, dict):
             return document
         lineage = group.get("external_lineage")
-        if not lineage:
-            return document
         for key in ("all_candidates", "questions"):
             for question in document.get(key, []):
                 if isinstance(question, dict):
-                    question.setdefault("external_lineage", deepcopy(lineage))
+                    if lineage:
+                        question.setdefault("external_lineage", deepcopy(lineage))
+                    if group.get("qa_mode") == "memory":
+                        metadata, _ = derive_external_anchor_metadata(
+                            group.get("scope", {}), question)
+                        if metadata:
+                            question.update(metadata)
         return document
 
     def run(item, phase):
@@ -694,6 +700,10 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                 }
                 seen_questions = set()
                 defer_type_selection = group.get("type_selection") == "post_generation"
+                untyped_external = (
+                    track == "memory"
+                    and bool(group.get("scope", {}).get("external_event_id"))
+                )
                 target_types = ((None,) if defer_type_selection else tuple(
                     group["eligible_types"] if "eligible_types" in group
                     else group.get("allowed_types", ())))
@@ -749,6 +759,15 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
 
                     def label_candidate(question):
                         if not isinstance(question, dict):
+                            return None, {}
+                        # M1-M6 classify the contributing external anchors,
+                        # never the QA itself.  Keep the candidate untyped
+                        # for the unified external route.
+                        if target_type is None and untyped_external:
+                            for field in ("type", "type_origin", "type_status",
+                                          "type_candidates", "auxiliary_types",
+                                          "category"):
+                                question.pop(field, None)
                             return None, {}
                         if target_type is None:
                             options, checks = static_candidate_types(
@@ -920,6 +939,20 @@ def _run_qa_tasks(tasks, endpoint, model, key_env, workers, checkpoint_dir=None,
                         final_questions = []
                         for question in reviewed_questions:
                             # Review repair may rewrite answer sources.
+                            if untyped_external:
+                                metadata, metadata_reason = (
+                                    derive_external_anchor_metadata(
+                                        active_group["scope"], question))
+                                if metadata is None:
+                                    type_rejected.append({
+                                        "question": dict(question, status="rejected"),
+                                        "reason": metadata_reason,
+                                        "stage": "anchor_metadata",
+                                    })
+                                    continue
+                                question.update(metadata)
+                                _label_external_difficulty(
+                                    question, active_group.get("facts", []))
                             anchor_reason = external_anchor_reason(
                                 question, active_group["scope"])
                             if anchor_reason:
@@ -1367,11 +1400,8 @@ def _public_question(question):
     mode = question.get("qa_mode", "code")
     item = {
         "id": question.get("id"), "qa_mode": mode,
-        "type": question.get("type", question.get("category")),
         "question": question.get("question", ""),
         "difficulty": question.get("difficulty"),
-        "type_origin": question.get("type_origin"),
-        "type_status": question.get("type_status"),
         "difficulty_origin": question.get("difficulty_origin"),
         "difficulty_distance": question.get("difficulty_distance"),
         "status": question.get("status", "needs_review"),
@@ -1383,6 +1413,15 @@ def _public_question(question):
         "forbidden_points": [{"text": point.get("text", "")}
                              for point in question.get("forbidden_points", [])],
     }
+    # Unified external QA has no public single type.  Legacy graph/code and
+    # older external candidates without anchor metadata retain their existing
+    # projection until their source package is regenerated.
+    has_anchor_contract = bool(
+        question.get("anchor_ids") or question.get("required_anchor_ids"))
+    if not (mode == "memory" and has_anchor_contract):
+        item["type"] = question.get("type", question.get("category"))
+        item["type_origin"] = question.get("type_origin")
+        item["type_status"] = question.get("type_status")
     if mode == "code":
         item.update(category=question.get("category", item["type"]),
                     track=question.get("track"))
@@ -1534,6 +1573,83 @@ def _empty_question_stats():
         "type_balance": {},
         "by_track": {},
     }
+
+
+def _external_anchor_stats(questions):
+    """Summarize required-anchor coverage without inventing QA types."""
+    stats = {
+        "questions_with_anchor_contract": 0,
+        "single_anchor": 0,
+        "multi_anchor": 0,
+        "supporting_anchor_count": 0,
+        "required_memory_kinds": {kind: 0 for kind in sorted(MEMORY_TYPES)},
+        "combinations": {},
+        "by_status": {},
+    }
+    for question in questions or []:
+        if not isinstance(question, dict):
+            continue
+        required = list(dict.fromkeys(
+            value for value in question.get("required_anchor_ids", [])
+            if isinstance(value, str) and value.strip()))
+        anchors = list(dict.fromkeys(
+            value for value in question.get("anchor_ids", [])
+            if isinstance(value, str) and value.strip()))
+        if not required:
+            continue
+        stats["questions_with_anchor_contract"] += 1
+        stats["single_anchor" if len(required) == 1 else "multi_anchor"] += 1
+        stats["supporting_anchor_count"] += max(0, len(set(anchors) - set(required)))
+        kinds = sorted({
+            str(kind).upper() for kind in question.get("memory_kinds", [])
+            if isinstance(kind, str) and str(kind).upper() in MEMORY_TYPES
+        })
+        for kind in kinds:
+            stats["required_memory_kinds"][kind] += 1
+        combo = "+".join(kinds) if kinds else "unknown"
+        entry = stats["combinations"].setdefault(combo, {
+            "questions": 0, "approved": 0, "needs_review": 0,
+            "rejected": 0,
+        })
+        entry["questions"] += 1
+        status = question.get("status", "needs_review")
+        entry[status] = entry.get(status, 0) + 1
+        stats["by_status"][status] = stats["by_status"].get(status, 0) + 1
+    return stats
+
+
+def _label_external_difficulty(question, facts):
+    """Compute evidence-complexity difficulty from cited facts only."""
+    cited = {
+        source.partition("#fragment-")[0]
+        for point in question.get("answer_points", [])
+        if isinstance(point, dict)
+        for source in point.get("sources", [])
+        if isinstance(source, str)
+    }
+    required_facts = []
+    info_nodes = set()
+    for fact in facts or []:
+        if not isinstance(fact, dict):
+            continue
+        sources = {
+            source.partition("#fragment-")[0]
+            for source in fact.get("sources", [])
+            if isinstance(source, str)
+        }
+        if sources & cited:
+            fact_id = fact.get("id")
+            if fact_id not in required_facts:
+                required_facts.append(fact_id)
+            info_nodes.update(sources)
+    basis = difficulty_basis(
+        required_facts,
+        info_nodes=sorted(info_nodes),
+        complete=bool(required_facts and cited),
+    )
+    question["difficulty"] = basis["difficulty"]
+    question["difficulty_origin"] = "anchor_evidence"
+    question["difficulty_features"] = basis
 
 
 def _add_path_stats(result, stats):
@@ -1880,19 +1996,24 @@ def main(argv=None):
                                     "reason": "no_external_fact",
                                 })
                                 continue
-                            target_type = scope["evidence_group"]["target_types"][0]
                             group = {
                                 "id": scope["evidence_group"]["id"],
                                 "qa_mode": track,
                                 "scope": scope,
                                 "facts": facts,
-                                "allowed_types": (target_type,),
-                                "eligible_types": (target_type,),
-                                "type_selection": "preselected",
+                                # External information keeps its M1-M6
+                                # classification on the anchors.  The QA
+                                # itself is intentionally untyped.
+                                "allowed_types": (),
+                                "eligible_types": (),
+                                "type_selection": "post_generation",
                                 "max_questions": 1,
                                 "external_lineage": {
                                     "source_ids": list(scope.get("external_source_ids", [])),
                                     "event_ids": list(scope.get("external_event_ids", [])),
+                                    "anchor_ids": list(scope.get("anchor_ids", [])),
+                                    "required_anchor_ids": [],
+                                    "memory_kinds": list(scope.get("memory_kinds", [])),
                                     "business_behavior": ([scope["external_behavior"]]
                                                            if isinstance(scope.get("external_behavior"), str)
                                                            and scope["external_behavior"].strip() else []),
@@ -2101,6 +2222,9 @@ def main(argv=None):
                     over_quota=sum(x["selection_status"] == "over_quota" for x in result["selection"]),
                     difficulty_balance=qa_result.get("difficulty_balance", {}),
                     type_balance=qa_result.get("type_balance", {}))
+                if external_mode:
+                    result["question_stats"]["anchor_coverage"] = (
+                        _external_anchor_stats(result.get("all_questions", [])))
                 result["question_stats"]["recoverability_filtered"] = result["recoverability"]["filtered"]
                 for track in limits:
                     result["question_stats"]["by_track"][track] = {
@@ -2447,6 +2571,8 @@ def main(argv=None):
                     "difficulty_balance", {}),
                 "type_balance": result["question_stats"].get(
                     "type_balance", {}),
+                "anchor_coverage": result["question_stats"].get(
+                    "anchor_coverage", {}),
                 "status": status_counts,
                 "type": type_counts,
                 "by_track": result["question_stats"].get("by_track", {}),
