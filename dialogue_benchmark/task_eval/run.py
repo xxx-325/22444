@@ -302,7 +302,11 @@ def decisive_rule_literals(rule):
         r"(?<=[=:：])\s*[A-Za-z][A-Za-z0-9_.-]*|"
         r"\b\d{1,4}(?:\.\d+)?(?:%|秒|分钟|小时|天|日|次)?\b|"
         r"\b[A-Za-z][A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)+\b", text))
-    normalized = {value.strip().strip("`'\"").strip() for value in values}
+    values.update(re.findall(
+        r"(?:only|仅|状态(?:为|是)|status\s+is)\s+([A-Za-z][A-Za-z0-9_.-]*)",
+        text, flags=re.I))
+    normalized = {value.strip().strip("`'\"").strip() for value in values
+                  if isinstance(value, str) and value.strip()}
     return sorted(value for value in normalized if len(value) >= 2)
 
 
