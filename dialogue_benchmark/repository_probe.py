@@ -4,9 +4,9 @@ from copy import deepcopy
 import hashlib
 import json
 import re
-import subprocess
 from pathlib import Path
 
+from .repository_files import list_files
 from .llm import ChatClient, DEFAULT_REQUEST_TIMEOUT, request_size, retry_model_call
 from .task_eval.selection import _path, _query_from_text, query_evidence
 
@@ -77,11 +77,7 @@ def repository_anchors(question, claims=()):
 
 
 def _repository_entries(root, limit=240):
-    result = subprocess.run(["rg", "--files"], cwd=root, capture_output=True,
-                            text=True, timeout=15)
-    if result.returncode not in {0, 1}:
-        raise ValueError("Repository file listing failed")
-    return sorted(result.stdout.splitlines())[:limit]
+    return list_files(root)[:limit]
 
 
 def _compact_receipt(receipt):

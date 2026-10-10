@@ -3,9 +3,9 @@
 import json
 from pathlib import Path
 import re
-import subprocess
 
 from ..llm import ModelStageError
+from ..repository_files import list_files, search_text
 from .artifacts import read, save
 from .runtime import ask_model, bounded_model_config
 from .history import freeze_targets, write_contract_from_targets
@@ -190,8 +190,7 @@ def query_evidence(query, baseline, history):
                 # forcing the model to guess a filename; file contents still
                 # require an explicit subsequent read.
                 if path.is_dir():
-                    names = sorted(str(item.relative_to(root)) for item in path.rglob("*")
-                                   if item.is_file() and not any(part.startswith(".") for part in item.parts))
+                    names = list_files(root, path)
                     return {"path": str(path.relative_to(root)) or ".", "files": names[offset:offset + 80],
                             "offset": offset, "next_offset": offset + 80 if len(names) > offset + 80 else None}
                 raise ValueError("Read requires a text file smaller than 2 MB")
@@ -212,23 +211,10 @@ def query_evidence(query, baseline, history):
         keyword = query.get("text")
         if not isinstance(keyword, str) or not keyword.strip():
             raise ValueError("Repository lookup requires text or a filename fragment")
-        # rg's fixed-string mode supplies content matches; --files supplies names.
-        files = subprocess.run(["rg", "--files", "--", str(path)], cwd=root,
-                               capture_output=True, text=True, timeout=15)
-        if path.is_file():
-            names = [str(path)]
-        elif files.returncode in {0, 1}:
-            names = files.stdout.splitlines()
-        else:
-            raise ValueError("Repository file lookup failed")
-        matches = [{"path": str(Path(p).relative_to(root)), "kind": "filename"}
-                   for p in sorted(names) if keyword in str(Path(p).relative_to(root))]
-        found = subprocess.run(["rg", "-n", "-F", "--no-heading", "--with-filename", "--color", "never",
-                                "--max-columns", "500", "--max-columns-preview", "--", keyword, str(path)],
-                               cwd=root, capture_output=True, text=True, timeout=15)
-        if found.returncode not in {0, 1}:
-            raise ValueError("Repository text lookup failed")
-        matches += [{"match": line.replace(str(root) + "/", "", 1)} for line in found.stdout.splitlines()]
+        # Filename matches first, then fixed-string content matches.
+        matches = [{"path": name, "kind": "filename"}
+                   for name in list_files(root, path) if keyword in name]
+        matches += [{"match": line} for line in search_text(root, path, keyword)]
     else:
         raise ValueError("Expected repo or history target")
     return dict(matches=matches[offset:offset + 20], offset=offset, total_matches=len(matches),
