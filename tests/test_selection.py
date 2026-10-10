@@ -181,6 +181,28 @@ class SelectionTests(unittest.TestCase):
             {item["id"] for cluster in clusters for item in cluster},
             {"left", "right"})
 
+    def test_same_source_paraphrases_are_nominated_for_review(self):
+        # Two real candidates that asked for one SLA rule in different words;
+        # their wording overlap (0.36-0.48) was below the earlier thresholds.
+        def candidate(qid, text, answer):
+            return dict(question(qid, "", answer, source="e58", mode="memory"),
+                        question=text, answer_target="")
+        left = candidate(
+            "left", "北方机械制造有限公司处于续费宽限期并需要处理技术工单；在该客户完成续费并恢复正常状态后，"
+                    "其既有技术工单的 SLA 承诺应按哪项已经确认的规则处理？",
+            "北方机械制造有限公司在续费宽限期需要处理的技术工单，在完成续费并恢复正常状态后不重算 SLA，"
+            "保持开单时快照写死；工单的 SLA 承诺在受理时点确定，续费后不追溯改档。")
+        right = candidate(
+            "right", "北方机械制造有限公司处于续费宽限期并需要处理一张技术工单。如果该客户之后完成续费、"
+                     "状态恢复正常，这张工单的 SLA 应按照我们之前哪项约定执行？",
+            "按本次已确认的决定，工单 SLA 承诺以开单受理时点为准快照写死；续费完成、状态恢复正常后，"
+            "其在宽限期内开出的技术工单不重算、不追溯改档。")
+        unrelated = candidate("unrelated", "工程师的缺席标记与恢复应由哪个角色执行？",
+                              "缺席标记与恢复由调度员执行。")
+        clusters = near_duplicate_clusters([left, right, unrelated])
+        self.assertEqual([sorted(item["id"] for item in cluster) for cluster in clusters],
+                         [["left", "right"]])
+
     def test_external_repeated_target_survives_oversized_component_partition(self):
         # These five candidates reproduce the external-only shape: shared
         # customer/date context creates one broad component, while the three

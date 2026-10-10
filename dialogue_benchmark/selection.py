@@ -262,9 +262,16 @@ def _near_duplicate_candidate(left, right):
         for left_point in left_points for right_point in right_points)
     question_overlap = _text_contains(
         left.get("question", ""), right.get("question", ""), threshold=.55)
+    # Paraphrases of one rule cite the same source with different wording
+    # (observed overlap 0.36-0.48).  With a shared answer source a lower
+    # overlap is enough to ask the bounded reviewer; it never deletes.
+    paraphrase = bool(shared_sources) and (
+        _text_contains(left.get("question", ""), right.get("question", ""), threshold=.3)
+        or any(_text_contains(left_point, right_point, threshold=.3)
+               for left_point in left_points for right_point in right_points))
     return bool((left_target and right_target
                  and _text_contains(left_target, right_target, threshold=.55))
-                or point_overlap or question_overlap
+                or point_overlap or question_overlap or paraphrase
                 or (not shared_sources and shared_object))
 
 
