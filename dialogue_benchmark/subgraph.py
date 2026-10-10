@@ -112,15 +112,17 @@ def _scope(graph, records, events, cutoff, seed, max_chars, context):
         if previous and previous not in version_ids:
             version_ids.add(previous)
             pending.append(previous)
-    versions = [copy.deepcopy(versions_by_id[version_id]) for version_id in version_ids
-                if version_id in versions_by_id]
+    # Follow graph order: set order varies by process and would make resumed
+    # scope projections differ from the saved ones.
+    versions = [copy.deepcopy(version) for version_id, version in versions_by_id.items()
+                if version_id in version_ids]
     seed_path = seed.split("::")[0] if seed else ""
     event_paths = {path for event in events for path in event["paths"]}
     # A patch may touch many files. Keep the seed path by default; additional
     # files need an explicit graph edge and are added by a later expansion.
     paths = {path for path in event_paths if path == seed_path or not seed_path}
     if not paths and event_paths:
-        paths = {next(iter(event_paths))}
+        paths = {min(event_paths)}
     versions.extend(copy.deepcopy(version) for version in graph.get("versions", [])
                     if version.get("path") in paths and version.get("id") not in
                     {item["id"] for item in versions}
