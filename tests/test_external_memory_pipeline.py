@@ -337,6 +337,56 @@ class ExternalMemoryPipelineTests(unittest.TestCase):
         self.assertEqual(item["original_candidate"]["answer_points"][0]["sources"], ["e1"])
         self.assertEqual(item["reviewed_candidate"]["answer_points"][0]["sources"], ["e3"])
 
+    def test_task_input_uses_the_recorded_event_instead_of_shared_sources(self):
+        events = {"version": 1, "events": [
+            dict(id="verification", source_ids=["e1"], task_id="task-1"),
+            dict(id="absence", source_ids=["e3"], task_id="task-2"),
+        ]}
+        for lineage, expected in (
+                ({"event_ids": ["absence"]}, ["absence"]),
+                (None, ["verification"])):
+            with self.subTest(lineage=lineage), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                # e1 is shared conversation context; the question came from "absence".
+                question = dict(id="q1", type="M1", status="approved",
+                                answer_points=[dict(text="Dispatcher marks absence", sources=["e1", "e3"])])
+                if lineage is not None:
+                    question["external_lineage"] = lineage
+                else:
+                    question["answer_points"][0]["sources"] = ["e1"]
+                save(root / "qa-public.json", {"questions": [question]})
+                save(root / "qa-audit.json", {"questions": [question]})
+                save(root / "manifest.json", {"qa_source": "external"})
+                save(root / "external-events.json", events)
+                save(root / "stages/group-raw-candidates.json", {"questions": [question]})
+                save(root / "normalized.json", [
+                    {"id": "e1", "kind": "message", "role": "user", "text": "Customer context"},
+                    {"id": "e3", "kind": "message", "role": "user", "text": "Dispatcher marks absence"},
+                ])
+                save(root / "stages/group-qa-input.json", {
+                    "ref_to_source": {"资料1": "e1", "资料3": "e3"},
+                    "payload": {"scope": {"dialogue": [{"id": "e1"}, {"id": "e3"}]}}})
+                item, = qa_inputs(root)
+                self.assertEqual(item["external_lineage"]["event_ids"], expected)
+
+    def test_task_input_rejects_a_lineage_event_missing_from_the_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            question = dict(id="q1", type="M1", status="approved",
+                            external_lineage={"event_ids": ["missing"]},
+                            answer_points=[dict(text="Keep nulls", sources=["e1"])])
+            save(root / "qa-public.json", {"questions": [question]})
+            save(root / "qa-audit.json", {"questions": [question]})
+            save(root / "manifest.json", {"qa_source": "external"})
+            save(root / "external-events.json", {"version": 1, "events": [dict(id="x", source_ids=["e1"])]})
+            save(root / "stages/group-raw-candidates.json", {"questions": [question]})
+            save(root / "normalized.json", [{"id": "e1", "kind": "message", "role": "user", "text": "Keep nulls"}])
+            save(root / "stages/group-qa-input.json", {
+                "ref_to_source": {"资料1": "e1"}, "payload": {"scope": {"dialogue": [{"id": "e1"}]}}})
+            diagnostics = []
+            self.assertEqual(qa_inputs(root, diagnostics=diagnostics), [])
+            self.assertEqual(diagnostics[0]["reason"], "unknown_external_event")
+
     def test_task_input_drops_workflow_from_a_disjoint_focus(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

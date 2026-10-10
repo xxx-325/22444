@@ -249,14 +249,28 @@ def qa_inputs(qa_run, *, include_provisional=False, diagnostics=None):
                                 for point in candidate.get(key, []) if isinstance(point, dict)
                                 for source in point.get("sources", [])})
                 associations = set()
-                lineage_events = []
-                for event in external_events:
-                    if set(event.get("source_ids", [])) & set(cited):
-                        lineage_events.append(event)
-                        for key in ("task_id", "focus", "object", "target",
-                                    "behavior", "impact", "behavior_impact", "constraint"):
-                            if isinstance(event.get(key), str) and event[key].strip():
-                                associations.add(key + ":" + event[key].strip())
+                # The QA stage records the event that produced the question.
+                # Recomputing it from cited sources attached a question to
+                # every event that shared one public message.
+                declared = (candidate.get("external_lineage") or original.get("external_lineage")
+                            or {}).get("event_ids")
+                by_id = {event.get("id"): event for event in external_events}
+                if declared:
+                    unknown = sorted(set(declared) - set(by_id))
+                    if unknown:
+                        diagnostics.append({"qa_id": question["id"], "status": question.get("status"),
+                                            "reason": "unknown_external_event"})
+                        continue
+                    lineage_events = [by_id[event_id] for event_id in declared]
+                else:
+                    # Older QA outputs carry no lineage.
+                    lineage_events = [event for event in external_events
+                                      if set(event.get("source_ids", [])) & set(cited)]
+                for event in lineage_events:
+                    for key in ("task_id", "focus", "object", "target",
+                                "behavior", "impact", "behavior_impact", "constraint"):
+                        if isinstance(event.get(key), str) and event[key].strip():
+                            associations.add(key + ":" + event[key].strip())
                 for document in (original, candidate):
                     group = document.get("evidence_group_id")
                     if group:
