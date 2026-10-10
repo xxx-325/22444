@@ -530,6 +530,19 @@ class TaskPreflightTests(unittest.TestCase):
                 self.assertEqual(budget["usage_complete"], complete)
                 self.assertEqual(budget["total_tokens"], 35 if requests == 2 else 0)
 
+    def test_failed_exploration_receipt_keeps_error_detail(self):
+        from dialogue_benchmark.task_eval.run import explore_repository
+        root = self.base / "explore-error"
+        outcome = {"status": "error", "error_type": "ValueError",
+                   "detail": "request_timeout must be a positive integer in seconds", "metrics": {}}
+        with patch("dialogue_benchmark.task_eval.run.prepare"), \
+             patch("dialogue_benchmark.task_eval.run.run_agent", return_value=outcome):
+            explore_repository(root, self.baseline, {"qa": {"question": "Which rule?"}}, {}, {})
+        receipt = read(root / "repository-exploration.json")
+        self.assertEqual(receipt["status"], "error")
+        self.assertEqual(receipt["error_type"], "ValueError")
+        self.assertIn("positive integer", receipt["detail"])
+
     def test_mutation_feedback_identifies_unverified_public_requirement(self):
         candidate = self.base / "reference"
         candidate.mkdir()

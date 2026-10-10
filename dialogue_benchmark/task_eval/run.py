@@ -309,6 +309,7 @@ def explore_repository(root, baseline, item, config, options, public_history=Non
         "metrics": outcome.get("metrics", {}),
         "report": text,
         "final": outcome.get("final", ""),
+        **{key: outcome[key] for key in ("error_type", "detail") if key in outcome},
     })
     return text, outcome
 
@@ -1801,6 +1802,11 @@ def main(argv=None):
                        qa_statuses={member["qa"]["id"]: member["qa"].get("status")
                                     for member in item.get("qa_members", [item])},
                        provisional=item.get("provisional", False))
+            exploration = root / "repository-exploration.json"
+            if exploration.is_file() and read(exploration).get("status") == "error":
+                # Selection may continue without the map, but leakage and
+                # recoverability reviews then lack repository evidence.
+                row.setdefault("warnings", []).append("repository_exploration_failed")
             return row
         except BaseException as error:
             row.update(error_type=type(error).__name__, detail=str(error))
