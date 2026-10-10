@@ -480,6 +480,22 @@ class ExternalSourceTests(unittest.TestCase):
         self.assertEqual([fact["id"] for fact in kept], ["f1"])
         self.assertEqual(kept[0]["external_event_ids"], ["x1"])
 
+    def test_shared_earlier_context_is_not_attributed_to_a_later_event(self):
+        records = [*self.records,
+                   {"id": "e4", "order": 4, "kind": "message", "role": "user",
+                    "text": "新规则：旧客户端的空 note 只适用于导出接口。"}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            path.write_text(json.dumps({"version": 1, "events": [
+                dict(id="early", kind="compatibility_contract", memory_kind="M1", source_ids=["e1"]),
+                dict(id="later", kind="compatibility_contract", memory_kind="M1", source_ids=["e4"])]}))
+            scopes = load_external_scopes(path, records, 4, merge_task_events=False)["scopes"]
+        facts = [{"id": "f1", "sources": ["e1"], "statement": "early rule"},
+                 {"id": "f2", "sources": ["e4"], "statement": "later rule"}]
+        kept = {fact["id"]: fact["external_event_ids"] for fact in filter_external_facts(facts, scopes)}
+        # e1 is earlier context of "later"; e4 is the other event's own source.
+        self.assertEqual(kept, {"f1": ["early"], "f2": ["later"]})
+
     def test_external_cli_skips_graph_in_static_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)

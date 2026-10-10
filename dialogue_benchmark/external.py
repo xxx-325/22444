@@ -107,13 +107,32 @@ def external_usage_review(document, scope, reference_map):
     return cleaned, decision
 
 
-def external_anchor_reason(question, scope):
-    """Reject an external answer that does not rest on its own event.
+def event_sources(scope):
+    """Return the sources that may ground facts and answers of one event.
 
-    An answer must cite the event source, a declared use or context, or a
-    later public User message (a correction of that rule) that is not the
-    declared source of another event.
+    These are the event source, its declared uses and context, and later
+    public User messages (corrections of the rule) that are not the declared
+    source of another event.  Earlier, undeclared messages belong to other
+    events.
     """
+    sources = set(scope.get("external_source_ids") or [])
+    allowed = (sources | set(scope.get("external_usage_ids") or [])
+               | set(scope.get("external_declared_context_ids") or []))
+    foreign = set(scope.get("external_foreign_source_ids") or [])
+    rows = [row for row in scope.get("dialogue", []) if isinstance(row, dict)]
+    source_orders = [row.get("order") for row in rows
+                     if row.get("id") in sources and isinstance(row.get("order"), int)]
+    if source_orders:
+        allowed.update(row.get("id") for row in rows
+                       if row.get("kind") == "message" and row.get("role") == "user"
+                       and isinstance(row.get("order"), int)
+                       and row["order"] > min(source_orders)
+                       and row.get("id") not in foreign)
+    return allowed
+
+
+def external_anchor_reason(question, scope):
+    """Reject an external answer that does not rest on its own event."""
     if not isinstance(scope, dict) or not scope.get("external_event_id"):
         return None
     cited = {source.partition("#fragment-")[0]
@@ -122,20 +141,7 @@ def external_anchor_reason(question, scope):
              for source in (point.get("sources") or []) if isinstance(source, str)}
     if not cited:
         return None
-    sources = set(scope.get("external_source_ids") or [])
-    allowed = (sources | set(scope.get("external_usage_ids") or [])
-               | set(scope.get("external_declared_context_ids") or []))
-    rows = [row for row in scope.get("dialogue", []) if isinstance(row, dict)]
-    source_orders = [row.get("order") for row in rows
-                     if row.get("id") in sources and isinstance(row.get("order"), int)]
-    foreign = set(scope.get("external_foreign_source_ids") or [])
-    if source_orders:
-        allowed.update(row.get("id") for row in rows
-                       if row.get("kind") == "message" and row.get("role") == "user"
-                       and isinstance(row.get("order"), int)
-                       and row["order"] > min(source_orders)
-                       and row.get("id") not in foreign)
-    return None if cited & allowed else "external_anchor_not_cited"
+    return None if cited & event_sources(scope) else "external_anchor_not_cited"
 
 
 def external_review_projection(group, candidate):
@@ -471,11 +477,16 @@ def load_external_scopes(path, records, cutoff, max_chars=32000,
 
 
 def filter_external_facts(facts, scopes):
-    """Keep facts grounded in an event's declared public source records."""
+    """Keep facts grounded in an event's own public sources (``event_sources``).
+
+    A fact sourced only from another event's message or earlier shared
+    context is not attributed to this event, so it cannot seed this event's
+    question.
+    """
     source_to_scope = {}
     for scope in scopes:
         event_id = scope.get("external_event_id")
-        for source in scope.get("external_source_ids", []) + scope.get("external_context_source_ids", []):
+        for source in sorted(event_sources(scope)):
             source_to_scope.setdefault(source, []).append((event_id, scope))
     kept = []
     for fact in facts:
