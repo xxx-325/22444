@@ -536,6 +536,44 @@ class TaskEvaluationTests(unittest.TestCase):
             "with_memory": dict(base, result="uncertain")})["pair_class"],
                          "both_failed")
 
+    def test_evaluator_failure_is_not_a_solver_outcome(self):
+        base = {"metrics": {"usage_complete": True}}
+        judge_error = dict(base, result="uncertain", judge_status="error")
+        pair = compare_trials({"without_memory": dict(base, result="failed"),
+                               "with_memory": judge_error})
+        self.assertEqual(pair["pair_class"], "evaluation_failed")
+        self.assertIsNone(pair["completion_difference"])
+        self.assertEqual(pair["evaluation_failures"], {"with_memory": "judge_error"})
+        checks_error = dict(base, result="uncertain", checks={"status": "error"})
+        self.assertEqual(compare_trials({"without_memory": checks_error,
+                                         "with_memory": dict(base, result="passed")})["pair_class"],
+                         "evaluation_failed")
+        # A deterministic pass or fail survives an unrelated Judge error.
+        self.assertEqual(compare_trials({
+            "without_memory": dict(base, result="failed", judge_status="error"),
+            "with_memory": dict(base, result="passed")})["pair_class"], "memory_capability_gain")
+
+    def test_report_scores_only_approved_tasks_with_usable_evaluation(self):
+        from dialogue_benchmark.task_eval.report import write_report
+        base = {"metrics": {"usage_complete": True}, "trial": "trial-1"}
+        def task(name, without, with_memory, **extra):
+            return dict(task=name, status="evaluated", comparison={
+                "without_memory": dict(base, **without), "with_memory": dict(base, **with_memory)}, **extra)
+        manifest = {"tasks": [
+            task("task-01", {"result": "failed"}, {"result": "passed"}),
+            task("task-02", {"result": "passed"}, {"result": "passed"}, provisional=True),
+            task("task-03", {"result": "uncertain", "judge_status": "error"}, {"result": "passed"}),
+        ]}
+        with tempfile.TemporaryDirectory() as directory:
+            write_report(Path(directory), manifest)
+            report = (Path(directory) / "report.md").read_text()
+        self.assertIn("Scored tasks: 1. Excluded from pass rates: 2.", report)
+        self.assertIn("- task-02: provisional QA", report)
+        self.assertIn("- task-03: evaluation failed: without_memory=judge_error", report)
+        self.assertIn("| without_memory | 1 | 0/1/0 | 0.0% |", report)
+        self.assertIn("| with_memory | 1 | 1/0/0 | 100.0% |", report)
+        self.assertIn("Pass-rate difference (with − without): 100.0 percentage points.", report)
+
     def test_repository_recovery_does_not_treat_common_number_as_leak(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 from .task_eval.artifacts import read, save
+from .task_eval.metrics import scored_task
 from .task_eval.metrics import cache_usage
 from .task_eval.runtime import shared_task_slot
 
@@ -505,8 +506,8 @@ def _merge_dynamic_attempt_stats(attempts, dialogue_root):
 
 
 def _completed_pair(task):
-    """Count only a fully evaluated pair with terminal arm results."""
-    if task.get("status") != "evaluated":
+    """Count only a fully evaluated, scored pair with terminal arm results."""
+    if task.get("status") != "evaluated" or not scored_task(task):
         return False
     comparison = task.get("comparison", {})
     if set(comparison) != {"without_memory", "with_memory"}:

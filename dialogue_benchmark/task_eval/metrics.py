@@ -137,6 +137,27 @@ def measure(events, provider_path):
 
 
 
+def evaluation_failure(trial):
+    """Return why an uncertain trial reflects an evaluator failure, else ``None``.
+
+    A Judge or check-runner error says nothing about the solver.  Such a
+    trial must not count as a solver outcome in pair classes or pass rates.
+    """
+    if not isinstance(trial, dict) or trial.get("result") != "uncertain":
+        return None
+    if trial.get("judge_status") == "error":
+        return "judge_error"
+    if (trial.get("checks") or {}).get("status") == "error":
+        return "checks_error"
+    return None
+
+
+def scored_task(task):
+    """Return whether a task row counts toward approved pass-rate totals."""
+    pair = compare_trials(task.get("comparison", {}))
+    return (not task.get("provisional") and pair["pair_class"] != "evaluation_failed")
+
+
 def compare_trials(comparison):
     """Compare outcomes and retain raw costs separately from fair comparisons.
 
@@ -148,8 +169,14 @@ def compare_trials(comparison):
     left, right = (comparison.get(k, {}) for k in ("without_memory", "with_memory"))
     complete = all(trial.get("result") in {"passed", "failed", "uncertain"} for trial in (left, right))
     both = left.get("result") == right.get("result") == "passed"
+    failures = {condition: reason for condition, reason in (
+        ("without_memory", evaluation_failure(left)), ("with_memory", evaluation_failure(right)))
+        if reason}
     if not complete:
         pair_class = "incomplete"
+    elif failures:
+        pair_class = "evaluation_failed"
+        complete = False
     elif both:
         pair_class = "both_passed"
     elif right.get("result") == "passed":
@@ -171,6 +198,8 @@ def compare_trials(comparison):
               "completion_difference":
               int(right.get("result") == "passed") - int(left.get("result") == "passed") if complete else None,
               "raw_cost_differences": {}, "comparable_cost_differences": {}}
+    if failures:
+        result["evaluation_failures"] = failures
     for key in ("tool_calls", "file_view_calls", "shell_read_or_search_calls",
                 "prompt_tokens", "completion_tokens", "cache_hit_tokens",
                 "cache_miss_tokens", "total_tokens", "solver_tokens",

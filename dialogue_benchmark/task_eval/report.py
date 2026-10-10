@@ -4,7 +4,7 @@ from pathlib import Path
 from html import escape
 import json
 
-from .metrics import compare_trials
+from .metrics import compare_trials, scored_task
 
 
 def _cell(value):
@@ -51,13 +51,23 @@ def write_report(output, manifest):
                  trial.get("history_question_count", "not saved")), m.get("tool_calls", "not saved"),
                 m.get("file_view_calls", "not saved"), m.get("shell_read_or_search_calls", "not saved"),
                 m.get("total_tokens", "not saved"), cache))
+    # Pass rates cover approved tasks with a usable evaluation only.
+    # Provisional tasks and evaluator failures stay listed but unscored.
+    excluded = [(task, "provisional QA" if task.get("provisional") else "evaluation failed: " + ", ".join(
+                    "%s=%s" % row for row in sorted(compare_trials(task["comparison"]).get(
+                        "evaluation_failures", {}).items())))
+                for task in tasks if task.get("comparison") and not scored_task(task)]
+    scored = [task for task in tasks if task.get("comparison") and scored_task(task)]
+    lines += ["", "## Scored tasks", "",
+              "Scored tasks: %d. Excluded from pass rates: %d." % (len(scored), len(excluded))]
+    lines += ["- %s: %s" % (_cell(task["task"]), _cell(reason)) for task, reason in excluded]
     lines += ["", "## First and final rounds", "",
               "Both conditions use at most two solver rounds with one shared budget. Costs are cumulative and include failures.",
               "", "| Condition | Checkpoint | Trials | Passed / failed / uncertain | Solver requests | Solver tokens |",
               "|---|---|---|---|---|---|"]
     for condition in ("without_memory", "with_memory"):
         for checkpoint in ("first_round", "final_round"):
-            rows = [task["comparison"][condition][checkpoint] for task in tasks
+            rows = [task["comparison"][condition][checkpoint] for task in scored
                     if checkpoint in task.get("comparison", {}).get(condition, {})]
             def round_total(key):
                 values = [row.get("metrics", {}).get(key) for row in rows]
@@ -84,7 +94,7 @@ def write_report(output, manifest):
               "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     rates = {}
     for condition in ("without_memory", "with_memory"):
-        trials = [t["comparison"][condition] for t in tasks if condition in t.get("comparison", {})]
+        trials = [t["comparison"][condition] for t in scored if condition in t.get("comparison", {})]
         def total(key):
             values = [t.get("metrics", {}).get(key) for t in trials]
             return sum(values) if trials and all(isinstance(v, (int, float)) for v in values) else "not saved"
@@ -115,7 +125,7 @@ def write_report(output, manifest):
             str(cache_total) + (" / %.1f%%" % (100 * cache_rate) if cache_rate is not None else " / unavailable")))
     if all(v is not None for v in rates.values()) and all(
             compare_trials(task["comparison"])["completion_difference"] is not None
-            for task in tasks if task.get("comparison")):
+            for task in scored):
         lines += ["", "Pass-rate difference (with − without): %.1f percentage points." %
                   (100 * (rates["with_memory"] - rates["without_memory"]))]
     lines += ["", "## Paired differences", "",
@@ -132,7 +142,7 @@ def write_report(output, manifest):
             pair.get("efficiency_comparable", False), pair["history_question_difference"],
             *(raw[k] for k in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens")),
             *(delta[k] for k in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"))))
-    successful = [compare_trials(t.get("comparison", {})) for t in tasks
+    successful = [compare_trials(t.get("comparison", {})) for t in scored
                   if compare_trials(t.get("comparison", {}))["both_passed"]]
     lines += ["", "Both-passed pairs: %d." % len(successful)]
     for metric in ("tool_calls", "file_view_calls", "shell_read_or_search_calls", "total_tokens"):

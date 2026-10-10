@@ -15,7 +15,7 @@ from .artifacts import (copy_tree, fingerprint, labels, qa_fingerprint, qa_input
 from .checks import (run_checks, acceptance_items, acceptance_has_inspect,
                      _acceptance_row_cells,
                      assess_acceptance, check_history_mutations, _inspect_command_cases)
-from .metrics import compare_trials
+from .metrics import compare_trials, scored_task
 from .runtime import (bounded_model_config, configure, preflight_openhands_runtime,
                       review_task, review_checks, repair_tests, write_tests,
                       write_history_mutation, run_agent, shared_task_slot)
@@ -1844,8 +1844,12 @@ def main(argv=None):
                     stop_reason="target_met" if completed >= args.count else
                     "task_budget_exhausted" if len(selected) >= task_budget else "qa_pool_exhausted")
     accepted = sum(task.get("status") == ("qualified" if args.selection_only else "evaluated")
-                   and not task.get("provisional") for task in manifest["tasks"])
-    manifest.update(accepted=accepted, provisional_completed=completed - accepted,
+                   and not task.get("provisional")
+                   and (args.selection_only or scored_task(task)) for task in manifest["tasks"])
+    provisional_completed = sum(task.get("status") == ("qualified" if args.selection_only else "evaluated")
+                                and bool(task.get("provisional")) for task in manifest["tasks"])
+    manifest.update(accepted=accepted, provisional_completed=provisional_completed,
+                    evaluation_failed=completed - accepted - provisional_completed,
                     status="complete" if accepted >= args.count else "needs_review" if completed else "incomplete")
     save(output / "manifest.json", manifest)
     write_report(output, manifest)
